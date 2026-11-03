@@ -1,0 +1,53 @@
+;; sandbox-exec profile for one crew-vz helper (§11.4, spike S3).
+;;
+;; crew-vzd runs each helper as
+;;   sandbox-exec -f sandbox.sb -D HELPER=... -D VM_DIR=... -D KERNEL=... \
+;;     -D GUEST_SOCK=... -D CTL_SOCK=... crew-vz run ...
+;;
+;;   HELPER      the crew-vz binary
+;;   VM_DIR      <data>/vms/<id>: the only place it can write
+;;   KERNEL      the VM's kernel Image (read-only)
+;;   GUEST_SOCK  <VM_DIR>/guest.sock: the only Unix socket it may connect to
+;;   CTL_SOCK    <VM_DIR>/ctl.sock: the only socket it may listen on
+;;
+;; Outbound TCP and UDP to any address stay allowed: the helper dials the
+;; internet as the Mac on the guest's behalf, and SBPL can't express
+;; blocked4. The netstack enforces that on every dial (netpolicy).
+(version 1)
+(deny default)
+
+;; dyld, libSystem, and the usual system reads.
+(import "system.sb")
+(allow file-read-metadata)
+(allow sysctl-read)
+(allow signal (target self))
+
+;; Itself.
+(allow process-exec (literal (param "HELPER")))
+(allow file-read* (literal (param "HELPER")))
+
+;; Its VM: read the kernel, read and write only the VM's own directory
+;; (disk clone, console.log, ctl.sock, exited.json, vz.pid).
+(allow file-read* (literal (param "KERNEL")))
+(allow file-read* file-write* (subpath (param "VM_DIR")))
+
+;; Virtualization.framework runs the VM in its XPC service and hands it
+;; sandbox extensions for the kernel and the disk (mirrors Apple's
+;; frameworks.sb rule for com.apple.security.virtualization).
+(allow mach-lookup (xpc-service-name-prefix "com.apple.Virtualization."))
+(allow generic-issue-extension (extension-class-prefix "com.apple.virtualization.extension."))
+(allow file-issue-extension
+  (require-all
+    (extension-class "com.apple.app-sandbox.read" "com.apple.app-sandbox.read-write")
+    (require-any (literal (param "KERNEL")) (subpath (param "VM_DIR")))))
+(allow iokit-open-user-client (iokit-user-client-class "AppleSMCClient"))
+
+;; Network: the frame socketpair, outbound TCP/UDP as the Mac, this VM's
+;; guest.sock, and its own ctl.sock.
+(allow system-socket)
+(allow network-outbound (remote ip "*:*"))
+;; ...but never to the Mac itself over loopback (defence in depth: netpolicy
+;; already refuses 127.0.0.0/8 on the dialled address).
+(deny network-outbound (remote ip "localhost:*"))
+(allow network-outbound (remote unix-socket (path-literal (param "GUEST_SOCK"))))
+(allow network-bind network-inbound (local unix-socket (path-literal (param "CTL_SOCK"))))
