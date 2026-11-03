@@ -1,1 +1,32 @@
 .DS_Store
+/tmp/
+/.tools/
+
+# Mix projects
+/apps/*/_build/
+/apps/*/deps/
+/apps/*/cover/
+/apps/*/doc/
+/apps/*/tmp/
+/apps/*/erl_crash.dump
+/apps/*/*.ez
+/apps/*/*.db
+/apps/*/*.db-*
+
+# Phoenix assets
+/apps/crew/priv/static/assets/
+/apps/crew/priv/static/cache_manifest.json
+/apps/crew/assets/node_modules/
+
+# Go
+/native/*/bin/
+/native/*/dist/
+
+# Guest image builds
+/images/guest/out/
+/images/guest/work/
+
+# e2e
+/e2e/node_modules/
+/e2e/test-results/
+/e2e/playwright-report/
