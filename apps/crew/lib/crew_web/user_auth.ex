@@ -159,7 +159,31 @@ defmodule CrewWeb.UserAuth do
     end
   end
 
+  # A refresh took repos away (§18.3): a page about one of them goes back
+  # to its list, and any other page reloads, so nothing it shows or is
+  # subscribed to outlives the access.
+  defp handle_user_event({:repo_access_changed, repo_ids}, socket) do
+    case showing_repo(socket) do
+      {repo_id, back} when is_binary(repo_id) ->
+        if repo_id in repo_ids do
+          {:halt,
+           socket
+           |> Phoenix.LiveView.put_flash(:error, "You no longer have access to that repo.")
+           |> Phoenix.LiveView.push_navigate(to: back)}
+        else
+          {:halt, socket}
+        end
+
+      _ ->
+        reload(socket)
+    end
+  end
+
   defp handle_user_event(_message, socket), do: {:cont, socket}
+
+  defp showing_repo(%{assigns: %{attempt: %{repo_id: id}}}), do: {id, ~p"/runs"}
+  defp showing_repo(%{assigns: %{repo: %{id: id}}}), do: {id, ~p"/repos"}
+  defp showing_repo(_socket), do: nil
 
   defp reload(socket) do
     {:halt, Phoenix.LiveView.redirect(socket, to: socket.assigns[:current_path] || ~p"/")}

@@ -208,4 +208,80 @@ defmodule CrewWeb.CrewComponents do
   def action_label("agent.update"), do: "Update agent"
   def action_label("op.cancel"), do: "Cancel an operation"
   def action_label(other), do: other
+
+  @doc """
+  A job's status (§17.4): an icon and text, never colour alone, and the
+  reason where there is one. `data-job-state` names the state for tests
+  and styles.
+  """
+  attr :job, :map, required: true
+  attr :now, :any, default: nil
+  attr :reason, :boolean, default: true
+
+  def job_status(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :status,
+        CrewWeb.JobStatus.of(assigns.job, assigns.now || DateTime.utc_now())
+      )
+
+    ~H"""
+    <span
+      data-job-state={@status.state}
+      class={["inline-flex min-w-0 items-center gap-1.5 text-sm", tone(@status.tone)]}
+    >
+      <span :if={@status.icon == "dot"} class="relative flex size-2.5 shrink-0" aria-hidden="true">
+        <span class="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60"></span>
+        <span class="relative inline-flex size-2.5 rounded-full bg-accent"></span>
+      </span>
+      <.icon :if={@status.icon not in ["", "dot"]} name={@status.icon} class="size-4 shrink-0" />
+      <span class="font-medium">{@status.label}</span>
+      <span :if={@reason and @status.reason} class="truncate text-ink-3">· {@status.reason}</span>
+    </span>
+    """
+  end
+
+  defp tone(:success), do: "text-success"
+  defp tone(:danger), do: "text-danger"
+  defp tone(:warning), do: "text-warning"
+  defp tone(:accent), do: "text-accent-ink"
+  defp tone(:muted), do: "text-ink-3"
+
+  @doc "One segment per job, each with its state: the per-job state bar of the Runs page."
+  attr :jobs, :list, required: true
+  attr :now, :any, default: nil
+
+  def job_bar(assigns) do
+    now = assigns.now || DateTime.utc_now()
+
+    assigns =
+      assign(assigns, :statuses, Enum.map(assigns.jobs, &{&1, CrewWeb.JobStatus.of(&1, now)}))
+
+    ~H"""
+    <span class="flex h-2 w-28 gap-0.5" role="img" aria-label={bar_label(@statuses)}>
+      <span
+        :for={{job, status} <- @statuses}
+        data-job-state={status.state}
+        title={"#{job.name}: #{status.label}"}
+        class={["h-full min-w-1 flex-1 rounded-sm", segment(status.state)]}
+      ></span>
+    </span>
+    """
+  end
+
+  defp bar_label(statuses) do
+    statuses
+    |> Enum.frequencies_by(fn {_, s} -> s.state end)
+    |> Enum.map_join(", ", fn {state, n} -> "#{n} #{String.replace(state, "_", " ")}" end)
+  end
+
+  defp segment("success"), do: "bg-success"
+  defp segment("failure"), do: "bg-danger"
+  defp segment("refused"), do: "bg-danger"
+  defp segment("running"), do: "bg-accent"
+  defp segment("blocked"), do: "bg-warning"
+  defp segment("unsatisfiable"), do: "bg-warning"
+  defp segment("queued"), do: "bg-ink-3/50"
+  defp segment(_), do: "bg-line"
 end

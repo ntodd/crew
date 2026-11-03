@@ -44,6 +44,12 @@ defmodule CrewWeb.Layouts do
           <.sidebar_link navigate={~p"/"} icon="hero-squares-2x2" active={@current_path == "/"}>
             Dashboard
           </.sidebar_link>
+          <.sidebar_link navigate={~p"/runs"} icon="hero-play-circle" current_path={@current_path}>
+            Runs
+          </.sidebar_link>
+          <.sidebar_link navigate={~p"/repos"} icon="hero-code-bracket" current_path={@current_path}>
+            Repos
+          </.sidebar_link>
         </.sidebar_group>
 
         <.sidebar_group :if={Crew.Scope.admin?(@current_scope)} label="Admin">

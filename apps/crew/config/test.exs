@@ -40,6 +40,7 @@ config :crew, Crew.Vault,
 config :crew,
   env: :test,
   github_req_options: [plug: {Req.Test, Crew.GitHub}, retry: false],
+  github_retry_ms: 1,
   agent_release_public_key: nil,
   # Tests check for releases through Req.Test, never at boot.
   update_check: false
