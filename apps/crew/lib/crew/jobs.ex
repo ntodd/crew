@@ -27,6 +27,34 @@ defmodule Crew.Jobs do
   def get_job_by_github_id(id), do: Repo.get_by(Job, github_id: id)
   def get_run_attempt(id), do: Repo.get(RunAttempt, id)
 
+  @doc "The newest job GitHub gave the named runner."
+  def find_by_runner_name(name) when is_binary(name) do
+    Repo.one(
+      from j in Job,
+        where: j.runner_name == ^name,
+        order_by: [desc: j.started_at, desc: j.inserted_at],
+        limit: 1
+    )
+  end
+
+  @doc """
+  Links a job to the VM that took it. A job taken by a runner booted for
+  another class is flagged `taken_cross_class` (§8.1).
+  """
+  def link_vm(job_id, %{id: vm_id, class_key: key}) do
+    with %Job{} = job <- get_job(job_id) do
+      cross = job.label_key != key
+
+      job =
+        job
+        |> Ecto.Changeset.change(vm_id: vm_id, taken_cross_class: cross, wait_reason: nil)
+        |> Repo.update!()
+
+      broadcast_job(job)
+      {:ok, job}
+    end
+  end
+
   def list_events(%Job{id: id}) do
     Repo.all(from e in JobEvent, where: e.job_id == ^id, order_by: [asc: e.at, asc: e.id])
   end
@@ -232,6 +260,7 @@ defmodule Crew.Jobs do
       end)
 
     after_upsert(repo, job, attempt)
+    runner_named(job)
     broadcast_job(job)
     {:ok, job}
   end
@@ -268,6 +297,14 @@ defmodule Crew.Jobs do
        do: refuse_fork(repo, attempt)
 
   defp after_upsert(_repo, _job, _attempt), do: :ok
+
+  # GitHub named one of this deployment's runners: its VM is told (§8.6).
+  defp runner_named(%Job{runner_name: name} = job) when is_binary(name) do
+    if CrewProtocol.Names.ours?(name, Crew.Settings.deployment_id()),
+      do: Crew.VMs.job_event(job, job.gh_state)
+  end
+
+  defp runner_named(_job), do: :ok
 
   defp blocked_reason(%{classification: "ours"}, nil), do: @checking_fork
   defp blocked_reason(%{classification: "ours"}, %RunAttempt{is_fork: nil}), do: @checking_fork
@@ -493,6 +530,12 @@ defmodule Crew.Jobs do
   end
 
   # -- helpers -----------------------------------------------------------------
+
+  @doc "Broadcasts that a job changed (another context wrote it)."
+  def changed(job_id) do
+    with %Job{} = job <- get_job(job_id), do: broadcast_job(job)
+    :ok
+  end
 
   defp broadcast_job(job) do
     Phoenix.PubSub.broadcast(Crew.PubSub, "jobs", {:job_changed, job.id})

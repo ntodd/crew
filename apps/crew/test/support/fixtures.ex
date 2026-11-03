@@ -132,7 +132,7 @@ defmodule Crew.Fixtures do
     }
   end
 
-  @doc "A box with an enrolled key; `__private_key__` is the agent's, for signing connects."
+  @doc "A box with an enrolled key; `private_key/1` has the agent's, for signing connects."
   def box_fixture(attrs \\ []) do
     attrs = Map.new(attrs)
     {public, private} = CrewProtocol.Auth.generate_keypair()
@@ -159,8 +159,12 @@ defmodule Crew.Fixtures do
       }
       |> Repo.insert!()
 
-    Map.put(box, :__private_key__, private)
+    :persistent_term.put({__MODULE__, :private_key, box.id}, private)
+    box
   end
+
+  @doc "The private key `box_fixture/1` enrolled for the box, for signing its agent's connects."
+  def private_key(box_id), do: :persistent_term.get({__MODULE__, :private_key, box_id})
 
   def capabilities(overrides \\ %{}) do
     Map.merge(

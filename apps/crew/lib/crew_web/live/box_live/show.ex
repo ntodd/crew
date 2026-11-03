@@ -6,7 +6,7 @@ defmodule CrewWeb.BoxLive.Show do
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Agents, Boxes, Metrics, Operations, Scope, VMs}
+  alias Crew.{Agents, Boxes, Metrics, Operations, Repos, Scheduler, Scope, VMs}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -21,8 +21,28 @@ defmodule CrewWeb.BoxLive.Show do
       online: Agents.online?(box.id),
       metrics: Metrics.latest_box(box.id),
       inventory: VMs.inventory(box.id),
+      vms: VMs.box_vms(box.id),
+      allocation: VMs.allocation(box.id),
+      capacity: Scheduler.capacity(box),
+      readable: Repos.readable_ids(socket.assigns.current_scope),
       ops: Operations.recent_for_box(box.id, 10)
     )
+  end
+
+  # A repo the member can't read is named as such (§18.3).
+  defp repo_name(%{repo: repo}, :all), do: repo.full_name
+
+  defp repo_name(%{repo: repo}, ids),
+    do: if(repo.id in ids, do: repo.full_name, else: "a private repo")
+
+  defp vm_color(state) do
+    case state do
+      "busy" -> "brand"
+      "idle" -> "emerald"
+      "failed" -> "rose"
+      s when s in ~w(requested starting booted) -> "sky"
+      _ -> "zinc"
+    end
   end
 
   @impl true
@@ -151,7 +171,40 @@ defmodule CrewWeb.BoxLive.Show do
           <p :if={is_nil(@metrics)} class="text-sm text-ink-3">No metrics yet.</p>
         </.panel>
 
+        <.panel id="vms" title="VMs" padded={false} class="lg:col-span-2">
+          <:subtitle>
+            <span id="allocation">
+              {@allocation.vcpus} of {if @capacity, do: trunc(@capacity.vcpus), else: "–"} vCPUs · {gib(
+                @allocation.memory_mib
+              )} of {if @capacity, do: gib(@capacity.memory_mib), else: "–"} GiB memory allocated
+            </span>
+          </:subtitle>
+          <ul class="divide-y divide-line text-sm">
+            <li
+              :for={vm <- @vms}
+              id={"vm-#{vm.id}"}
+              class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-5 py-2.5 sm:grid-cols-[minmax(0,2fr)_minmax(0,1.5fr)_auto_auto]"
+            >
+              <span class="truncate font-mono text-xs text-ink">{vm.name}</span>
+              <span class="truncate text-ink-2 max-sm:order-last">{repo_name(vm, @readable)}</span>
+              <span class="tabular-nums text-xs text-ink-3 max-sm:hidden">
+                {vm.vcpus} vCPU · {gib(vm.memory_mib)} GiB
+              </span>
+              <.badge
+                color={vm_color(vm.state)}
+                dot
+                pulse={vm.state in ~w(requested starting booted busy)}
+                size="sm"
+              >
+                {vm.state}{if vm.fail_reason, do: " · #{vm.fail_reason}"}
+              </.badge>
+            </li>
+            <li :if={@vms == []} class="px-5 py-3 text-ink-3">No VMs.</li>
+          </ul>
+        </.panel>
+
         <.panel id="inventory" title="Agent's inventory" padded={false}>
+          <:subtitle>What the agent last reported.</:subtitle>
           <%= if @inventory do %>
             <ul class="divide-y divide-line text-sm">
               <li :for={vm <- @inventory.vms} class="flex justify-between gap-3 px-5 py-2.5">

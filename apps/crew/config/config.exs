@@ -26,8 +26,15 @@ config :crew, Crew.Repo,
 # busy_timeout doesn't cover) if anything else wrote in between. Taking
 # the lock up front means writers queue instead, so give them longer than
 # the 2s default before an agent channel gives up and reconnects.
+#
+# exqlite applies busy_timeout after journal_mode and the other pragmas, so
+# a connection opened while another writes would fail to connect ("database
+# is locked") and be retried; as the first pragma it waits instead.
 if database == "sqlite" do
-  config :crew, Crew.Repo, default_transaction_mode: :immediate, busy_timeout: 15_000
+  config :crew, Crew.Repo,
+    default_transaction_mode: :immediate,
+    busy_timeout: 15_000,
+    custom_pragmas: [busy_timeout: 15_000]
 end
 
 config :crew, Oban,
@@ -47,7 +54,9 @@ config :crew, Oban,
        {"*/30 * * * *", Crew.Repos.AccessWorker},
        {"*/15 * * * *", Crew.Repos.SyncWorker},
        # §6.2: missed deliveries.
-       {"*/5 * * * *", Crew.GitHub.Redeliver}
+       {"*/5 * * * *", Crew.GitHub.Redeliver},
+       # §6.3: runners left behind.
+       {"*/10 * * * *", Crew.GitHub.RunnerGC}
      ]}
   ]
 
