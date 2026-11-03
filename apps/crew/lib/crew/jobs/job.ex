@@ -28,6 +28,7 @@ defmodule Crew.Jobs.Job do
     field :gh_state, :string
     field :gh_state_rank, :integer, default: 0
     field :blocked_reason, :string
+    field :wait_reason, :string
     field :conclusion, :string
     field :runner_name, :string
     field :vm_id, :binary_id

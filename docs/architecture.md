@@ -54,3 +54,39 @@ The other spikes are recorded here as they run.
   Firecracker share one TCP listener.
 - **The inventory** lists every live VM, then the most recently exited,
   within the protocol's 1,000; exited VMs' directories go after an hour.
+
+## Scheduler and VM lifecycle notes
+
+- **The plan is a pure function.** `Crew.Scheduler.Plan.plan/1` takes a
+  snapshot (plain maps, times in Unix milliseconds) and returns actions;
+  `Crew.Scheduler` builds the snapshot and applies them. The worked
+  example and the §23 properties run against the pure function.
+- **Passes** run in `Crew.Scheduler`'s process: once a second, and after
+  a `poke/0` (a VM changed state, an image became ready), no more than
+  every 200 ms. A pass that raises is logged and the next one runs.
+- **Wait reasons and blocked reasons are separate.** `blocked_reason` is
+  for jobs that aren't demand (no box of their arch, a stalled class, the
+  fork check); `wait_reason` is for jobs that are demand but waiting
+  ("no box with 4 vCPUs free", "booting a runner on m4"). The job page
+  shows the second as "Waiting · 12s · <reason>".
+- **The state machine is a pure function too.** `Crew.VMs.Machine`
+  covers every cell of §8.6's table; `Crew.VMs.Server` carries out its
+  effects. Each transition and its `vm_events` row are one transaction.
+- **A busy VM that exits goes straight through `finished` to
+  `destroyed`**: the same `vm.exited` is applied to `finished`, so a VM
+  that's gone doesn't hold its allocation through the finished timers.
+- **A failed or finished VM that never exits** (the agent never started
+  it, or lost it) asks its box for `box.inventory` every 60 s (5 s at
+  first when it was never acked). A VM the inventory doesn't list is
+  destroyed, per §8.6's inventory row. A `requested` VM's absence means
+  nothing: its `vm.start` may still be on the way.
+- **Timers** are recomputed from the stored timestamps when servers
+  start at boot; a VM still `requested` at boot fails as `cp_restart`.
+- **Job links** come from the webhook's `runner_name`, when it names one
+  of this deployment's runners (`crew-<deployment id>-…`). A job taken by
+  a runner booted for another class is flagged `taken_cross_class`.
+- **The fake GitHub** (`e2e/fake-github`) registers JIT runners and
+  assigns queued jobs to listening runners the way GitHub does (every
+  job label among the runner's, oldest first). The null driver's fake
+  guest long-polls it for a job, so the e2e suite runs real placements,
+  assignments, reaps and runner deletes.

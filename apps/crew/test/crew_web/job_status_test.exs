@@ -11,6 +11,7 @@ defmodule CrewWeb.JobStatusTest do
         classification: "ours",
         gh_state: "queued",
         blocked_reason: nil,
+        wait_reason: nil,
         unsatisfiable_reason: nil,
         conclusion: nil,
         runner_name: nil,
@@ -21,6 +22,13 @@ defmodule CrewWeb.JobStatusTest do
       },
       Map.new(attrs)
     )
+  end
+
+  test "a queued job shows why it waits, and what Crew is doing about it" do
+    assert %{label: "Waiting · 1m 12s", reason: "booting a runner on m4"} =
+             JobStatus.of(job(wait_reason: "booting a runner on m4"), @now)
+
+    assert %{label: "Waiting · 1m 12s", reason: nil} = JobStatus.of(job(wait_reason: nil), @now)
   end
 
   test "the vocabulary of §17.4" do

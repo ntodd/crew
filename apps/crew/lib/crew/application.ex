@@ -24,6 +24,7 @@ defmodule Crew.Application do
         Crew.GitHub.Budget,
         Crew.GitHub.InstallationTokens,
         {Oban, Application.fetch_env!(:crew, Oban)},
+        Crew.VMs,
         Crew.Setup,
         CrewWeb.Endpoint
       ] ++ background()
@@ -51,9 +52,18 @@ defmodule Crew.Application do
          port: Application.get_env(:crew, :hook_port, 4001),
          thousand_island_options: [num_acceptors: 10]},
         Crew.Reconciler.Ticker,
-        Crew.Jobs.Watcher
+        Crew.Jobs.Watcher,
+        %{id: :boot_vms, start: {Task, :start_link, [&boot_vms/0]}, restart: :temporary},
+        Crew.Scheduler
       ]
     end
+  end
+
+  # A server for every VM that isn't destroyed (§8.6), and in development
+  # the null driver's placeholder images.
+  defp boot_vms do
+    if Crew.Config.dev?(), do: Crew.Images.register_dev_images()
+    Crew.VMs.boot_servers()
   end
 
   # Releases migrate on boot; in dev and test, mix does it.

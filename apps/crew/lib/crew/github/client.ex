@@ -391,6 +391,58 @@ defmodule Crew.GitHub.Client do
     )
   end
 
+  @doc """
+  A repo-level JIT runner (§6.3): `{:ok, %{runner_id, jit_config}}`. The
+  JIT config is a credential; callers keep it in memory only.
+  """
+  def generate_jit_config(installation_id, repo, name, labels) do
+    case installation_request(
+           installation_id,
+           :post,
+           "#{repo_path(repo)}/actions/runners/generate-jitconfig",
+           class: :essential,
+           kind: :jit,
+           endpoint: "/repos/{o}/{r}/actions/runners/generate-jitconfig",
+           json: %{name: name, runner_group_id: 1, labels: labels, work_folder: "_work"}
+         ) do
+      {:ok, %{status: 201, body: %{"runner" => %{"id" => id}, "encoded_jit_config" => jit}}} ->
+        {:ok, %{runner_id: id, jit_config: jit}}
+
+      other ->
+        unexpected(other)
+    end
+  end
+
+  @doc """
+  Deletes a runner (§6.3): `:gone` on 204 or 404, `:busy` on 422 (it has
+  a job), an error otherwise.
+  """
+  def delete_runner(installation_id, repo, runner_id) do
+    case installation_request(
+           installation_id,
+           :delete,
+           "#{repo_path(repo)}/actions/runners/#{runner_id}",
+           class: :essential,
+           kind: :delete,
+           endpoint: "/repos/{o}/{r}/actions/runners/{id}"
+         ) do
+      {:ok, %{status: status}} when status in [204, 404] -> {:ok, :gone}
+      {:ok, %{status: 422}} -> {:ok, :busy}
+      other -> unexpected(other)
+    end
+  end
+
+  @doc "A repo's self-hosted runners (for GC, §6.3)."
+  def list_runners(installation_id, repo, opts \\ []) do
+    get_pages(
+      installation_id,
+      "#{repo_path(repo)}/actions/runners",
+      "/repos/{o}/{r}/actions/runners",
+      "runners",
+      Keyword.put_new(opts, :class, :normal)
+    )
+  end
+
   @doc "Cancels a run (fork refusal, §19.5; or a person's Cancel)."
   def cancel_run(installation_id, repo, run_id, opts \\ []) do
     case installation_request(

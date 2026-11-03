@@ -52,6 +52,9 @@ defmodule CrewAgent.VMTest do
 
     assert [%{vm_id: ^vm_id, alive: false, exited: %{reason: "poweroff"}}] =
              Enum.filter(VMs.inventory(), &(&1.vm_id == vm_id))
+
+    # box.metrics' vms_running counts VMs that run, not servers holding logs.
+    assert VMs.running_count() == Enum.count(VMs.inventory(), & &1.alive)
   end
 
   test "vm.start is idempotent by vm_id" do

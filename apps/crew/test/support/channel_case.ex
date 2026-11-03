@@ -29,7 +29,8 @@ defmodule CrewWeb.ChannelCase do
 
   @doc "connect_info for a socket connect signed with `box`'s key."
   def signed_connect_info(box, opts \\ []) do
-    headers = CrewProtocol.Auth.connect_headers(box.id, box.__private_key__, opts)
+    key = Keyword.get_lazy(opts, :key, fn -> Crew.Fixtures.private_key(box.id) end)
+    headers = CrewProtocol.Auth.connect_headers(box.id, key, Keyword.delete(opts, :key))
 
     %{
       x_headers: Enum.to_list(headers),

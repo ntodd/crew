@@ -67,6 +67,28 @@ defmodule CrewWeb.BoxLiveTest do
     assert render(view) =~ "42.5"
   end
 
+  test "the box page lists its VMs and what they hold, live", %{conn: conn} do
+    box = box_fixture(name: "m4pro")
+    repo = repo_fixture(name: "web")
+    size = Crew.Repo.get_by!(Crew.Sizes.Size, name: "m")
+    {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+    assert has_element?(view, "#vms", "No VMs")
+    assert has_element?(view, "#allocation", "0 of")
+
+    [vm] =
+      Crew.VMs.create_placements([
+        %{class: {repo.id, ["crew-m"]}, box: box, size: size, image_id: nil}
+      ])
+
+    Phoenix.PubSub.broadcast(Crew.PubSub, "box:#{box.id}", {:box_changed, box.id})
+
+    assert render(view) =~ vm.name
+    assert has_element?(view, "#vm-#{vm.id}", "requested")
+    assert has_element?(view, "#vm-#{vm.id}", "acme/web")
+    assert has_element?(view, "#allocation", "4 of")
+    Crew.VMCase.stop_vm_servers()
+  end
+
   describe "adding a box" do
     test "makes a join token and shows the mac-vz steps", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/boxes/new")

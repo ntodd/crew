@@ -309,6 +309,61 @@ defmodule Crew.Boxes do
     changed(box)
   end
 
+  # -- VM outcomes (§8.6) --------------------------------------------------------
+
+  @quarantine_after 3
+  @quarantine_s 300
+
+  @doc """
+  A VM on the box failed before `idle` for a reason that counts against
+  the box. The third in a row quarantines it for 5 minutes.
+  """
+  def vm_failed(box_id) do
+    {_, [n]} =
+      Repo.update_all(from(b in Box, where: b.id == ^box_id, select: b.consecutive_failures),
+        inc: [consecutive_failures: 1]
+      )
+
+    if n >= @quarantine_after do
+      until = DateTime.add(DateTime.utc_now(), @quarantine_s, :second)
+
+      Repo.update_all(from(b in Box, where: b.id == ^box_id),
+        set: [quarantined_until: until, consecutive_failures: 0]
+      )
+
+      box = get!(box_id)
+
+      Activity.record(
+        "box_quarantined",
+        "#{box.name} failed #{n} VMs in a row; it gets no new VMs for 5 minutes",
+        box_id: box.id
+      )
+
+      changed(box)
+    end
+
+    :ok
+  end
+
+  @doc "A VM on the box reached `idle`: the failure count clears."
+  def vm_succeeded(box_id) do
+    Repo.update_all(from(b in Box, where: b.id == ^box_id and b.consecutive_failures != 0),
+      set: [consecutive_failures: 0]
+    )
+
+    :ok
+  end
+
+  @doc "A VM on the box took a job from `repo_id`, for placement ranking (§8.3)."
+  def ran_repo(box_id, repo_id) do
+    with %Box{} = box <- get(box_id) do
+      ran = Map.put(box.last_repo_ran_at || %{}, repo_id, System.system_time(:millisecond))
+      box |> Ecto.Changeset.change(last_repo_ran_at: ran) |> Repo.update!()
+    end
+
+    :ok
+  end
+
   # -- revoking ------------------------------------------------------------------
 
   @doc "Revokes a box: its key is deleted and its socket dropped at once."
@@ -322,6 +377,7 @@ defmodule Crew.Boxes do
       Audit.log(scope, "box.revoke", box)
       Activity.record("box_revoked", "#{box.name} was revoked", box_id: box.id)
       disconnect(box)
+      Crew.VMs.box_revoked(box.id)
       {:ok, changed(box)}
     else
       {:error, :unauthorized}

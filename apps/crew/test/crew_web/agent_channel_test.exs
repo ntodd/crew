@@ -28,11 +28,17 @@ defmodule CrewWeb.AgentChannelTest do
                  connect_info: signed_connect_info(box, now: System.os_time(:second) - 120)
                )
 
-      impostor = %{box | __private_key__: elem(Auth.generate_keypair(), 1)}
-      assert :error = connect(AgentSocket, %{}, connect_info: signed_connect_info(impostor))
+      other_key = elem(Auth.generate_keypair(), 1)
+
+      assert :error =
+               connect(AgentSocket, %{}, connect_info: signed_connect_info(box, key: other_key))
 
       stranger = %{box | id: CrewProtocol.uuid7()}
-      assert :error = connect(AgentSocket, %{}, connect_info: signed_connect_info(stranger))
+
+      assert :error =
+               connect(AgentSocket, %{},
+                 connect_info: signed_connect_info(stranger, key: private_key(box.id))
+               )
 
       {:ok, _} = Boxes.revoke(Scope.for_user(user_fixture(role: "admin")), Repo.reload!(box))
       assert :error = connect(AgentSocket, %{}, connect_info: signed_connect_info(box))
