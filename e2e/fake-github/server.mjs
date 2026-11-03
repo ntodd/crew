@@ -33,6 +33,7 @@ const fresh = () => ({
   deliveries: [],      // {id, guid, event, action, status_code, delivered_at, redelivery, payload}
   dropNext: 0,         // fail this many outgoing deliveries (as if Crew were down)
   cancelled: [],       // run ids
+  runners: [],         // {id, name, labels, repo_id, busy, job_id, listening}
   requests: [],        // every API call, for assertions
 })
 
@@ -294,6 +295,83 @@ route("POST", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)\/cancel$/, async
   send(res, 202, {})
 })
 
+// -- self-hosted runners (JIT) -----------------------------------------------------------
+//
+// A JIT config here is base64 JSON: ".runner" is what crew-guest checks
+// (DisableUpdate), and "fake" tells the null driver's fake guest where to
+// ask for a job. GitHub gives a runner any queued job of its repo whose
+// labels are all among the runner's; the fake does the same, oldest first.
+
+const runnerJson = r => ({ id: r.id, name: r.name, os: "linux", status: r.listening ? "online" : "offline", busy: r.busy,
+  labels: r.labels.map(name => ({ id: 1, name, type: "custom" })) })
+
+route("POST", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runners\/generate-jitconfig$/, async (req, res, url, [, o, r]) => {
+  const repo = repoByName(o, r)
+  const b = await readBody(req)
+  if (!repo) return send(res, 404, { message: "Not Found" })
+  if (state.runners.some(x => x.name === b.name)) return send(res, 409, { message: "Already exists - A runner with the name already exists." })
+  const runner = { id: id(), name: b.name, labels: b.labels || [], repo_id: repo.id, busy: false, job_id: null, listening: false }
+  state.runners.push(runner)
+  const inner = Buffer.from(JSON.stringify({ AgentName: b.name, DisableUpdate: true })).toString("base64")
+  const jit = Buffer.from(JSON.stringify({ ".runner": inner, fake: { name: b.name, api: self } })).toString("base64")
+  send(res, 201, { runner: runnerJson(runner), encoded_jit_config: jit })
+})
+
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runners$/, (req, res, url, [, o, r]) => {
+  const repo = repoByName(o, r)
+  const runners = state.runners.filter(x => repo && x.repo_id === repo.id).map(runnerJson)
+  send(res, 200, { total_count: runners.length, runners })
+})
+
+route("DELETE", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runners\/(\d+)$/, (req, res, url, [, o, r, rid]) => {
+  const runner = state.runners.find(x => x.id === Number(rid))
+  if (!runner) return send(res, 404, { message: "Not Found" })
+  if (runner.busy) return send(res, 422, { message: "Bad request - Runner \"" + runner.name + "\" is still running a job\"" })
+  state.runners = state.runners.filter(x => x !== runner)
+  res.writeHead(204)
+  res.end()
+})
+
+async function assign(runner) {
+  const queued = state.jobs
+    .filter(j => j.status === "queued" && !j.hold)
+    .filter(j => { const run = state.runs.find(x => x.id === j.run_id && x.run_attempt === j.run_attempt); return run && run.repo_id === runner.repo_id })
+    .filter(j => j.labels.every(l => runner.labels.includes(l)))
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id)
+  const job = queued[0]
+  if (!job) return null
+  runner.busy = true
+  runner.job_id = job.id
+  await moveJob(job, { status: "in_progress", runner_name: runner.name, runner_id: runner.id })
+  return job
+}
+
+// The fake guest's long poll: a job for this runner, or 204 after `wait` s.
+route("GET", /^\/__fake\/runners\/([^/]+)\/job$/, async (req, res, url, [, name]) => {
+  const until = Date.now() + 1000 * Number(url.searchParams.get("wait") || 20)
+  for (;;) {
+    const runner = state.runners.find(x => x.name === name)
+    if (!runner) return send(res, 410, { message: "runner deleted" })
+    runner.listening = true
+    if (runner.job_id) return send(res, 200, jobJson(state.jobs.find(j => j.id === runner.job_id)))
+    const job = await assign(runner)
+    if (job) return send(res, 200, { ...jobJson(job), seconds: job.seconds ?? null, exit: job.exit ?? 0 })
+    if (Date.now() > until) { res.writeHead(204); return res.end() }
+    await new Promise(r => setTimeout(r, 100))
+  }
+})
+
+// The fake guest finished its job: completed, and the ephemeral runner goes.
+route("POST", /^\/__fake\/runners\/([^/]+)\/done$/, async (req, res, url, [, name]) => {
+  const b = await readBody(req)
+  const runner = state.runners.find(x => x.name === name)
+  if (!runner || !runner.job_id) return send(res, 404, { message: "no job" })
+  const job = state.jobs.find(j => j.id === runner.job_id)
+  state.runners = state.runners.filter(x => x !== runner)
+  await moveJob(job, { status: "completed", conclusion: b.conclusion || "success" })
+  send(res, 200, jobJson(job))
+})
+
 // -- webhook deliveries ----------------------------------------------------------------
 
 async function deliver(event, payload, { guid = randomUUID(), redelivery = false } = {}) {
@@ -380,6 +458,7 @@ route("POST", /^\/__fake\/runs$/, async (req, res) => {
       id: id(), run_id: run.id, run_attempt: run.run_attempt, name: j.name, workflow_name: run.name, labels: j.labels,
       status: "queued", conclusion: null, created_at: now, started_at: now, completed_at: null, runner_name: null,
       runner_id: null, head_branch: run.head_branch, head_sha: run.head_sha,
+      seconds: j.seconds, exit: j.exit, hold: j.hold || false,
     }
     state.jobs.push(job)
     return job
@@ -393,6 +472,10 @@ route("POST", /^\/__fake\/jobs\/(\d+)$/, async (req, res, url, [, jid]) => {
   const b = await readBody(req)
   const job = state.jobs.find(j => j.id === Number(jid))
   if (!job) return send(res, 404, { message: "no job" })
+  send(res, 200, jobJson(await moveJob(job, b)))
+})
+
+async function moveJob(job, b) {
   Object.assign(job, b)
   if (b.status === "in_progress") job.started_at = new Date().toISOString()
   if (b.status === "completed") job.completed_at = new Date().toISOString()
@@ -406,8 +489,8 @@ route("POST", /^\/__fake\/jobs\/(\d+)$/, async (req, res, url, [, jid]) => {
   run.updated_at = new Date().toISOString()
   await deliver("workflow_job", withContext(repo, { action: job.status, workflow_job: jobJson(job) }))
   if (["in_progress", "completed"].includes(run.status)) await deliver("workflow_run", withContext(repo, { action: run.status, workflow_run: runJson(run) }))
-  send(res, 200, jobJson(job))
-})
+  return job
+}
 
 route("POST", /^\/__fake\/drop$/, async (req, res) => {
   state.dropNext = (await readBody(req)).count || 1

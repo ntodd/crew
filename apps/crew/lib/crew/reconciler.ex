@@ -8,6 +8,8 @@ defmodule Crew.Reconciler do
     run attempt, never per job. A check is skipped while webhooks for
     the repo arrived within the last 5 minutes and the job itself had one
     within its check interval.
+  - **Busy VMs** whose job has had no event for 15 minutes are checked
+    the same way, then every 5 minutes.
   - **Missed jobs:** every 5 minutes, each enabled repo with Crew jobs in
     the last 7 days has its queued and in-progress runs listed, and any
     job Crew doesn't know is added.
@@ -33,6 +35,7 @@ defmodule Crew.Reconciler do
   alias Crew.Repos.Repo, as: GitRepo
 
   @first_check_s 90
+  @busy_quiet_s 900
   @recheck_s 300
   @webhook_quiet_s 300
   @sweep_s 300
@@ -63,15 +66,31 @@ defmodule Crew.Reconciler do
           preload: [repo: {r, :installation}]
       )
 
-    candidates
+    (candidates ++ quiet_busy_jobs(now))
     |> Enum.filter(&due?(&1, now))
     |> Enum.reject(&skip?(&1, now))
+    |> Enum.uniq_by(& &1.id)
     |> Enum.group_by(&{&1.repo_id, &1.github_run_id, &1.run_attempt})
     |> Enum.each(fn {{_, run_id, attempt}, jobs} ->
       recheck(hd(jobs).repo, run_id, attempt, jobs, now)
     end)
 
     :ok
+  end
+
+  # Busy VMs whose job has had no event for 15 minutes (§8.8): the job
+  # may have finished with its webhook lost.
+  defp quiet_busy_jobs(now) do
+    cutoff = DateTime.add(now, -@busy_quiet_s)
+
+    Repo.all(
+      from j in Job,
+        join: v in Crew.VMs.VM,
+        on: v.job_id == j.id and v.state == "busy",
+        join: r in assoc(j, :repo),
+        where: j.gh_state == "in_progress" and j.last_event_at <= ^cutoff,
+        preload: [repo: {r, :installation}]
+    )
   end
 
   defp due?(%Job{checked_at: nil}, _now), do: true

@@ -21,7 +21,7 @@ defmodule Crew.GitHub.APITest do
     :ok
   end
 
-  defp token_route(test_pid, token \\ "ghs_one", expires_in \\ 3600) do
+  defp token_route(test_pid, token, expires_in) do
     %{
       {"POST", "/app/installations/77/access_tokens"} => fn conn ->
         send(test_pid, :token_issued)

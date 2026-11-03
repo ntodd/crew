@@ -133,6 +133,103 @@ defmodule Crew.ReconcilerTest do
     end
   end
 
+  describe "busy VMs (§8.8)" do
+    setup %{repo: repo} do
+      box = box_fixture(name: "m4")
+      size = Repo.get_by!(Crew.Sizes.Size, name: "m")
+      %{box: box, size: size, repo: repo}
+    end
+
+    defp busy_vm(box, repo, size, job) do
+      id = CrewProtocol.uuid7()
+
+      Repo.insert!(%Crew.VMs.VM{
+        id: id,
+        box_id: box.id,
+        name: CrewProtocol.Names.runner_name("abcd", box.name, id),
+        repo_id: repo.id,
+        class_key: ["crew-m"],
+        class_hash: Crew.VMs.VM.class_hash(["crew-m"]),
+        size_id: size.id,
+        vcpus: 4,
+        memory_mib: 8192,
+        disk_gib: 60,
+        state: "busy",
+        job_id: job.id,
+        deadline: DateTime.add(DateTime.utc_now(), 3600),
+        requested_at: DateTime.utc_now()
+      })
+    end
+
+    test "a busy VM's job with no event for 15 minutes is re-checked", %{
+      repo: repo,
+      inst: inst,
+      box: box,
+      size: size
+    } do
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: 70, run_id: 60, status: "in_progress")
+        )
+
+      busy_vm(box, repo, size, job)
+      age_job(job, 16 * 60)
+      pid = self()
+
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/60/attempts/1/jobs"} => fn conn ->
+            send(pid, :listed)
+
+            GitHubStub.json(conn, 200, %{
+              "jobs" => [
+                %{
+                  workflow_job_payload(repo, id: 70, run_id: 60)["workflow_job"]
+                  | "status" => "completed",
+                    "conclusion" => "success"
+                }
+              ]
+            })
+          end
+        })
+      )
+
+      assert :ok = Reconciler.check_queued()
+      assert_received :listed
+      assert Jobs.get_job!(job.id).gh_state == "completed"
+    end
+
+    test "a busy VM's job with a recent event, or checked lately, is left alone", %{
+      repo: repo,
+      box: box,
+      size: size
+    } do
+      {:ok, fresh} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: 71, run_id: 61, status: "in_progress")
+        )
+
+      busy_vm(box, repo, size, fresh)
+      age_job(fresh, 10 * 60)
+
+      {:ok, checked} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: 72, run_id: 62, status: "in_progress")
+        )
+
+      busy_vm(box, repo, size, checked)
+      checked = age_job(checked, 20 * 60)
+
+      Repo.update!(
+        Ecto.Changeset.change(checked, checked_at: DateTime.add(DateTime.utc_now(), -60))
+      )
+
+      GitHubStub.stub(%{})
+      assert :ok = Reconciler.check_queued()
+      assert Jobs.get_job!(fresh.id).checked_at == nil
+    end
+  end
+
   describe "missed jobs" do
     test "the sweep lists a repo's queued and in-progress runs and adds jobs Crew doesn't know",
          %{repo: repo, inst: inst} do

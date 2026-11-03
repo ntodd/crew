@@ -110,7 +110,8 @@ defmodule CrewAgent.VMs do
     :ok
   end
 
-  def running_count, do: DynamicSupervisor.count_children(@sup).active
+  @doc "VMs whose VMM is running: a VM that exited keeps its server while its logs drain."
+  def running_count, do: Enum.count(vm_ids(), &(VM.whereis(&1) != nil and not exited?(&1)))
 
   # box.inventory carries at most this many VMs (CrewProtocol.Event).
   @inventory_max 1000

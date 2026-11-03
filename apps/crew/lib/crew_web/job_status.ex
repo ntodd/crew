@@ -84,7 +84,7 @@ defmodule CrewWeb.JobStatus do
         "queued",
         "hero-clock",
         "Waiting · " <> format(duration(job.queued_at || job.seen_at, now)),
-        nil,
+        Map.get(job, :wait_reason),
         :muted
       )
 

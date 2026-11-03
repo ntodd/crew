@@ -276,24 +276,47 @@ defmodule CrewWeb.CrewComponents do
   def job_bar(assigns) do
     now = assigns.now || DateTime.utc_now()
 
-    assigns =
-      assign(assigns, :statuses, Enum.map(assigns.jobs, &{&1, CrewWeb.JobStatus.of(&1, now)}))
+    statuses = Enum.map(assigns.jobs, &{&1, CrewWeb.JobStatus.of(&1, now)})
+    assigns = assign(assigns, statuses: statuses, groups: groups(statuses))
 
     ~H"""
-    <span class="flex h-2 w-28 gap-0.5" role="img" aria-label={bar_label(@statuses)}>
-      <span
-        :for={{job, status} <- @statuses}
-        data-job-state={status.state}
-        title={"#{job.name}: #{status.label}"}
-        class={["h-full min-w-1 flex-1 rounded-sm", segment(status.state)]}
-      ></span>
+    <span class="flex h-2 w-28 gap-0.5 overflow-hidden" role="img" aria-label={bar_label(@statuses)}>
+      <%= if @groups do %>
+        <span
+          :for={{state, n} <- @groups}
+          data-job-state={state}
+          data-count={n}
+          title={"#{n} #{String.replace(state, "_", " ")}"}
+          style={"flex-grow: #{n}"}
+          class={["h-full min-w-1 basis-0 rounded-sm", segment(state)]}
+        ></span>
+      <% else %>
+        <span
+          :for={{job, status} <- @statuses}
+          data-job-state={status.state}
+          title={"#{job.name}: #{status.label}"}
+          class={["h-full min-w-1 flex-1 rounded-sm", segment(status.state)]}
+        ></span>
+      <% end %>
     </span>
     """
   end
 
+  # Past 16 jobs a segment each doesn't fit: one segment per state,
+  # sized by its count, in the order a run moves through them.
+  @bar_order ~w(success failure refused running blocked unsatisfiable queued)
+  defp groups(statuses) when length(statuses) > 16, do: by_state(statuses)
+  defp groups(_statuses), do: nil
+
+  defp by_state(statuses) do
+    counts = Enum.frequencies_by(statuses, fn {_, s} -> s.state end)
+    known = for state <- @bar_order, n = counts[state], do: {state, n}
+    known ++ Enum.sort(Map.drop(counts, @bar_order))
+  end
+
   defp bar_label(statuses) do
     statuses
-    |> Enum.frequencies_by(fn {_, s} -> s.state end)
+    |> by_state()
     |> Enum.map_join(", ", fn {state, n} -> "#{n} #{String.replace(state, "_", " ")}" end)
   end
 
