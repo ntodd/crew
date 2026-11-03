@@ -44,6 +44,13 @@ if config_env() != :test do
     vz_host_reserve_vcpus: int.("CREW_VZ_HOST_RESERVE_VCPUS", 2),
     vz_host_reserve_mib: int.("CREW_VZ_HOST_RESERVE_MIB", 8192),
     vz_vm_area_gib: int.("CREW_VZ_VM_AREA_GIB", 400),
+    vz_cache_addr: System.get_env("CREW_VZ_CACHE_ADDR"),
+    vz_dns_fallback: System.get_env("CREW_VZ_DNS_FALLBACK"),
+    vz_mtu: int.("CREW_VZ_MTU", 1500),
+    crew_vz_bin: System.get_env("CREW_VZ_BIN", "crew-vz"),
+    # Development: image.prepare clones kernel and rootfs.ext4 from here
+    # instead of downloading (the download comes with the guest image).
+    dev_image_dir: if(dev, do: System.get_env("CREW_DEV_IMAGE_DIR")),
     cache_mgmt_url: System.get_env("CREW_CACHE_MGMT_URL"),
     cache_mgmt_token: System.get_env("CREW_CACHE_MGMT_TOKEN"),
     release_public_key: System.get_env("CREW_RELEASE_PUBLIC_KEY"),

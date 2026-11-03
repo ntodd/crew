@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- crew-vzd (§11.4): owns every job VM's helper. Helpers run in their own
+     sessions and must outlive this job, so launchd mustn't kill the
+     process group when it stops. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.crew.vzd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PREFIX__/bin/crew-vz</string>
+    <string>daemon</string>
+    <string>--socket</string>
+    <string>__DATA__/run/vzd.sock</string>
+    <string>--data-dir</string>
+    <string>__DATA__</string>
+    <string>--socket-group</string>
+    <string>__GID__</string>
+__SANDBOX__  </array>
+  <key>UserName</key>
+  <string>_crewvm</string>
+  <key>GroupName</key>
+  <string>crewvm</string>
+  <key>Umask</key>
+  <integer>7</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>AbandonProcessGroup</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardErrorPath</key>
+  <string>__DATA__/logs/vzd.log</string>
+</dict>
+</plist>
