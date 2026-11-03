@@ -14,6 +14,10 @@ else
     show_sensitive_data_on_connection_error: true
 end
 
+# Queries are logged only when asked for: the agent's metrics every 5 s
+# drown everything else.
+config :crew, Crew.Repo, log: if(System.get_env("CREW_SQL_LOG"), do: :debug, else: false)
+
 config :crew, CrewWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}],
   check_origin: false,

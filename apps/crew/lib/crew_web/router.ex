@@ -52,6 +52,29 @@ defmodule CrewWeb.Router do
     get "/setup/github/installed", SetupController, :installed
   end
 
+  # Agents enroll with a join token. Everything after that is the signed
+  # socket.
+  scope "/", CrewWeb do
+    pipe_through :api
+
+    post "/api/agents/enroll", AgentController, :enroll
+  end
+
+  # Admin pages outside /admin. Before the signed-in scope, so
+  # /boxes/new isn't taken for a box id.
+  scope "/", CrewWeb do
+    pipe_through [:browser, :admin]
+
+    live_session :admin_actions,
+      on_mount: [
+        {CrewWeb.StaleAssets, :reload},
+        {CrewWeb.UserAuth, :require_user},
+        {CrewWeb.UserAuth, :require_admin}
+      ] do
+      live "/boxes/new", BoxLive.New, :new
+    end
+  end
+
   scope "/", CrewWeb do
     pipe_through [:browser, :signed_in]
 
@@ -62,6 +85,8 @@ defmodule CrewWeb.Router do
       live "/runs/:run_id/attempts/:n", RunLive.Show, :show
       live "/repos", RepoLive.Index, :index
       live "/repos/:id", RepoLive.Show, :show
+      live "/boxes", BoxLive.Index, :index
+      live "/boxes/:id", BoxLive.Show, :show
     end
   end
 
