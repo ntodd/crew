@@ -1,0 +1,8 @@
+this is not a worker log
+[not a header
+[2026-11-03 10:15:00Z INFO Worker] Job message:
+ { "steps": [ {"id": "7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13", "displayNameToken": "Truncated
+[2026-11-03 10:15:01Z INFO JobServerQueue] Timeline record update: {"id": "not-a-guid", "state": "completed"}
+[2026-11-03 10:15:01Z INFO JobServerQueue] Timeline record update: {"id": "7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13", "state":
+[2026-11-03 10:15:02Z INFO Worker] {"id": "7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13", "other": true}
+����

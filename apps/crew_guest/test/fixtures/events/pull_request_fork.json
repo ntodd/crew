@@ -1,0 +1,36 @@
+{
+  "action": "synchronize",
+  "number": 42,
+  "pull_request": {
+    "number": 42,
+    "head": {
+      "label": "someone:patch-1",
+      "ref": "patch-1",
+      "sha": "0123456789abcdef0123456789abcdef01234567",
+      "repo": {
+        "id": 2002,
+        "name": "crew",
+        "full_name": "someone/crew",
+        "fork": true
+      }
+    },
+    "base": {
+      "label": "ntodd:main",
+      "ref": "main",
+      "repo": {
+        "id": 1001,
+        "name": "crew",
+        "full_name": "ntodd/crew",
+        "fork": false
+      }
+    }
+  },
+  "repository": {
+    "id": 1001,
+    "name": "crew",
+    "full_name": "ntodd/crew"
+  },
+  "sender": {
+    "login": "someone"
+  }
+}

@@ -1,0 +1,56 @@
+#!/bin/sh
+# Crew's job-started hook (§19.5). The runner runs it as
+# ACTIONS_RUNNER_HOOK_JOB_STARTED before any job code, and fails the job if
+# it exits non-zero.
+#
+# For a pull request event, when the repo's policy is to refuse fork PRs,
+# it refuses the job unless the PR's head repo is the repo itself: it says
+# so, reports job_refused to the guest API and exits 1.
+#
+# It fails closed: a missing or unreadable policy counts as "refuse", and a
+# missing or unreadable event payload as a fork.
+#
+# crew-guest writes what it reads to the run dir before it starts the
+# runner: policy.json ({"fork_prs": "refuse" | "allow", ...}) and guest.env
+# (CREW_API and CREW_TOKEN, 0600, the runner's). The run dir is a fixed
+# path, not an environment variable, because a fork's workflow sets the
+# job's environment. $1 overrides it for tests; the runner passes none.
+set -u
+
+run_dir=${1:-/run/crew}
+
+case ${GITHUB_EVENT_NAME:-} in
+  pull_request | pull_request_target | pull_request_review | pull_request_review_comment) ;;
+  *) exit 0 ;;
+esac
+
+policy=$(jq -r '.fork_prs' "$run_dir/policy.json" 2>/dev/null) || policy=refuse
+if [ "$policy" = allow ]; then
+  exit 0
+fi
+
+# The PR comes from the repo itself: its head repo is there and has the
+# repo's full name.
+if jq -e '
+  (.repository.full_name | type == "string" and length > 0)
+  and (.pull_request.head.repo | type == "object")
+  and .pull_request.head.repo.full_name == .repository.full_name
+' "${GITHUB_EVENT_PATH:-/nonexistent}" >/dev/null 2>&1; then
+  exit 0
+fi
+
+echo "Crew: fork PRs are refused on this repo"
+
+# Best effort: it's the exit status that refuses the job.
+if [ -r "$run_dir/guest.env" ]; then
+  # shellcheck source=/dev/null
+  . "$run_dir/guest.env"
+  at=$(($(date +%s) * 1000))
+  curl -sS -o /dev/null -m 5 -X POST \
+    -H "Authorization: Bearer ${CREW_TOKEN:-}" \
+    -H "Content-Type: application/json" \
+    --data "{\"state\":\"job_refused\",\"at\":$at,\"detail\":\"fork_pr\"}" \
+    "${CREW_API:-http://10.199.0.1:7777}/v1/state" >/dev/null 2>&1 || true
+fi
+
+exit 1

@@ -1,0 +1,94 @@
+#!/bin/sh
+# A stand-in for actions/runner's run.sh, for crew-guest's tests and the
+# null driver (§11.5). It prints what the real runner prints at the points
+# crew-guest watches, writes a worker log and log pages under _diag the
+# way the runner does (pages roll over, and finished ones get deleted),
+# and exits with a chosen code.
+#
+#   stub-runner --jitconfig <config>
+#
+# Environment:
+#   STUB_EXIT=<n>           exit code (default 0)
+#   STUB_HANG=1             after the job's steps, wait for SIGTERM (exit 143)
+#   STUB_WORKER_LOG=<file>  a worker log to copy to _diag/Worker_<time>-utc.log
+#   STUB_JIT_OUT=<file>     write the JIT config it was given here
+#   STUB_DELAY=<seconds>    pause between phases (default 0.2)
+#   STUB_DIR=<dir>          the runner dir (default: the current directory)
+set -eu
+
+jit=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --jitconfig) jit=${2:-}; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+if [ -z "$jit" ]; then
+  echo "stub-runner: no --jitconfig" >&2
+  exit 64
+fi
+
+if [ -n "${STUB_JIT_OUT:-}" ]; then
+  printf '%s' "$jit" > "$STUB_JIT_OUT"
+fi
+
+dir=${STUB_DIR:-$(pwd)}
+pages=$dir/_diag/pages
+delay=${STUB_DELAY:-0.2}
+timeline=4a3b2c1d-0000-4000-8000-000000000001
+setup=6c5d4e3f-2222-4222-8222-000000000001
+checkout=7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13
+tests=8e2d3b1f-6c9e-4d4f-8b2a-3e5f7c9d1b24
+mkdir -p "$pages"
+
+stamp() { date -u '+%Y-%m-%d %H:%M:%SZ'; }
+
+# Appends a page line: <UTC ISO-8601 timestamp> <message>
+line() { printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%S.0000000Z')" "$2" >> "$1"; }
+
+echo
+echo "√ Connected to GitHub"
+echo
+echo "Current runner version: '2.329.0'"
+echo "$(stamp): Listening for Jobs"
+sleep "$delay"
+echo "$(stamp): Running job: build"
+
+if [ -n "${STUB_WORKER_LOG:-}" ]; then
+  cp "$STUB_WORKER_LOG" "$dir/_diag/Worker_$(date -u +%Y%m%d-%H%M%S)-utc.log"
+fi
+
+# Set up job: a page that starts with a BOM, as .NET's StreamWriter writes.
+setup_page=$pages/${timeline}_${setup}_1.log
+printf '\357\273\277' > "$setup_page"
+line "$setup_page" "Current runner version: '2.329.0'"
+line "$setup_page" "Runner name: 'crew-stub'"
+sleep "$delay"
+
+checkout_page=$pages/${timeline}_${checkout}_1.log
+line "$checkout_page" "##[group]Run actions/checkout@v4"
+line "$checkout_page" "Syncing repository: ntodd/crew"
+line "$checkout_page" "##[endgroup]"
+# The uploader deletes a page once it's finished.
+rm -f "$setup_page"
+sleep "$delay"
+
+# The tests step rolls over to a second page.
+tests_page=$pages/${timeline}_${tests}_1.log
+line "$tests_page" "##[group]Run make test"
+line "$tests_page" "ok 1 - first"
+sleep "$delay"
+tests_page2=$pages/${timeline}_${tests}_2.log
+line "$tests_page2" "ok 2 - second"
+rm -f "$checkout_page" "$tests_page"
+
+if [ "${STUB_HANG:-}" = 1 ]; then
+  trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; exit 143' TERM
+  while :; do sleep 0.1; done
+fi
+
+line "$tests_page2" "Process completed with exit code ${STUB_EXIT:-0}."
+sleep "$delay"
+echo "$(stamp): Job build completed with result: Succeeded"
+exit "${STUB_EXIT:-0}"

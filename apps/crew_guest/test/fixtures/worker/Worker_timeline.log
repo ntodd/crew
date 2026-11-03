@@ -1,0 +1,30 @@
+[2026-11-03 10:15:00Z INFO Worker] Version: 2.329.0
+[2026-11-03 10:15:01Z INFO JobServerQueue] Timeline record update: {"id":"5b4c3d2e-1111-4111-8111-000000000000","parentId":null,"type":"Job","name":"build","startTime":"2026-11-03T10:15:00.5000000Z","finishTime":null,"state":"inProgress","result":null,"order":1,"refName":"build"}
+[2026-11-03 10:15:01Z INFO JobServerQueue] Timeline record update: {"id":"6c5d4e3f-2222-4222-8222-000000000001","parentId":"5b4c3d2e-1111-4111-8111-000000000000","type":"Task","name":"Set up job","startTime":"2026-11-03T10:15:01.0000000Z","finishTime":null,"currentOperation":null,"percentComplete":null,"state":"inProgress","result":null,"resultCode":null,"changeId":2,"lastModified":"0001-01-01T00:00:00","workerName":"crew-ab12-box-0001","order":1,"refName":"JobExtension_Init","log":null,"details":null,"errorCount":0,"warningCount":0,"noticeCount":0,"issues":[],"variables":{},"location":null,"previousAttempts":[],"attempt":1,"identifier":null}
+[2026-11-03 10:15:02Z INFO JobServerQueue] Timeline record update: {"id":"6c5d4e3f-2222-4222-8222-000000000001","type":"Task","name":"Set up job","startTime":"2026-11-03T10:15:01.0000000Z","finishTime":"2026-11-03T10:15:02.0000000Z","state":"completed","result":"succeeded","order":1}
+[2026-11-03 10:15:02Z INFO JobServerQueue] Timeline records:
+ [
+  {
+    "id": "7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13",
+    "type": "Task",
+    "name": "Run actions/checkout@v4",
+    "startTime": "2026-11-03T10:15:02.0000000Z",
+    "finishTime": null,
+    "state": "inProgress",
+    "result": null,
+    "order": 2
+  },
+  {
+    "id": "8e2d3b1f-6c9e-4d4f-8b2a-3e5f7c9d1b24",
+    "type": "Task",
+    "name": "Run tests",
+    "startTime": null,
+    "finishTime": null,
+    "state": "pending",
+    "result": null,
+    "order": 3
+  }
+ ]
+[2026-11-03 10:15:04Z INFO JobServerQueue] Timeline record update: {"id":"7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13","name":"Run actions/checkout@v4","finishTime":"2026-11-03T10:15:04.0000000Z","state":"completed","result":"succeeded","order":2}
+[2026-11-03 10:15:05Z INFO JobServerQueue] Timeline record update: {"id":"8e2d3b1f-6c9e-4d4f-8b2a-3e5f7c9d1b24","name":"Run tests","startTime":"2026-11-03T10:15:05.0000000Z","state":"inProgress","order":3}
+[2026-11-03 10:15:09Z INFO JobServerQueue] Timeline record update: {"id":"8e2d3b1f-6c9e-4d4f-8b2a-3e5f7c9d1b24","name":"Run tests","finishTime":"2026-11-03T10:15:09.0000000Z","state":"completed","result":"canceled","order":3}

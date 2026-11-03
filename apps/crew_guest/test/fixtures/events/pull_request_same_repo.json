@@ -1,0 +1,36 @@
+{
+  "action": "opened",
+  "number": 43,
+  "pull_request": {
+    "number": 43,
+    "head": {
+      "label": "ntodd:feature",
+      "ref": "feature",
+      "sha": "89abcdef0123456789abcdef0123456789abcdef",
+      "repo": {
+        "id": 1001,
+        "name": "crew",
+        "full_name": "ntodd/crew",
+        "fork": false
+      }
+    },
+    "base": {
+      "label": "ntodd:main",
+      "ref": "main",
+      "repo": {
+        "id": 1001,
+        "name": "crew",
+        "full_name": "ntodd/crew",
+        "fork": false
+      }
+    }
+  },
+  "repository": {
+    "id": 1001,
+    "name": "crew",
+    "full_name": "ntodd/crew"
+  },
+  "sender": {
+    "login": "ntodd"
+  }
+}

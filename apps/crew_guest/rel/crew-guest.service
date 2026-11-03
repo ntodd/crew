@@ -1,0 +1,38 @@
+# crew-guest, the job VM's init service (docs/crew_spec.md §13.5). The guest
+# image installs it with the release at /opt/crew-guest, and enables it.
+[Unit]
+Description=Crew guest init: fetches the job's payload, runs the runner, reports back
+Documentation=https://github.com/ntodd/crew/blob/main/docs/crew_spec.md
+# crew-guest writes Docker's config and then starts it (docker.service and
+# containerd.service are installed disabled). Being ordered first means
+# nothing else can start Docker before the config is there.
+Before=containerd.service docker.service
+# Without crew-guest nobody watches the runner or reports: end the VM.
+FailureAction=poweroff
+
+[Service]
+# crew-guest sends READY=1 once Docker's config is written, just before it
+# starts Docker, which would otherwise wait on this unit. NotifyAccess=all
+# rather than main: the BEAM is exec'd by the release script, and a READY
+# from an unexpected pid must not leave systemd (and Docker) waiting. The
+# VM is single-tenant, so nothing else in it is worth guarding against.
+Type=notify
+NotifyAccess=all
+ExecStart=/opt/crew-guest/bin/crew_guest start
+Environment=CREW_GUEST_MODE=vm
+Environment=HOME=/root
+Environment=LANG=C.UTF-8
+# The payload fetch alone may take 60 s.
+TimeoutStartSec=180
+TimeoutStopSec=15
+Restart=no
+# The runner and the job are crew-guest's children and inherit this.
+LimitNOFILE=65536
+# Spare crew-guest from the OOM killer; the runner wrapper puts the job
+# back to 0.
+OOMScoreAdjust=-500
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

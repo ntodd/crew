@@ -1,0 +1,27 @@
+{
+  "action": "synchronize",
+  "number": 44,
+  "pull_request": {
+    "number": 44,
+    "head": {
+      "label": "unknown:patch-2",
+      "ref": "patch-2",
+      "sha": "fedcba9876543210fedcba9876543210fedcba98",
+      "repo": null
+    },
+    "base": {
+      "label": "ntodd:main",
+      "ref": "main",
+      "repo": {
+        "id": 1001,
+        "name": "crew",
+        "full_name": "ntodd/crew"
+      }
+    }
+  },
+  "repository": {
+    "id": 1001,
+    "name": "crew",
+    "full_name": "ntodd/crew"
+  }
+}

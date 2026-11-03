@@ -1,0 +1,154 @@
+[2026-11-03 10:15:00Z INFO HostContext] No proxy settings were found based on environmental variables (http_proxy/https_proxy/HTTP_PROXY/HTTPS_PROXY)
+[2026-11-03 10:15:00Z INFO HostContext] Well known directory 'Bin': '/home/runner/actions-runner/bin'
+[2026-11-03 10:15:00Z INFO HostContext] Well known directory 'Root': '/home/runner/actions-runner'
+[2026-11-03 10:15:00Z INFO Worker] Version: 2.329.0
+[2026-11-03 10:15:00Z INFO Worker] Commit: 6a1e1b5d2bcd7fbcc0b2b1f8d9f0e3c5a7b9d1e2
+[2026-11-03 10:15:00Z INFO Worker] Culture:
+[2026-11-03 10:15:00Z INFO Worker] UI Culture:
+[2026-11-03 10:15:00Z INFO Worker] Waiting to receive the job message from the channel.
+[2026-11-03 10:15:00Z INFO ProcessChannel] Receiving message of length 6182, with hash 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90'
+[2026-11-03 10:15:00Z INFO Worker] Message received.
+[2026-11-03 10:15:00Z INFO Worker] Job message:
+ {
+  "fileTable": [
+    ".github/workflows/ci.yml"
+  ],
+  "mask": [
+    {
+      "type": "regex",
+      "value": "***"
+    }
+  ],
+  "steps": [
+    {
+      "type": "action",
+      "reference": {
+        "type": "repository",
+        "name": "actions/checkout",
+        "ref": "v4",
+        "repositoryType": "GitHub",
+        "path": null
+      },
+      "contextName": "__actions_checkout",
+      "inputs": {
+        "type": 2,
+        "map": [
+          {
+            "Key": "repository",
+            "Value": "${{ github.repository }}"
+          }
+        ]
+      },
+      "condition": "success()",
+      "id": "7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13",
+      "name": "__actions_checkout"
+    },
+    {
+      "type": "action",
+      "reference": {
+        "type": "script"
+      },
+      "displayNameToken": "Run tests",
+      "contextName": "test",
+      "inputs": {
+        "type": 2,
+        "map": [
+          {
+            "Key": "script",
+            "Value": "make test"
+          }
+        ]
+      },
+      "condition": "success()",
+      "id": "8e2d3b1f-6c9e-4d4f-8b2a-3e5f7c9d1b24",
+      "name": "test"
+    }
+  ],
+  "variables": {
+    "system.github.token": {
+      "value": "***",
+      "isSecret": true
+    }
+  },
+  "messageType": "PipelineAgentJobRequest",
+  "plan": {
+    "scopeIdentifier": "00000000-0000-0000-0000-000000000000",
+    "planType": "actions",
+    "version": 1,
+    "planId": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+    "planGroup": null,
+    "artifactUri": null,
+    "artifactLocation": null,
+    "definition": null,
+    "owner": null
+  },
+  "timeline": {
+    "id": "4a3b2c1d-0000-4000-8000-000000000001",
+    "changeId": 1,
+    "location": null
+  },
+  "jobId": "5b4c3d2e-1111-4111-8111-000000000000",
+  "jobDisplayName": "build",
+  "jobName": "build",
+  "requestId": 0,
+  "lockedUntil": "0001-01-01T00:00:00"
+}
+[2026-11-03 10:15:00Z INFO JobRunner] Job ID 5b4c3d2e-1111-4111-8111-000000000000
+[2026-11-03 10:15:00Z INFO JobRunner] Starting the job execution context.
+[2026-11-03 10:15:01Z INFO JobExtension] Adding Run actions/checkout@v4.
+[2026-11-03 10:15:01Z INFO JobExtension] Adding Run tests.
+[2026-11-03 10:15:01Z INFO JobExtension] Total accessible running process: 0.
+[2026-11-03 10:15:02Z INFO StepsRunner] Processing step: DisplayName='Run actions/checkout@v4'
+[2026-11-03 10:15:02Z INFO StepsRunner] Evaluating: success()
+[2026-11-03 10:15:02Z INFO StepsRunner] Result: true
+[2026-11-03 10:15:02Z INFO StepsRunner] Starting the step.
+[2026-11-03 10:15:04Z INFO StepsRunner] Step result: Succeeded
+[2026-11-03 10:15:04Z INFO ExecutionContext] Publish step telemetry for current step {
+  "action": "actions/checkout",
+  "ref": "v4",
+  "type": "repository",
+  "hasRunsStep": false,
+  "hasUsesStep": false,
+  "isEmbedded": false,
+  "stage": "Main",
+  "stepId": "7f1c2a0e-5b8d-4c3e-9a1f-2d4e6b8c0a13",
+  "stepContextName": "__actions_checkout",
+  "result": "succeeded",
+  "errorMessages": [],
+  "executionTimeInSeconds": 2,
+  "startTime": "2026-11-03T10:15:02.1234567Z",
+  "finishTime": "2026-11-03T10:15:04.7654321Z",
+  "containerHookData": null
+}.
+[2026-11-03 10:15:04Z INFO StepsRunner] Current state: job state = 'Succeeded'
+[2026-11-03 10:15:04Z INFO StepsRunner] Processing step: DisplayName='Run tests'
+[2026-11-03 10:15:04Z INFO StepsRunner] Evaluating: success()
+[2026-11-03 10:15:04Z INFO StepsRunner] Result: true
+[2026-11-03 10:15:04Z INFO StepsRunner] Starting the step.
+[2026-11-03 10:15:09Z INFO ProcessInvokerWrapper] Finished process 1234 with exit code 2, and elapsed time 00:00:05.0124401.
+[2026-11-03 10:15:09Z ERR  StepsRunner] Caught exception from step: GitHub.Runner.Sdk.ProcessExitCodeException: Exit code 2 returned from process: file name '/usr/bin/bash'
+   at GitHub.Runner.Sdk.ProcessInvoker.ExecuteAsync(String workingDirectory)
+   at GitHub.Runner.Worker.Handlers.ScriptHandler.RunAsync(ActionRunStage stage)
+[2026-11-03 10:15:09Z INFO StepsRunner] Step result: Failed
+[2026-11-03 10:15:09Z INFO ExecutionContext] Publish step telemetry for current step {
+  "action": "run",
+  "type": "run",
+  "hasRunsStep": false,
+  "hasUsesStep": false,
+  "isEmbedded": false,
+  "stage": "Main",
+  "stepId": "8e2d3b1f-6c9e-4d4f-8b2a-3e5f7c9d1b24",
+  "stepContextName": "test",
+  "result": "failed",
+  "errorMessages": [
+    "Process completed with exit code 2."
+  ],
+  "executionTimeInSeconds": 5,
+  "startTime": "2026-11-03T10:15:04.2000000Z",
+  "finishTime": "2026-11-03T10:15:09.3000000Z",
+  "containerHookData": null
+}.
+[2026-11-03 10:15:09Z INFO StepsRunner] Current state: job state = 'Failed'
+[2026-11-03 10:15:10Z INFO JobRunner] Job result after all job steps finish: Failed
+[2026-11-03 10:15:10Z INFO JobRunner] Completing the job execution context.
+[2026-11-03 10:15:11Z INFO Worker] Job completed.
