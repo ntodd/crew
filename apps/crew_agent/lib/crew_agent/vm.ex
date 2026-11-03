@@ -663,6 +663,10 @@ defmodule CrewAgent.VM do
 
   defp exit_reason(%{forced_reason: forced}, _code, _driver) when is_binary(forced), do: forced
 
+  # The driver saw a kill or the deadline (the agent may have been down).
+  defp exit_reason(_state, _code, driver) when driver in ["killed_deadline", "killed_stop"],
+    do: driver
+
   defp exit_reason(state, code, _driver) do
     cond do
       not MapSet.member?(state.states, "runner_listening") and not state.payload_fetched ->

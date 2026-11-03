@@ -65,10 +65,10 @@ function hasMise() {
 }
 import { rmSync } from "node:fs"
 
-export function startAgent(token, { name, dataDir, env = {} } = {}) {
+export function startAgent(token, { name, dataDir, env = {}, keepDir = false } = {}) {
   const root = resolve(import.meta.dirname, "../..")
   const dir = dataDir || resolve(root, "tmp/e2e/agent-" + name)
-  rmSync(dir, { recursive: true, force: true })
+  if (!keepDir) rmSync(dir, { recursive: true, force: true })
   // mise pins the toolchain locally; CI sets it up directly.
   const [cmd, args] = hasMise() ? ["mise", ["exec", "--", "mix", "run", "--no-halt"]] : ["mix", ["run", "--no-halt"]]
   const child = spawn(cmd, args, {
