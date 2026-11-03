@@ -48,6 +48,8 @@ defmodule CrewWeb.AuthController do
              Plug.Crypto.secure_compare(state, expected),
          {:allow, _} <- Crew.RateLimit.hit("sign-in:#{remote_ip(conn)}", 60_000, 20),
          {:ok, user} <- GitHub.complete_sign_in(code, verifier, callback_url()) do
+      # §18.3: a member's repo access is refreshed at sign-in.
+      Oban.insert(Crew.Repos.AccessWorker.new(%{user_id: user.id}))
       UserAuth.sign_in(conn, user)
     else
       false ->

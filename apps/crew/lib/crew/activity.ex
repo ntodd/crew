@@ -66,9 +66,8 @@ defmodule Crew.Activity do
   end
 
   @doc """
-  The event as `scope` may see it: as recorded for admins and for
-  events about no repo, masked otherwise. Repo access for members comes
-  with the repos context; until then they see every repo event masked.
+  The event as `scope` may see it: as recorded for admins, for events
+  about no repo and for repos the member can read; masked otherwise.
   """
   def for_scope(%Event{repo_id: nil} = event, _scope), do: event
 
@@ -78,5 +77,5 @@ defmodule Crew.Activity do
       else: %{event | message: event.metadata["masked"] || @masked}
   end
 
-  defp can_read?(_scope, _repo_id), do: false
+  defp can_read?(scope, repo_id), do: Crew.Repos.can_read?(scope, repo_id)
 end

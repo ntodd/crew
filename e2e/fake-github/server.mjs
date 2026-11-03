@@ -9,10 +9,11 @@
 // sends the browser to CREW_BASE instead, since the tailnet host doesn't
 // resolve in a test run.
 import { createServer } from "node:http"
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto"
+import { createHash, createHmac, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto"
 
 const port = Number(process.env.PORT || 4199)
 const crewBase = process.env.CREW_BASE || "http://localhost:4100"
+const crewHook = process.env.CREW_HOOK || "http://127.0.0.1:4101/hooks/github"
 const self = `http://localhost:${port}`
 
 const fresh = () => ({
@@ -25,6 +26,13 @@ const fresh = () => ({
   refreshTokens: {},   // refresh token -> user
   user: { id: 583231, login: "mona", name: "Mona Lisa", avatar_url: null },
   orgs: {},            // org -> [logins]
+  installationTokens: {}, // token -> installation id
+  repos: [],           // {id, full_name, private, default_branch, installation_id, archived}
+  runs: [],            // {id, run_attempt, repo_id, ...}
+  jobs: [],            // {id, run_id, run_attempt, ...}
+  deliveries: [],      // {id, guid, event, action, status_code, delivered_at, redelivery, payload}
+  dropNext: 0,         // fail this many outgoing deliveries (as if Crew were down)
+  cancelled: [],       // run ids
   requests: [],        // every API call, for assertions
 })
 
@@ -124,6 +132,9 @@ route("GET", /^\/__fake\/apps\/create$/, (req, res, url) => {
   const code = token("")
   state.conversions[code] = slug
   redirect(res, toCrew(manifest.redirect_url, { code, state: s }))
+  // GitHub pings a new App's webhook. Crew doesn't have the secret until
+  // the conversion, so this one fails (as it can on GitHub, too).
+  setTimeout(() => deliver("ping", { zen: "Speak like a human.", hook_id: 1, hook: { type: "App" } }), 50)
 })
 
 route("POST", /^\/app-manifests\/([^/]+)\/conversions$/, (req, res, url, [, code]) => {
@@ -154,6 +165,7 @@ route("GET", /^\/__fake\/apps\/([^/]+)\/install$/, (req, res, url, [, slug]) => 
   }
   state.installations.push(installation)
   redirect(res, toCrew(app.manifest.setup_url, { installation_id: installation.id, setup_action: "install" }))
+  setTimeout(() => deliver("installation", { action: "created", installation: installationJson(installation), repositories: [] }), 50)
 })
 
 // -- user OAuth -----------------------------------------------------------------
@@ -212,7 +224,201 @@ route("GET", /^\/orgs\/([^/]+)$/, (req, res, url, [, org]) => {
   state.orgs[org] ? send(res, 200, { login: org }) : send(res, 404, { message: "Not Found" })
 })
 
+// -- installations, repos, runs and jobs (the API) ------------------------------------
+
+const app = () => Object.values(state.apps)[0]
+const installationFor = id => state.installations.find(i => String(i.id) === String(id))
+const repoByName = (o, r) => state.repos.find(x => x.full_name === `${o}/${r}`)
+const repoJson = r => ({ id: r.id, name: r.full_name.split("/")[1], full_name: r.full_name, private: r.private, default_branch: r.default_branch, archived: !!r.archived, owner: { login: r.full_name.split("/")[0] } })
+const installationJson = i => ({ id: i.id, account: i.account, permissions: i.permissions, app_slug: i.app_slug })
+
+route("GET", /^\/app\/installations$/, (req, res) => send(res, 200, state.installations.map(installationJson)))
+route("GET", /^\/app\/installations\/(\d+)$/, (req, res, url, [, id]) => {
+  const i = installationFor(id)
+  i ? send(res, 200, installationJson(i)) : send(res, 404, { message: "Not Found" })
+})
+route("POST", /^\/app\/installations\/(\d+)\/access_tokens$/, (req, res, url, [, id]) => {
+  const t = token("ghs_")
+  state.installationTokens[t] = Number(id)
+  send(res, 201, { token: t, expires_at: new Date(Date.now() + 3600e3).toISOString() })
+})
+route("GET", /^\/installation\/repositories$/, (req, res) => {
+  const id = state.installationTokens[bearer(req)]
+  if (!id) return send(res, 401, { message: "Bad credentials" })
+  const repos = state.repos.filter(r => r.installation_id === id).map(repoJson)
+  send(res, 200, { total_count: repos.length, repositories: repos })
+})
+route("GET", /^\/user\/installations\/(\d+)\/repositories$/, (req, res, url, [, id]) => {
+  if (!state.tokens[bearer(req)]) return send(res, 401, { message: "Bad credentials" })
+  const repos = state.repos.filter(r => r.installation_id === Number(id)).map(r => ({ ...repoJson(r), permissions: { pull: true, push: true } }))
+  send(res, 200, { total_count: repos.length, repositories: repos })
+})
+
+const runJson = run => {
+  const repo = state.repos.find(r => r.id === run.repo_id)
+  return {
+    id: run.id, run_attempt: run.run_attempt, run_number: run.run_number, name: run.name, event: run.event,
+    status: run.status, conclusion: run.conclusion, head_branch: run.head_branch, head_sha: run.head_sha,
+    head_commit: { message: run.message }, actor: { login: state.user.login, id: state.user.id },
+    pull_requests: run.pull_requests || [], head_repository: run.head_repo ? { full_name: run.head_repo } : null,
+    created_at: run.created_at, updated_at: run.updated_at, repository: repoJson(repo),
+  }
+}
+const jobJson = job => ({
+  id: job.id, run_id: job.run_id, run_attempt: job.run_attempt, name: job.name, workflow_name: job.workflow_name,
+  labels: job.labels, status: job.status, conclusion: job.conclusion, created_at: job.created_at,
+  started_at: job.started_at, completed_at: job.completed_at, runner_name: job.runner_name, runner_id: job.runner_id,
+  head_branch: job.head_branch, head_sha: job.head_sha, steps: job.steps || [],
+})
+
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)\/attempts\/(\d+)$/, (req, res, url, [, o, r, id, n]) => {
+  const run = state.runs.find(x => x.id === Number(id) && x.run_attempt === Number(n))
+  run ? send(res, 200, runJson(run)) : send(res, 404, { message: "Not Found" })
+})
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/, (req, res, url, [, o, r, id, n]) => {
+  const jobs = state.jobs.filter(j => j.run_id === Number(id) && j.run_attempt === Number(n)).map(jobJson)
+  send(res, 200, { total_count: jobs.length, jobs })
+})
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs$/, (req, res, url, [, o, r]) => {
+  const repo = repoByName(o, r)
+  const status = url.searchParams.get("status")
+  const runs = state.runs.filter(x => repo && x.repo_id === repo.id && (!status || x.status === status)).map(runJson)
+  send(res, 200, { total_count: runs.length, workflow_runs: runs })
+})
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/jobs\/(\d+)$/, (req, res, url, [, o, r, id]) => {
+  const job = state.jobs.find(j => j.id === Number(id))
+  job ? send(res, 200, jobJson(job)) : send(res, 404, { message: "Not Found" })
+})
+route("POST", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)\/cancel$/, async (req, res, url, [, o, r, id]) => {
+  state.cancelled.push(Number(id))
+  send(res, 202, {})
+})
+
+// -- webhook deliveries ----------------------------------------------------------------
+
+async function deliver(event, payload, { guid = randomUUID(), redelivery = false } = {}) {
+  const a = app()
+  if (!a) return
+  const body = JSON.stringify(payload)
+  const signature = "sha256=" + createHmac("sha256", a.webhook_secret).update(body).digest("hex")
+  const delivery = { id: id(), guid, event, action: payload.action, redelivery, delivered_at: new Date().toISOString(), payload, status_code: 0 }
+  state.deliveries.unshift(delivery)
+  if (state.dropNext > 0) {
+    state.dropNext--
+    delivery.status_code = 502
+    return delivery
+  }
+  try {
+    const resp = await fetch(crewHook, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-github-event": event, "x-github-delivery": guid, "x-hub-signature-256": signature },
+      body,
+    })
+    delivery.status_code = resp.status
+  } catch (e) {
+    delivery.status_code = 503
+  }
+  return delivery
+}
+
+const withContext = (repo, payload) => ({
+  ...payload,
+  repository: repoJson(repo),
+  installation: { id: repo.installation_id },
+  sender: { login: state.user.login },
+})
+
+route("GET", /^\/app\/hook\/deliveries$/, (req, res) => {
+  send(res, 200, state.deliveries.slice(0, 100).map(({ payload, ...d }) => d))
+})
+route("POST", /^\/app\/hook\/deliveries\/(\d+)\/attempts$/, async (req, res, url, [, did]) => {
+  const d = state.deliveries.find(x => x.id === Number(did))
+  if (!d) return send(res, 404, { message: "Not Found" })
+  send(res, 202, {})
+  deliver(d.event, d.payload, { guid: d.guid, redelivery: true })
+})
+
 // -- control ------------------------------------------------------------------------
+
+// Adds repos to the (first) installation, and sends installation_repositories.
+route("POST", /^\/__fake\/repos$/, async (req, res) => {
+  const { names = [], private: priv = true } = await readBody(req)
+  const installation = state.installations[0]
+  if (!installation) return send(res, 400, { message: "no installation" })
+  const added = names.map(name => {
+    const repo = { id: id(), full_name: `${installation.account.login}/${name}`, private: priv, default_branch: "main", installation_id: installation.id }
+    state.repos.push(repo)
+    return repo
+  })
+  await deliver("installation_repositories", {
+    action: "added",
+    installation: { id: installation.id, account: installation.account },
+    repositories_added: added.map(repoJson),
+    repositories_removed: [],
+  })
+  send(res, 200, added.map(repoJson))
+})
+
+// Queues a run: workflow_run requested, then workflow_job queued for each job.
+route("POST", /^\/__fake\/runs$/, async (req, res) => {
+  const b = await readBody(req)
+  const [o, r] = b.repo.split("/")
+  const repo = repoByName(o, r)
+  if (!repo) return send(res, 404, { message: `no repo ${b.repo}` })
+  const now = new Date().toISOString()
+  const run = {
+    id: b.id || id(), run_attempt: b.run_attempt || 1, run_number: b.run_number || state.runs.length + 1,
+    repo_id: repo.id, name: b.workflow || "CI", event: b.event || "push", status: "queued", conclusion: null,
+    head_branch: b.branch || "main", head_sha: b.sha || randomBytes(20).toString("hex"), message: b.message || "Commit",
+    head_repo: b.head_repo === undefined ? repo.full_name : b.head_repo, pull_requests: b.pr ? [{ number: b.pr, head: { ref: b.branch }, base: { ref: "main" } }] : [],
+    created_at: now, updated_at: now,
+  }
+  state.runs.push(run)
+  if (!b.skipRunWebhook) await deliver("workflow_run", withContext(repo, { action: "requested", workflow_run: runJson(run) }))
+  const jobs = (b.jobs || []).map(j => {
+    const job = {
+      id: id(), run_id: run.id, run_attempt: run.run_attempt, name: j.name, workflow_name: run.name, labels: j.labels,
+      status: "queued", conclusion: null, created_at: now, started_at: now, completed_at: null, runner_name: null,
+      runner_id: null, head_branch: run.head_branch, head_sha: run.head_sha,
+    }
+    state.jobs.push(job)
+    return job
+  })
+  for (const job of jobs) await deliver("workflow_job", withContext(repo, { action: "queued", workflow_job: jobJson(job) }))
+  send(res, 200, { run: runJson(run), jobs: jobs.map(jobJson) })
+})
+
+// Moves a job along (in_progress, completed) and sends its webhook.
+route("POST", /^\/__fake\/jobs\/(\d+)$/, async (req, res, url, [, jid]) => {
+  const b = await readBody(req)
+  const job = state.jobs.find(j => j.id === Number(jid))
+  if (!job) return send(res, 404, { message: "no job" })
+  Object.assign(job, b)
+  if (b.status === "in_progress") job.started_at = new Date().toISOString()
+  if (b.status === "completed") job.completed_at = new Date().toISOString()
+  const run = state.runs.find(x => x.id === job.run_id && x.run_attempt === job.run_attempt)
+  const repo = state.repos.find(r => r.id === run.repo_id)
+  const runJobs = state.jobs.filter(j => j.run_id === run.id && j.run_attempt === run.run_attempt)
+  if (runJobs.every(j => j.status === "completed")) {
+    run.status = "completed"
+    run.conclusion = runJobs.every(j => ["success", "skipped"].includes(j.conclusion)) ? "success" : "failure"
+  } else if (runJobs.some(j => j.status === "in_progress")) run.status = "in_progress"
+  run.updated_at = new Date().toISOString()
+  await deliver("workflow_job", withContext(repo, { action: job.status, workflow_job: jobJson(job) }))
+  if (["in_progress", "completed"].includes(run.status)) await deliver("workflow_run", withContext(repo, { action: run.status, workflow_run: runJson(run) }))
+  send(res, 200, jobJson(job))
+})
+
+route("POST", /^\/__fake\/drop$/, async (req, res) => {
+  state.dropNext = (await readBody(req)).count || 1
+  send(res, 200, { dropNext: state.dropNext })
+})
+
+route("POST", /^\/__fake\/ping$/, async (req, res) => {
+  const d = await deliver("ping", { zen: "Design for failure.", hook_id: 1, hook: { type: "App" } })
+  send(res, 200, { status_code: d?.status_code })
+})
+
 
 route("GET", /^\/__fake\/state$/, (req, res) => send(res, 200, state))
 route("POST", /^\/__fake\/reset$/, (req, res) => { state = fresh(); send(res, 200, { ok: true }) })
