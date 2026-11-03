@@ -68,20 +68,52 @@ defmodule CrewAgent.Images do
   def prepare(image) do
     config = Config.get()
 
-    if config.driver == "null" do
-      d = dir(config, image.id)
-      File.mkdir_p!(d)
-      for f <- ["kernel", "rootfs.ext4", "ready"], do: File.write!(Path.join(d, f), "")
-      report(image.id, "ready", 100, nil)
-      :ok
-    else
-      {:error, "unsupported", "image preparation isn't in this agent yet"}
+    cond do
+      config.driver == "null" ->
+        d = dir(config, image.id)
+        File.mkdir_p!(d)
+        for f <- ["kernel", "rootfs.ext4", "ready"], do: File.write!(Path.join(d, f), "")
+        report(image.id, "ready", 100, nil)
+        :ok
+
+      config.dev and is_binary(config.dev_image_dir) ->
+        prepare_from_dir(config, image, config.dev_image_dir)
+
+      true ->
+        {:error, "unsupported", "image preparation isn't in this agent yet"}
     end
   end
 
   def remove(image_id) do
     File.rm_rf(dir(Config.get(), image_id))
     :ok
+  end
+
+  # Development (CREW_DEV_IMAGE_DIR): a local `Image` (or `kernel`) and
+  # `rootfs.ext4`, cloned in, for a real driver without a download.
+  defp prepare_from_dir(config, image, src) do
+    d = dir(config, image.id)
+    kernel = Enum.find(["kernel", "Image"], &File.exists?(Path.join(src, &1)))
+
+    with true <- kernel != nil and File.exists?(Path.join(src, "rootfs.ext4")),
+         :ok <- File.mkdir_p(d),
+         {_, 0} <-
+           System.cmd("cp", ["-c", Path.join(src, kernel), Path.join(d, "kernel")],
+             stderr_to_stdout: true
+           ),
+         {_, 0} <-
+           System.cmd("cp", ["-c", Path.join(src, "rootfs.ext4"), Path.join(d, "rootfs.ext4")],
+             stderr_to_stdout: true
+           ),
+         :ok <- File.chmod(Path.join(d, "rootfs.ext4"), 0o440),
+         :ok <- File.write(Path.join(d, "ready"), "") do
+      report(image.id, "ready", 100, nil)
+      :ok
+    else
+      other ->
+        report(image.id, "failed", 0, "copying the development image failed: #{inspect(other)}")
+        {:error, "image_failed", "copying the development image failed"}
+    end
   end
 
   defp report(id, state, progress, error) do

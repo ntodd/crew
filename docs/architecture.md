@@ -90,3 +90,45 @@ The other spikes are recorded here as they run.
   job label among the runner's, oldest first). The null driver's fake
   guest long-polls it for a job, so the e2e suite runs real placements,
   assignments, reaps and runner deletes.
+
+## vz driver notes
+
+- **crew-vz** (`native/crew-vz`, Go, vendored) is crew-vzd and the per-VM
+  helper. Its README is the contract with the agent: `vz.json`, the
+  daemon's JSON-lines protocol, the files in `vms/<id>/`, the exit codes
+  and the network policy. Measured on an M4 Max: `start` returns in about
+  130 ms and a minimal guest reaches the guest API about 100 ms later.
+- **Where it differs from the spec's sketch,** and why:
+  - `start` takes a `deadline`: the helper enforces it even while the
+    agent and crew-vzd are down.
+  - `vz.pid` is created exclusively at launch and never removed, so a VM
+    whose helper died before writing its exit record still can't be
+    launched again on a used disk. The exit record is `vz-exited.json`,
+    apart from the agent's own `exited.json`.
+  - VM directories are 0770 group `crewvm`, and the clone 0660: the helper
+    (`_crewvm`) writes there.
+  - The socket is `<data>/run/vzd.sock`: the data directory itself is
+    root's, and `run/` is the one place `_crewvm` creates files outside
+    VM directories.
+  - Graceful stop is VZ's `requestStop`, the arm64 power button through
+    gpio-keys: the guest kernel needs `GPIO_PL061`, `KEYBOARD_GPIO` and
+    `INPUT_EVDEV`, and something that acts on the key. The agent also asks
+    through the guest API's control channel, so either way works.
+  - VZ can't tell a guest power-off from a reboot or a panic, so all exit
+    0 (`guest_stopped`).
+- **`firewall_ok` on vz** means crew-vzd answers. There's no host
+  firewall to verify: the boundary is the helper's netstack, and its
+  policy tests run against a real guest in `make integration`.
+- **Tests at three levels:** Go unit tests and the real-VM suite in
+  `native/`; the agent's driver against a fake crew-vzd, and `mix test
+  --only vz` booting real VMs through the agent's own start path; and
+  `E2E_VZ=1` in `e2e/`, a job scheduled by the control plane onto a real
+  VM. The test guest's `crew` mode walks the guest API from inside the VM.
+- **Development images:** with `CREW_DEV=1`, `CREW_DEV_IMAGE_DIR` makes
+  `image.prepare` clone a local `Image` and `rootfs.ext4` instead of
+  downloading (the download comes with the guest image).
+- **`install-macos.sh`** (`packaging/macos/`) creates `_crewagent`,
+  `_crewvm` and `crewvm`, lays out the data directory, installs the two
+  LaunchDaemons and waits for enrollment. `test-install.sh` checks a dry
+  run's plists and env without root. Spike S3 (launchd as `_crewvm`, with
+  nobody logged in, after a reboot) still needs a real install.

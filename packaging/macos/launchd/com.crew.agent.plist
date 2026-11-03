@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Crew agent (§10, §11.4), unprivileged. Its settings are in
+     agent/env, which only _crewagent can read. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.crew.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>set -a; . "__DATA__/agent/env"; set +a; exec "__PREFIX__/agent/bin/crew_agent" start</string>
+  </array>
+  <key>UserName</key>
+  <string>_crewagent</string>
+  <key>GroupName</key>
+  <string>crewvm</string>
+  <key>Umask</key>
+  <integer>7</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>__DATA__/logs/agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>__DATA__/logs/agent.log</string>
+</dict>
+</plist>

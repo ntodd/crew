@@ -161,3 +161,29 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix credo --strict
       - run: mix test
+
+  # native/: crew-vz (§11.4). Unit tests and vet on macOS, plus the
+  # linux/arm64 vet crew-vmctl shares. The real-VM suite (make
+  # integration) needs Virtualization.framework on bare Apple silicon,
+  # which hosted runners don't offer: it runs on the Mac before a release.
+  native:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: native
+    env:
+      GO: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: native/go.mod
+          cache: false
+      - run: make GO=go
+      - run: make GO=go test vet
+      - run: GOOS=linux GOARCH=arm64 GOFLAGS=-mod=vendor go vet ./...
+      - run: packaging/macos/test-install.sh
+        working-directory: .
+

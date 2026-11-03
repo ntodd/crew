@@ -11,6 +11,8 @@
 //	       (requestStop) and power off.
 //	flood  write crewtest.flood_mib MiB to the console and power off.
 //	cache  download from 10.199.0.1:80 (the cache VM route) and report.
+//	crew   (the default when crew.api is set) the guest API, as a job VM
+//	       does: see crew.go.
 //
 // The protocol on 10.199.0.1:7777 is line-based, one connection per
 // exchange: "HELLO <vm>", "READY <vm>", "DOWNLOAD <n>", "UPLOAD <n>",
@@ -59,7 +61,13 @@ func main() {
 		logf("eth0 mtu %s", strings.TrimSpace(string(b)))
 	}
 	var err error
-	switch cmdline["crewtest.mode"] {
+	mode := cmdline["crewtest.mode"]
+	if mode == "" && cmdline["crew.api"] != "" {
+		mode = "crew"
+	}
+	switch mode {
+	case "crew":
+		err = crewMode()
 	case "wait":
 		err = waitMode()
 	case "flood":
