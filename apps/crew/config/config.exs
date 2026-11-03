@@ -42,7 +42,12 @@ config :crew, Oban,
     {Oban.Plugins.Cron,
      crontab: [
        # §18.1: every six hours, as well as at every token refresh.
-       {"41 */6 * * *", Crew.Jobs.CheckAccess}
+       {"41 */6 * * *", Crew.Jobs.CheckAccess},
+       # §18.3: members' repo access, every 30 minutes.
+       {"*/30 * * * *", Crew.Repos.AccessWorker},
+       {"*/15 * * * *", Crew.Repos.SyncWorker},
+       # §6.2: missed deliveries.
+       {"*/5 * * * *", Crew.GitHub.Redeliver}
      ]}
   ]
 

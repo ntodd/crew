@@ -16,8 +16,39 @@ defmodule CrewWeb.AdminLive.Deployment do
      |> assign(:github_app, GitHub.app())
      |> assign(:deployment_id, Settings.deployment_id())
      |> assign(:public_host, Settings.public_host())
-     |> assign(:release_fingerprint, Crew.Config.release_key_fingerprint())}
+     |> assign(:release_fingerprint, Crew.Config.release_key_fingerprint())
+     |> assign(:pinging, false)
+     |> load_github()}
   end
+
+  defp load_github(socket) do
+    socket
+    |> assign(:webhooks_on, Application.get_env(:crew, :webhooks, true))
+    |> assign(:hooks, Crew.GitHub.HookHealth.summary())
+    |> assign(
+      :budgets,
+      for(i <- Crew.Repos.list_installations(), do: {i, Crew.GitHub.Budget.info(i.github_id)})
+    )
+  end
+
+  @impl true
+  def handle_event("ping", _params, socket) do
+    socket = assign(socket, :pinging, true)
+
+    case Crew.GitHub.HookHealth.send_ping() do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:pinging, false)
+         |> put_flash(:info, "Asked GitHub to send the ping again.")}
+
+      {:error, message} ->
+        {:noreply, socket |> assign(:pinging, false) |> put_flash(:error, message)}
+    end
+  end
+
+  defp format_at(nil), do: "never"
+  defp format_at(%DateTime{} = at), do: Calendar.strftime(at, "%b %-d, %H:%M:%S UTC")
 
   @impl true
   def render(assigns) do
@@ -82,6 +113,44 @@ defmodule CrewWeb.AdminLive.Deployment do
               </dd>
             </div>
           </dl>
+        </.panel>
+
+        <.panel id="deployment-webhooks" title="Webhooks">
+          <:actions>
+            <.button id="send-ping" size="sm" variant="ghost" phx-click="ping" disabled={@pinging}>
+              Send ping
+            </.button>
+          </:actions>
+          <p :if={not @webhooks_on} class="mb-3 text-sm text-warning">
+            Poll-only mode (CREW_WEBHOOKS=off): jobs may wait up to the poll interval before Crew sees them.
+          </p>
+          <dl class="space-y-2 text-sm">
+            <div class="flex justify-between gap-4">
+              <dt class="text-ink-2">Last delivery</dt>
+              <dd id="last-delivery" class="text-ink">{format_at(@hooks.last_received_at)}</dd>
+            </div>
+            <div class="flex justify-between gap-4">
+              <dt class="text-ink-2">Failed (24 h)</dt>
+              <dd id="failed-deliveries" class="text-ink">{@hooks.failed_24h}</dd>
+            </div>
+            <div class="flex justify-between gap-4">
+              <dt class="text-ink-2">Last ping</dt>
+              <dd id="last-ping" class="text-ink">{format_at(@hooks.last_ping_at)}</dd>
+            </div>
+          </dl>
+        </.panel>
+
+        <.panel id="deployment-budget" title="GitHub budget">
+          <:subtitle>Per installation, from the rate-limit headers on Crew's own calls.</:subtitle>
+          <ul class="space-y-2 text-sm">
+            <li :for={{i, b} <- @budgets} class="flex justify-between gap-4">
+              <span class="text-ink">{i.account_login}</span>
+              <span class="tabular-nums text-ink-2">
+                {if b.limit, do: "#{b.remaining} of #{b.limit} left", else: "no calls yet"}
+              </span>
+            </li>
+            <li :if={@budgets == []} class="text-ink-3">No installations yet.</li>
+          </ul>
         </.panel>
 
         <.panel id="deployment-release-key" title="Release key">

@@ -58,6 +58,10 @@ defmodule CrewWeb.Router do
     live_session :signed_in,
       on_mount: [{CrewWeb.StaleAssets, :reload}, {CrewWeb.UserAuth, :require_user}] do
       live "/", DashboardLive, :index
+      live "/runs", RunLive.Index, :index
+      live "/runs/:run_id/attempts/:n", RunLive.Show, :show
+      live "/repos", RepoLive.Index, :index
+      live "/repos/:id", RepoLive.Show, :show
     end
   end
 

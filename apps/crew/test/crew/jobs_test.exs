@@ -1,0 +1,378 @@
+defmodule Crew.JobsTest do
+  use Crew.DataCase
+  use Oban.Testing, repo: Crew.Repo
+
+  alias Crew.Jobs
+  alias Crew.Jobs.Job
+
+  setup do
+    repo = repo_fixture(name: "app")
+    %{repo: repo}
+  end
+
+  defp job!(github_id), do: Repo.get_by!(Job, github_id: github_id)
+
+  describe "workflow_job events" do
+    test "a queued Crew job is ours, with its size, arch and label key", %{repo: repo} do
+      payload = workflow_job_payload(repo, id: 1, labels: ["self-hosted", "crew-l-arm64"])
+      assert {:ok, %Job{} = job} = Jobs.handle_workflow_job(payload)
+
+      assert job.classification == "ours"
+      assert job.gh_state == "queued"
+      assert job.label_key == ["crew-l-arm64", "self-hosted"]
+      assert job.arch == "arm64"
+      assert Crew.Sizes.get!(job.size_id).name == "l"
+      assert job.queued_at == ~U[2026-11-03 10:00:00.000000Z]
+      assert job.seen_at
+      assert job.repo_id == repo.id
+    end
+
+    test "a job without Crew labels isn't ours", %{repo: repo} do
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["ubuntu-latest"]))
+      assert job.classification == "not_ours"
+      assert job.label_key == ["ubuntu-latest"]
+    end
+
+    test "bad Crew labels are unsatisfiable, with the reason", %{repo: repo} do
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-huge"]))
+      assert job.classification == "unsatisfiable"
+      assert job.unsatisfiable_reason == "unknown size huge"
+    end
+
+    test "a disabled repo's jobs aren't ours", %{repo: repo} do
+      Repo.update!(Ecto.Changeset.change(repo, enabled: false))
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo))
+      assert job.classification == "not_ours"
+    end
+
+    test "a size the repo doesn't allow is unsatisfiable", %{repo: repo} do
+      Repo.update!(Ecto.Changeset.change(repo, allowed_sizes: ["s"]))
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-m"]))
+      assert job.unsatisfiable_reason == "size m not allowed for this repo"
+    end
+
+    test "a missing App permission is unsatisfiable", %{repo: _} do
+      installation =
+        installation_fixture(permissions: %{"actions" => "write", "metadata" => "read"})
+
+      repo = repo_fixture(installation: installation)
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo))
+      assert job.classification == "unsatisfiable"
+      assert job.unsatisfiable_reason =~ "administration"
+    end
+
+    test "an aliased label set is ours, and marked", %{repo: repo} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+
+      {:ok, _} =
+        Crew.Sizes.create_alias(admin, %{
+          labels: ["self-hosted", "linux", "x64"],
+          size_id: Crew.Sizes.default().id,
+          arch: "x64"
+        })
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, labels: ["self-hosted", "linux", "x64"])
+        )
+
+      assert job.classification == "ours"
+      assert job.aliased
+      assert job.arch == "x64"
+    end
+
+    test "every event is recorded", %{repo: repo} do
+      {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 2, status: "queued"))
+
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: 2,
+            status: "in_progress",
+            runner_name: "crew-ab12-m3-0123456789"
+          )
+        )
+
+      job = job!(2)
+      assert Enum.map(Jobs.list_events(job), & &1.kind) == ["queued", "in_progress"]
+    end
+  end
+
+  describe "gh_state only moves forward (§8.2)" do
+    test "an earlier state is recorded and otherwise ignored", %{repo: repo} do
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: 3,
+            status: "completed",
+            conclusion: "success",
+            completed_at: "2026-11-03T10:05:00Z",
+            runner_name: "r1"
+          )
+        )
+
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 3, status: "queued"))
+      assert job.gh_state == "completed"
+      assert job.conclusion == "success"
+      assert job.runner_name == "r1"
+      assert length(Jobs.list_events(job)) == 2
+    end
+
+    test "the first event seen may be any state", %{repo: repo} do
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: 4, status: "in_progress", runner_name: "r2")
+        )
+
+      assert job.gh_state == "in_progress"
+      assert job.started_at == ~U[2026-11-03 10:00:05.000000Z]
+    end
+
+    test "waiting is before queued", %{repo: repo} do
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 5, status: "waiting"))
+      assert job.gh_state == "waiting"
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 5, status: "queued"))
+      assert job.gh_state == "queued"
+    end
+
+    test "completion stores the conclusion, times and steps", %{repo: repo} do
+      steps = [
+        %{
+          "name" => "Set up job",
+          "number" => 1,
+          "status" => "completed",
+          "conclusion" => "success",
+          "started_at" => "2026-11-03T10:00:06Z",
+          "completed_at" => "2026-11-03T10:00:07Z"
+        }
+      ]
+
+      {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 6))
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: 6,
+            status: "completed",
+            conclusion: "failure",
+            completed_at: "2026-11-03T10:03:00Z",
+            steps: steps
+          )
+        )
+
+      assert job.conclusion == "failure"
+      assert job.completed_at == ~U[2026-11-03 10:03:00.000000Z]
+      assert [%{"name" => "Set up job"}] = job.steps
+    end
+
+    test "concurrent workers can't move a job backwards", %{repo: repo} do
+      states = ~w(waiting queued in_progress completed)
+
+      for _ <- 1..5 do
+        id = unique()
+
+        states
+        |> Enum.shuffle()
+        |> Enum.map(fn state ->
+          Task.async(fn ->
+            Jobs.handle_workflow_job(
+              workflow_job_payload(repo,
+                id: id,
+                status: state,
+                conclusion: if(state == "completed", do: "success")
+              )
+            )
+          end)
+        end)
+        |> Task.await_many()
+
+        assert job!(id).gh_state == "completed"
+        assert job!(id).conclusion == "success"
+      end
+    end
+  end
+
+  describe "run attempts and the fork check (§19.5)" do
+    test "a Crew job whose run attempt isn't known is blocked, checking fork status", %{
+      repo: repo
+    } do
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, run_id: 70))
+      assert job.blocked_reason == "checking fork status"
+      assert job.run_attempt_id == nil
+      # The run fetch is queued, essential.
+      assert_enqueued(
+        worker: Crew.Jobs.FetchRunAttempt,
+        args: %{"repo_id" => repo.id, "run_id" => 70, "attempt" => 1}
+      )
+    end
+
+    test "a non-Crew job isn't blocked", %{repo: repo} do
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["ubuntu-latest"]))
+      assert job.blocked_reason == nil
+      refute_enqueued(worker: Crew.Jobs.FetchRunAttempt)
+    end
+
+    test "the run attempt links its jobs and unblocks them when it's not a fork", %{repo: repo} do
+      {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 8, run_id: 71))
+      {:ok, attempt} = Jobs.handle_workflow_run(workflow_run_payload(repo, id: 71))
+
+      assert attempt.is_fork == false
+      assert attempt.workflow_name == "CI"
+      assert attempt.head_commit_message == "Fix the thing"
+      job = job!(8)
+      assert job.run_attempt_id == attempt.id
+      assert job.blocked_reason == nil
+      assert job.classification == "ours"
+    end
+
+    test "a run attempt seen first links jobs as they arrive", %{repo: repo} do
+      {:ok, attempt} = Jobs.handle_workflow_run(workflow_run_payload(repo, id: 72))
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, run_id: 72))
+      assert job.run_attempt_id == attempt.id
+      assert job.blocked_reason == nil
+      refute_enqueued(worker: Crew.Jobs.FetchRunAttempt)
+    end
+
+    test "a fork PR on a refusing repo is unsatisfiable, and the run is cancelled", %{repo: repo} do
+      {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 9, run_id: 73))
+
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 73, event: "pull_request", head_repo: "stranger/app")
+        )
+
+      assert attempt.is_fork
+      job = job!(9)
+      assert job.classification == "unsatisfiable"
+      assert job.unsatisfiable_reason == "fork PRs are refused on this repo"
+      assert job.blocked_reason == nil
+
+      assert_enqueued(
+        worker: Crew.Jobs.CancelRun,
+        args: %{"repo_id" => repo.id, "run_id" => 73, "attempt" => 1}
+      )
+
+      assert Enum.any?(Crew.Audit.recent(), &(&1.action == "run.fork_refused"))
+    end
+
+    test "a fork run seen before its jobs is cancelled when the first Crew job arrives", %{
+      repo: repo
+    } do
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 76, event: "pull_request", head_repo: "stranger/app")
+        )
+
+      refute_enqueued(worker: Crew.Jobs.CancelRun)
+
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, run_id: 76))
+      assert job.unsatisfiable_reason == "fork PRs are refused on this repo"
+
+      assert_enqueued(
+        worker: Crew.Jobs.CancelRun,
+        args: %{"repo_id" => repo.id, "run_id" => 76, "attempt" => 1}
+      )
+
+      assert Enum.count(Crew.Audit.recent(), &(&1.action == "run.fork_refused")) == 1
+
+      # More jobs of the same run don't cancel or audit it again.
+      {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo, run_id: 76))
+      assert length(all_enqueued(worker: Crew.Jobs.CancelRun)) == 1
+      assert Enum.count(Crew.Audit.recent(), &(&1.action == "run.fork_refused")) == 1
+    end
+
+    test "a null head repo on a PR event counts as a fork", %{repo: repo} do
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, event: "pull_request_target", head_repo: nil)
+        )
+
+      assert attempt.is_fork
+    end
+
+    test "a fork PR on a repo that allows them runs", %{repo: repo} do
+      Repo.update!(Ecto.Changeset.change(repo, fork_prs: "allow"))
+
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 74, event: "pull_request", head_repo: "stranger/app")
+        )
+
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, run_id: 74))
+      assert job.classification == "ours"
+      refute_enqueued(worker: Crew.Jobs.CancelRun)
+    end
+
+    test "a push from a fork-named branch isn't a fork: only PR events count", %{repo: repo} do
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, event: "push", head_repo: "stranger/app")
+        )
+
+      refute attempt.is_fork
+    end
+
+    test "run attempts only move forward too", %{repo: repo} do
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo,
+            id: 75,
+            action: "completed",
+            status: "completed",
+            conclusion: "success"
+          )
+        )
+
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 75, action: "in_progress", status: "in_progress")
+        )
+
+      assert attempt.status == "completed"
+      assert attempt.conclusion == "success"
+    end
+  end
+
+  describe "reclassifying (§7.4)" do
+    test "settings changes re-parse jobs GitHub still has queued or waiting", %{repo: repo} do
+      {:ok, queued} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-xl"]))
+
+      {:ok, done} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            labels: ["crew-xl"],
+            status: "completed",
+            conclusion: "success"
+          )
+        )
+
+      assert queued.classification == "ours"
+
+      Repo.update!(Ecto.Changeset.change(repo, allowed_sizes: ["s"]))
+      :ok = Jobs.reclassify_open(repo_id: repo.id)
+
+      assert Repo.reload!(queued).unsatisfiable_reason == "size xl not allowed for this repo"
+      assert Repo.reload!(done).classification == "ours"
+    end
+  end
+
+  test "changes are broadcast with ids only", %{repo: repo} do
+    Phoenix.PubSub.subscribe(Crew.PubSub, "jobs")
+    {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo))
+    assert_received {:job_changed, id} when id == job.id
+  end
+
+  test "a webhook marks its repo active, at most every 30 s", %{repo: repo} do
+    {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo))
+    first = Crew.Repos.get!(repo.id).last_activity_at
+    assert first
+    {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo))
+    assert Crew.Repos.get!(repo.id).last_activity_at == first
+  end
+
+  test "an event for an unknown repo of a known installation adds the repo", %{repo: repo} do
+    other = %{repo | github_id: unique(), full_name: "acme/brand-new"}
+    {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(other))
+    assert Crew.Repos.get_by_full_name("acme/brand-new").id == job.repo_id
+  end
+end

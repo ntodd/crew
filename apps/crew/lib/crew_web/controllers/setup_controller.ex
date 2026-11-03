@@ -88,8 +88,10 @@ defmodule CrewWeb.SetupController do
   def callback(conn, _params), do: redirect(conn, to: ~p"/setup")
 
   # GitHub sends people here after installing the App. The installation
-  # webhook (and the periodic sync) picks the repos up.
+  # webhook picks the repos up too; the sync makes sure of it.
   def installed(conn, _params) do
+    Oban.insert(Crew.Repos.SyncWorker.new(%{}))
+
     conn
     |> put_flash(:info, "Installed. Sign in to continue.")
     |> redirect(to: ~p"/sign-in")

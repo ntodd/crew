@@ -19,7 +19,7 @@ export default defineConfig({
     {
       command: "node fake-github/server.mjs",
       url: "http://localhost:4199/__fake/state",
-      env: { PORT: "4199", CREW_BASE: "http://localhost:4100" },
+      env: { PORT: "4199", CREW_BASE: "http://localhost:4100", CREW_HOOK: "http://127.0.0.1:4101/hooks/github" },
       reuseExistingServer: false,
     },
     {
