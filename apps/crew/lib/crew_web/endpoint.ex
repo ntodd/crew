@@ -19,6 +19,14 @@ defmodule CrewWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  # Agents dial in here. They aren't browsers, so there's no origin to
+  # check: each connect is authenticated by a signed header instead, and
+  # carries no cookies a cross-site page could ride on.
+  # sobelow_skip ["Config.CSWH"]
+  socket "/agent", CrewWeb.AgentSocket,
+    websocket: [connect_info: [:x_headers, :peer_data], check_origin: false, timeout: 60_000],
+    longpoll: false
+
   plug Plug.Static,
     at: "/",
     from: :crew,

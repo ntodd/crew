@@ -20,6 +20,7 @@ defmodule Crew.Application do
         {Phoenix.PubSub, name: Crew.PubSub},
         {Registry, keys: :unique, name: Crew.Registry},
         {Crew.RateLimit, clean_period: :timer.minutes(1)},
+        Crew.Agents.NonceCache,
         Crew.GitHub.Budget,
         Crew.GitHub.InstallationTokens,
         {Oban, Application.fetch_env!(:crew, Oban)},
