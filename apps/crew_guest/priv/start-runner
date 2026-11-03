@@ -1,0 +1,21 @@
+#!/bin/sh
+# crew-guest's runner wrapper (§13.5 step 8).
+#
+#   start-runner <jit file> <command> [args...]
+#
+# Reads the JIT config, deletes its file, then replaces itself with
+# `<command> [args...] --jitconfig <config>`. The exec keeps this process's
+# pid, so crew-guest's SIGTERM reaches the runner.
+set -eu
+
+jit_file=$1
+shift
+jit=$(cat "$jit_file")
+rm -f "$jit_file"
+
+# crew-guest's unit protects it from the OOM killer; the job shouldn't be.
+if [ -w /proc/self/oom_score_adj ]; then
+  echo 0 > /proc/self/oom_score_adj || true
+fi
+
+exec "$@" --jitconfig "$jit"

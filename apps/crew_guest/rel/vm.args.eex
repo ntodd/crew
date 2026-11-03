@@ -1,0 +1,8 @@
+## crew-guest shares the job VM's vCPUs with the job (§13.5): one
+## scheduler, one async thread, and no scheduler busy-waiting, dirty
+## schedulers included.
++S 1:1
++A 1
++sbwt none
++sbwtdcpu none
++sbwtdio none
