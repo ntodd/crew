@@ -131,4 +131,55 @@ defmodule Crew.Fixtures do
       "installation" => %{"id" => repo.installation.github_id}
     }
   end
+
+  @doc "A box with an enrolled key; `__private_key__` is the agent's, for signing connects."
+  def box_fixture(attrs \\ []) do
+    attrs = Map.new(attrs)
+    {public, private} = CrewProtocol.Auth.generate_keypair()
+    caps = Map.get(attrs, :capabilities, capabilities())
+
+    box =
+      %Crew.Boxes.Box{
+        name: Map.get(attrs, :name, "box#{unique()}"),
+        type: Map.get(attrs, :type, "mac-vz"),
+        driver: caps["driver"],
+        guest_arch: caps["guest_arch"],
+        public_key: public,
+        key_fingerprint: CrewProtocol.Auth.fingerprint(public),
+        agent_version: "0.1.0",
+        protocol_version: CrewProtocol.version(),
+        capabilities: caps,
+        pinned_capabilities: Map.get(attrs, :pinned_capabilities, caps),
+        firewall_ok: Map.get(attrs, :firewall_ok, true),
+        draining: Map.get(attrs, :draining, false),
+        needs_approval: Map.get(attrs, :needs_approval, false),
+        quarantined_until: Map.get(attrs, :quarantined_until),
+        max_vms: Map.get(attrs, :max_vms),
+        revoked_at: Map.get(attrs, :revoked_at)
+      }
+      |> Repo.insert!()
+
+    Map.put(box, :__private_key__, private)
+  end
+
+  def capabilities(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "driver" => "vz",
+        "driver_version" => "0.1.0",
+        "guest_arch" => "arm64",
+        "vcpus" => 18,
+        "memory_mib" => 110_592,
+        "vm_area_mib" => 409_600,
+        "max_vcpus_per_vm" => 18,
+        "max_memory_mib_per_vm" => 110_592,
+        "vmm_overhead_mib" => 128,
+        "features" => [],
+        "virtualized" => false,
+        "hypervisor_vendor" => nil,
+        "firewall_ok" => true
+      },
+      Map.new(overrides, fn {k, v} -> {to_string(k), v} end)
+    )
+  end
 end

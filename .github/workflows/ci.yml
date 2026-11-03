@@ -118,6 +118,11 @@ jobs:
           key: e2e-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('apps/crew/mix.lock') }}
       - run: mix deps.get && mix assets.setup && mix assets.build
         working-directory: apps/crew
+      # The null-driver agent the box tests enroll (§11.5).
+      - run: mix deps.get && mix compile
+        working-directory: apps/crew_agent
+        env:
+          MIX_ENV: dev
       - run: npm ci && npx playwright install --with-deps chromium
         working-directory: e2e
       - run: npx playwright test
@@ -129,3 +134,30 @@ jobs:
           name: e2e-results
           path: tmp/e2e/results
           retention-days: 7
+
+  agent:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/crew_agent
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/crew_agent/deps
+            apps/crew_agent/_build
+          key: agent-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('apps/crew_agent/mix.lock') }}
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
+      - run: mix test

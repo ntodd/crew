@@ -49,3 +49,48 @@ export async function ensureSetUp(page, host = "crew.tail1234.ts.net") {
   await page.getByRole("button", { name: "Install" }).click()
   await page.waitForURL(/\/sign-in$/)
 }
+
+// Starts a null-driver agent (apps/crew_agent, dev) enrolled with `token`.
+// Returns the child process; call stopAgent() when done.
+import { spawn } from "node:child_process"
+import { rmSync } from "node:fs"
+
+export function startAgent(token, { name, dataDir, env = {} } = {}) {
+  const root = resolve(import.meta.dirname, "../..")
+  const dir = dataDir || resolve(root, "tmp/e2e/agent-" + name)
+  rmSync(dir, { recursive: true, force: true })
+  const child = spawn("mise", ["exec", "--", "mix", "run", "--no-halt"], {
+    cwd: resolve(root, "apps/crew_agent"),
+    env: {
+      ...process.env,
+      MIX_ENV: "dev",
+      CREW_DEV: "1",
+      CREW_DRIVER: "null",
+      CREW_URL: "ws://localhost:4100/agent/websocket",
+      CREW_JOIN_TOKEN: token,
+      CREW_BOX_NAME: name,
+      CREW_DATA_DIR: dir,
+      CREW_GUEST_API_PORT: "0",
+      ...env,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  })
+  child.stdout.on("data", d => process.env.E2E_AGENT_LOG && process.stdout.write(`[agent ${name}] ${d}`))
+  child.stderr.on("data", d => process.env.E2E_AGENT_LOG && process.stdout.write(`[agent ${name}] ${d}`))
+  return child
+}
+
+export function stopAgent(child) {
+  if (!child || child.exitCode !== null) return
+  try { process.kill(-child.pid, "SIGTERM") } catch (_e) {}
+}
+
+export async function addBox(page, name, type = "mac-vz") {
+  await page.goto("/boxes/new")
+  await page.getByLabel("Name").fill(name)
+  await page.locator(`input[name="box[box_type]"][value="${type}"]`).check()
+  await page.getByRole("button", { name: "Create join token" }).click()
+  const text = await page.locator("#dev-join-command, #join-command").first().innerText()
+  return text.match(/(cj_[A-Za-z0-9_-]+)/)[1]
+}

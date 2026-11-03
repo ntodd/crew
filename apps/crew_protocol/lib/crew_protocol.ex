@@ -33,6 +33,12 @@ defmodule CrewProtocol do
 
   def dump_join(join), do: Schema.dump(join, @join_spec)
 
+  @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/
+
+  @doc "Whether `value` is a lowercase UUID, as every id on the wire is."
+  def uuid?(value) when is_binary(value), do: Regex.match?(@uuid, value)
+  def uuid?(_), do: false
+
   @doc "A random (v4) UUID."
   def uuid do
     <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)

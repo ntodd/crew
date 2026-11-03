@@ -5,16 +5,37 @@ defmodule CrewWeb.CrewComponents do
 
   import CrewWeb.CoreComponents
 
-  @doc "Whether a box's agent is connected."
+  @doc """
+  A box's status (§17.3): online, draining, quarantined, needs approval,
+  revoked or offline, as a badge with text.
+  """
+  attr :box, :map, required: true
   attr :online, :boolean, required: true
-  attr :revoked, :boolean, default: false
 
   def box_status(assigns) do
+    assigns = assign(assigns, :status, box_state(assigns.box, assigns.online))
+
     ~H"""
-    <.badge :if={@revoked} color="rose" dot>Revoked</.badge>
-    <.badge :if={not @revoked and @online} color="emerald" dot>Online</.badge>
-    <.badge :if={not @revoked and not @online} color="zinc" dot>Offline</.badge>
+    <span class="inline-flex flex-wrap gap-1.5">
+      <.badge :for={{color, label} <- @status} color={color} dot>{label}</.badge>
+    </span>
     """
+  end
+
+  defp box_state(%{revoked_at: at}, _online) when not is_nil(at), do: [{"rose", "Revoked"}]
+
+  defp box_state(box, online) do
+    now = DateTime.utc_now()
+
+    [
+      if(online, do: {"emerald", "Online"}, else: {"zinc", "Offline"}),
+      box.needs_approval && {"amber", "Needs approval"},
+      box.draining && {"sky", "Draining"},
+      box.quarantined_until && DateTime.compare(box.quarantined_until, now) == :gt &&
+        {"rose", "Quarantined"},
+      box.reboot_required && {"amber", "Reboot needed"}
+    ]
+    |> Enum.filter(& &1)
   end
 
   @doc "A used-of-total bar, amber past `threshold`."

@@ -16,6 +16,8 @@ export CREW_GITHUB_WEB_URL="${CREW_GITHUB_WEB_URL:-http://localhost:4199}"
 export CREW_BASE_URL="${CREW_BASE_URL:-http://localhost:4100}"
 export PORT="${PORT:-4100}"
 export CREW_HOOK_PORT="${CREW_HOOK_PORT:-4101}"
+# The null driver and ws:// agents are allowed (§11.5, §5.3).
+export CREW_DEV="${CREW_DEV:-1}"
 
 # mise pins the toolchain locally; CI sets it up directly.
 run() { if command -v mise >/dev/null 2>&1; then mise exec -- "$@"; else "$@"; fi; }
