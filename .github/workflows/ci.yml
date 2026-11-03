@@ -47,3 +47,78 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix credo --strict
       - run: mix test
+
+  control-plane:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    defaults:
+      run:
+        working-directory: apps/crew
+    env:
+      MIX_ENV: test
+      CREW_DB: ${{ matrix.db }}
+    services:
+      postgres:
+        image: ${{ matrix.db == 'postgres' && 'public.ecr.aws/docker/library/postgres:18' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/crew/deps
+            apps/crew/_build
+          key: cp-${{ matrix.db }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('apps/crew/mix.lock') }}
+      - if: matrix.db == 'postgres'
+        run: echo "DATABASE_URL=ecto://postgres:postgres@localhost/crew_test" >> "$GITHUB_ENV"
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
+      - run: mix sobelow --config --exit
+      - run: mix deps.audit
+      - run: mix test
+
+  # The UI in a real browser, against a fake GitHub (e2e/).
+  browser:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/crew/deps
+            apps/crew/_build
+          key: e2e-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('apps/crew/mix.lock') }}
+      - run: mix deps.get && mix assets.setup && mix assets.build
+        working-directory: apps/crew
+      - run: npm ci && npx playwright install --with-deps chromium
+        working-directory: e2e
+      - run: npx playwright test
+        working-directory: e2e

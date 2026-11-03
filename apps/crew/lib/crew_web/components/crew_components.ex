@@ -1,0 +1,211 @@
+defmodule CrewWeb.CrewComponents do
+  @moduledoc "Components for Crew's own concepts: boxes, capacity, commands."
+  use Phoenix.Component
+  use CrewWeb, :verified_routes
+
+  import CrewWeb.CoreComponents
+
+  @doc "Whether a box's agent is connected."
+  attr :online, :boolean, required: true
+  attr :revoked, :boolean, default: false
+
+  def box_status(assigns) do
+    ~H"""
+    <.badge :if={@revoked} color="rose" dot>Revoked</.badge>
+    <.badge :if={not @revoked and @online} color="emerald" dot>Online</.badge>
+    <.badge :if={not @revoked and not @online} color="zinc" dot>Offline</.badge>
+    """
+  end
+
+  @doc "A used-of-total bar, amber past `threshold`."
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+  attr :max, :any, required: true
+  attr :unit, :string, default: ""
+  attr :threshold, :float, default: 0.9
+  attr :format, :any, default: nil
+
+  def capacity_bar(assigns) do
+    max = if is_number(assigns.max) and assigns.max > 0, do: assigns.max, else: nil
+    ratio = if max, do: (assigns.value || 0) / max, else: 0
+
+    assigns =
+      assigns
+      |> assign(:ratio, ratio)
+      |> assign(:max_value, max && round(max * 100))
+      |> assign(:bar_value, max && round(min(assigns.value || 0, max) * 100))
+
+    ~H"""
+    <div class="space-y-1.5">
+      <div class="flex items-baseline justify-between gap-2 text-xs">
+        <span class="text-ink-2">{@label}</span>
+        <span class="tabular-nums text-ink-3">
+          {fmt(@value, @format)}<span :if={@max_value}> / {fmt(@max, @format)}</span>{@unit}
+        </span>
+      </div>
+      <progress
+        :if={@max_value}
+        class={["bar", bar_class(@ratio, @threshold)]}
+        value={@bar_value}
+        max={@max_value}
+        aria-label={@label}
+      >
+        {round(@ratio * 100)}%
+      </progress>
+    </div>
+    """
+  end
+
+  defp bar_class(ratio, threshold) when ratio > 1,
+    do: if(threshold < 1, do: "bar-danger", else: "bar-warning")
+
+  defp bar_class(ratio, threshold) when ratio > threshold, do: "bar-warning"
+  defp bar_class(_, _), do: nil
+
+  defp fmt(nil, _), do: "0"
+  defp fmt(value, fun) when is_function(fun, 1), do: fun.(value)
+
+  defp fmt(value, _) when is_float(value),
+    do: :erlang.float_to_binary(Float.round(value, 1), [:short])
+
+  defp fmt(value, _), do: to_string(value)
+
+  # One decimal below 100 GiB, whole numbers above ("1758", not "1.8e3").
+  def gib(mb) when is_number(mb) and mb >= 100 * 1024, do: Integer.to_string(round(mb / 1024))
+  def gib(mb) when is_number(mb), do: :erlang.float_to_binary(mb / 1024, decimals: 1)
+  def gib(_), do: "0"
+
+  @doc "A shell command with a copy button."
+  attr :id, :string, required: true
+  attr :command, :string, required: true
+  attr :label, :string, default: nil
+
+  def command(assigns) do
+    ~H"""
+    <div class="space-y-1.5">
+      <p :if={@label} class="text-xs font-medium text-ink-2">{@label}</p>
+      <div class="flex items-stretch gap-2">
+        <code id={@id} class="command min-w-0 flex-1 text-ink">{@command}</code>
+        <button
+          type="button"
+          id={"#{@id}-copy"}
+          phx-hook="Copy"
+          data-copy={@command}
+          class="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-line-strong bg-canvas px-3 text-xs font-medium text-ink-2 shadow-control transition-colors hover:bg-subtle hover:text-ink"
+        >
+          <.icon name="hero-clipboard-document-micro" class="size-3.5" />
+          <span data-copy-label>Copy</span>
+        </button>
+      </div>
+    </div>
+    """
+  end
+
+  @doc "A titled panel, the basic surface for page sections."
+  attr :title, :string, default: nil
+  attr :id, :string, default: nil
+  attr :class, :any, default: nil
+  attr :padded, :boolean, default: true
+  slot :actions
+  slot :subtitle
+  slot :inner_block, required: true
+
+  def panel(assigns) do
+    ~H"""
+    <section id={@id} class={["rounded-xl border border-line bg-raised shadow-xs", @class]}>
+      <header
+        :if={@title}
+        class="flex items-start justify-between gap-4 border-b border-line px-5 py-3.5"
+      >
+        <div class="min-w-0">
+          <h2 class="text-sm font-semibold text-ink">{@title}</h2>
+          <p :if={@subtitle != []} class="mt-0.5 text-xs text-ink-2">{render_slot(@subtitle)}</p>
+        </div>
+        <div :if={@actions != []} class="flex shrink-0 items-center gap-2">
+          {render_slot(@actions)}
+        </div>
+      </header>
+      <div class={@padded && "p-5"}>{render_slot(@inner_block)}</div>
+    </section>
+    """
+  end
+
+  @doc "A notice strip: info, warning or danger."
+  attr :kind, :string, default: "info", values: ~w(info warning danger)
+  attr :icon, :string, default: nil
+  attr :id, :string, default: nil
+  attr :class, :any, default: nil
+  slot :inner_block, required: true
+  slot :actions
+
+  def callout(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class={[
+        "flex flex-col gap-3 rounded-xl border px-4 py-3 text-sm sm:flex-row sm:items-center",
+        @kind == "info" && "border-line bg-subtle text-ink-2",
+        @kind == "warning" && "border-warning/30 bg-warning-soft text-warning",
+        @kind == "danger" && "border-danger/30 bg-danger-soft text-danger",
+        @class
+      ]}
+    >
+      <div class="flex flex-1 items-start gap-2.5">
+        <.icon name={@icon || callout_icon(@kind)} class="mt-0.5 size-4 shrink-0" />
+        <div class="min-w-0 flex-1">{render_slot(@inner_block)}</div>
+      </div>
+      <div :if={@actions != []} class="flex shrink-0 flex-wrap items-center gap-2">
+        {render_slot(@actions)}
+      </div>
+    </div>
+    """
+  end
+
+  defp callout_icon("info"), do: "hero-information-circle-mini"
+  defp callout_icon("warning"), do: "hero-exclamation-triangle-mini"
+  defp callout_icon("danger"), do: "hero-x-circle-mini"
+
+  @doc "An operation's status as a small icon and label."
+  attr :status, :string, required: true
+
+  def op_status(assigns) do
+    ~H"""
+    <span class={["inline-flex items-center gap-1.5 text-xs font-medium", op_color(@status)]}>
+      <.icon
+        name={op_icon(@status)}
+        class={["size-4", @status in ~w(dispatched running) && "motion-safe:animate-spin"]}
+      />
+      {op_label(@status)}
+    </span>
+    """
+  end
+
+  defp op_icon("succeeded"), do: "hero-check-circle-mini"
+  defp op_icon("failed"), do: "hero-x-circle-mini"
+  defp op_icon("cancelled"), do: "hero-minus-circle-mini"
+  defp op_icon("queued"), do: "hero-clock-mini"
+  defp op_icon(_), do: "hero-arrow-path-mini"
+
+  defp op_color("succeeded"), do: "text-success"
+  defp op_color("failed"), do: "text-danger"
+  defp op_color("queued"), do: "text-ink-3"
+  defp op_color("cancelled"), do: "text-ink-3"
+  defp op_color(_), do: "text-accent-ink"
+
+  defp op_label("dispatched"), do: "Sent"
+  defp op_label(status), do: String.capitalize(status)
+
+  @doc "A human name for an operation's action."
+  def action_label("vm.start"), do: "Start a VM"
+  def action_label("vm.stop"), do: "Stop a VM"
+  def action_label("image.prepare"), do: "Prepare an image"
+  def action_label("image.remove"), do: "Remove an image"
+  def action_label("cache.config"), do: "Configure the cache"
+  def action_label("cache.purge"), do: "Purge the cache"
+  def action_label("box.inventory"), do: "Refresh inventory"
+  def action_label("box.restart"), do: "Reboot the box"
+  def action_label("cachevm.restart"), do: "Reboot the cache VM"
+  def action_label("agent.update"), do: "Update agent"
+  def action_label("op.cancel"), do: "Cancel an operation"
+  def action_label(other), do: other
+end

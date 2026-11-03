@@ -1,0 +1,640 @@
+/* See the Tailwind configuration guide for advanced usage
+   https://tailwindcss.com/docs/configuration */
+
+@import "tailwindcss" source(none);
+@source "../css";
+@source "../js";
+@source "../../lib/crew_web";
+
+/* A Tailwind plugin that makes "hero-#{ICON}" classes available.
+   The heroicons installation itself is managed by your mix.exs */
+@plugin "../vendor/heroicons";
+
+/* Inter, self-hosted (font-src is 'self'). Variable weight 100–900. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/inter-latin-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("/fonts/inter-latin-ext-wght-normal.woff2") format("woff2-variations");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304,
+    U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0,
+    U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/*
+  Design tokens, named by role rather than hue (see DESIGN.md). These
+  are the light values; [data-theme=dark] below reassigns the same
+  names, so components never carry dark: variants of their own.
+
+  The accent is the one brand color; [data-theme=dark] lifts it.
+*/
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  --color-canvas: #ffffff;
+  --color-subtle: #f7f7f9;
+  --color-muted: #efeff3;
+  --color-raised: #ffffff;
+  --color-line: #e7e7ec;
+  --color-line-strong: #d4d4dc;
+
+  --color-ink: #16161d;
+  --color-ink-2: #55556a;
+  --color-ink-3: #71717f;
+
+  --color-accent: #5b50e8;
+  --color-accent-fg: #ffffff;
+  --color-accent-hover: #4b40d8;
+  --color-accent-soft: #efedfd;
+  --color-accent-ink: #3a30b8;
+  --color-focus: #5b50e8;
+
+  --color-success: #1a8a4a;
+  --color-success-soft: #e6f6ec;
+  --color-warning: #a35f00;
+  --color-warning-soft: #fdf3e1;
+  --color-danger: #d1293d;
+  --color-danger-soft: #fdeced;
+
+  /* Terminal surfaces: build logs and command snippets sit on studio
+     black in both themes. */
+  --color-studio: #0b0b0f;
+  --color-studio-2: #16161d;
+  --color-studio-ink: #f4f4f7;
+  --color-studio-ink-2: #a9a9b8;
+  --color-studio-success: #4cc38a;
+  --color-studio-warning: #f5a524;
+  --color-studio-danger: #ff6369;
+
+  /* The zinc ramp is retuned to the same cool neutrals, so pages
+     still written against zinc-* land on the system's grays. New code
+     uses the role tokens above. */
+  --color-zinc-50: #f7f7f9;
+  --color-zinc-100: #efeff3;
+  --color-zinc-200: #e7e7ec;
+  --color-zinc-300: #d4d4dc;
+  --color-zinc-400: #a1a1af;
+  --color-zinc-500: #71717f;
+  --color-zinc-600: #55556a;
+  --color-zinc-700: #3d3d4d;
+  --color-zinc-800: #26262f;
+  --color-zinc-900: #16161d;
+  --color-zinc-950: #0b0b0f;
+
+  --shadow-xs: 0 1px 2px rgb(22 22 29 / 0.06);
+  --shadow-control: 0 1px 2px rgb(22 22 29 / 0.06), inset 0 -1px 0 rgb(22 22 29 / 0.04);
+  --shadow-raised: 0 1px 3px rgb(22 22 29 / 0.08), 0 4px 12px -4px rgb(22 22 29 / 0.08);
+  --shadow-overlay: 0 16px 40px -12px rgb(22 22 29 / 0.24), 0 4px 10px -4px rgb(22 22 29 / 0.08);
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --animate-fade-up: fade-up 220ms var(--ease-out-expo) both;
+  --animate-status-pulse: status-pulse 1.6s var(--ease-out-expo) infinite;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* A halo breathes out of a status dot while work is in flight; the
+     dot itself never fades. */
+  @keyframes status-pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 45%, transparent); }
+    70%, 100% { box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent); }
+  }
+}
+
+/* Dark: the studio palette, lifted a step for long sessions. Layers
+   recede by getting darker (sidebar below canvas below raised), the
+   same order the light theme reads in. */
+[data-theme="dark"] {
+  color-scheme: dark;
+  --color-canvas: #121218;
+  --color-subtle: #0b0b0f;
+  --color-muted: #24242e;
+  --color-raised: #1b1b23;
+  --color-line: #26262f;
+  --color-line-strong: #3a3a47;
+
+  --color-ink: #f4f4f7;
+  --color-ink-2: #a9a9b8;
+  --color-ink-3: #8a8a99;
+
+  --color-success: #4cc38a;
+  --color-success-soft: rgb(76 195 138 / 0.14);
+  --color-warning: #f5a524;
+  --color-warning-soft: rgb(245 165 36 / 0.14);
+  --color-danger: #ff6369;
+  --color-danger-soft: rgb(255 99 105 / 0.14);
+
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-control: 0 1px 2px rgb(0 0 0 / 0.4), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --shadow-raised: 0 1px 3px rgb(0 0 0 / 0.5), 0 4px 12px -4px rgb(0 0 0 / 0.5);
+  --shadow-overlay: 0 16px 40px -12px rgb(0 0 0 / 0.7), 0 4px 10px -4px rgb(0 0 0 / 0.4),
+    0 0 0 1px rgb(255 255 255 / 0.06);
+}
+
+/* Dark accent: the same violet, lifted for contrast on dark surfaces. */
+[data-theme="dark"] {
+  --color-accent: #7c72ff;
+  --color-accent-hover: #8883ff;
+  --color-accent-soft: #1d1d2f;
+  --color-accent-ink: #adb0ff;
+  --color-focus: #9695ff;
+}
+
+/* Add variants based on LiveView classes */
+@custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
+@custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
+@custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
+/* LiveView toggles this class on phx-drop-target elements while files hover over them */
+@custom-variant phx-drop-target-active (.phx-drop-target-active&, .phx-drop-target-active &);
+
+/* Use the data attribute for dark mode  */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* Make LiveView wrapper divs transparent for layout */
+[data-phx-session], [data-phx-teleported-src] { display: contents }
+
+@layer base {
+  html {
+    color: var(--color-ink);
+    background: var(--color-canvas);
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+    color: var(--color-ink);
+  }
+
+  input, textarea {
+    caret-color: var(--color-accent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  a {
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+  }
+
+  h1, h2, h3 {
+    text-wrap: balance;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+
+  dialog::backdrop {
+    background: rgb(22 22 29 / 0.4);
+    backdrop-filter: blur(2px);
+  }
+}
+
+/*
+  Form control classes. Core components render these, and a few pages
+  put them on hand-built controls (`class="w-full input font-mono"`),
+  so they live here once instead of in every template. Layered as
+  components so utilities on the element still win.
+*/
+@layer components {
+  .input {
+    display: block;
+    width: 100%;
+    height: 2.25rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 0.5rem;
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    box-shadow: var(--shadow-xs);
+    outline: none;
+    transition: border-color 150ms var(--ease-out-expo), box-shadow 150ms var(--ease-out-expo);
+  }
+
+  .input::placeholder {
+    color: var(--color-ink-3);
+  }
+
+  .input:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  }
+
+  .input:disabled,
+  .input[readonly] {
+    cursor: not-allowed;
+    background-color: var(--color-subtle);
+    color: var(--color-ink-3);
+  }
+
+  .input[aria-invalid="true"] {
+    border-color: var(--color-danger);
+  }
+
+  .input[aria-invalid="true"]:focus {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 18%, transparent);
+  }
+
+  textarea.input {
+    height: auto;
+    min-height: 6rem;
+    padding: 0.5rem 0.75rem;
+    line-height: 1.6;
+  }
+
+  /* WebKit's clear button is a fixed blue glyph that ignores the
+     palette; Escape still clears a search field. */
+  input[type="search"].input::-webkit-search-cancel-button {
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  select.input {
+    appearance: none;
+    cursor: pointer;
+    padding-right: 2.25rem;
+  }
+
+  select.input[multiple] {
+    height: auto;
+    padding: 0.375rem 0.5rem;
+  }
+
+  input[type="file"].input {
+    height: auto;
+    padding: 0.375rem;
+  }
+
+  input[type="file"].input::file-selector-button {
+    margin-right: 0.75rem;
+    padding: 0.25rem 0.75rem;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 0.375rem;
+    background: var(--color-subtle);
+    color: var(--color-ink);
+    font: inherit;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  /* 16px box, 5px radius, accent when checked. The tick is a mask
+     painted in --color-accent-fg, so it stays legible on a light
+     brand (Ford's orange takes a black tick). */
+  .checkbox {
+    position: relative;
+    display: inline-grid;
+    place-content: center;
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    appearance: none;
+    cursor: pointer;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 5px;
+    background-color: var(--color-canvas);
+    box-shadow: var(--shadow-xs);
+    transition: background-color 150ms var(--ease-out-expo), border-color 150ms var(--ease-out-expo);
+  }
+
+  .checkbox::before {
+    content: "";
+    width: 0.75rem;
+    height: 0.75rem;
+    background-color: var(--color-accent-fg);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E") center / contain no-repeat;
+    transform: scale(0.6);
+    opacity: 0;
+    transition: transform 150ms var(--ease-out-expo), opacity 150ms var(--ease-out-expo);
+  }
+
+  .checkbox:checked {
+    border-color: var(--color-accent);
+    background-color: var(--color-accent);
+  }
+
+  .checkbox:checked::before {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  /* A button can be a three-state checkbox (role="checkbox"), for
+     "all, none or some of a group": checked like the input, and mixed
+     with a dash in place of the tick. */
+  .checkbox[aria-checked="true"],
+  .checkbox[aria-checked="mixed"] {
+    border-color: var(--color-accent);
+    background-color: var(--color-accent);
+  }
+
+  .checkbox[aria-checked="true"]::before {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  .checkbox[aria-checked="mixed"]::before {
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' d='M4 8h8'/%3E%3C/svg%3E");
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  .checkbox:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* 16px circle; checked draws an accent ring around a canvas dot. */
+  .radio {
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    appearance: none;
+    cursor: pointer;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 9999px;
+    background-color: var(--color-canvas);
+    box-shadow: var(--shadow-xs);
+    transition: border-width 150ms var(--ease-out-expo), border-color 150ms var(--ease-out-expo);
+  }
+
+  .radio:checked {
+    border: 5px solid var(--color-accent);
+  }
+
+  .radio:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* 28x16 on/off switch for a setting that saves the moment it flips.
+     The track fills with the accent like a checked checkbox. The knob
+     stays white: it's a shape, not a glyph, and its ring and shadow
+     keep it distinct on a pale brand. */
+  .switch {
+    position: relative;
+    flex-shrink: 0;
+    width: 1.75rem;
+    height: 1rem;
+    appearance: none;
+    cursor: pointer;
+    border-radius: 9999px;
+    background-color: var(--color-line-strong);
+    transition: background-color 150ms var(--ease-out-expo);
+  }
+
+  .switch::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 0.75rem;
+    height: 0.75rem;
+    border-radius: 9999px;
+    background-color: white;
+    box-shadow: 0 0 0 0.5px rgb(22 22 29 / 0.12), 0 1px 2px rgb(22 22 29 / 0.24);
+    transition: transform 150ms var(--ease-out-expo);
+  }
+
+  .switch:hover {
+    background-color: color-mix(in oklab, var(--color-ink) 24%, var(--color-canvas));
+  }
+
+  .switch:checked {
+    background-color: var(--color-accent);
+  }
+
+  .switch:checked:hover {
+    background-color: var(--color-accent-hover);
+  }
+
+  .switch:checked::before {
+    transform: translateX(0.75rem);
+  }
+
+  .switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  /* The quiet field label above a control. */
+  .label {
+    display: block;
+    margin-bottom: 0.375rem;
+    color: var(--color-ink);
+    font-size: 0.875rem;
+    font-weight: 500;
+  }
+
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*
+  Crew additions.
+*/
+
+/* Build and container logs: a terminal surface that keeps its colors in
+   both themes, wraps long lines, and scrolls on its own. */
+.log-view {
+  background: var(--color-studio);
+  color: var(--color-studio-ink);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  tab-size: 4;
+  scrollbar-color: #3a3a47 transparent;
+}
+
+.log-view::selection,
+.log-view *::selection {
+  background: rgb(124 114 255 / 0.35);
+  color: var(--color-studio-ink);
+}
+
+/* A command to copy: monospace on the muted layer. */
+.command {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--color-muted);
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* Capacity bars: native <progress>, so the fill needs no inline style
+   (the CSP refuses style attributes). */
+progress.bar {
+  display: block;
+  width: 100%;
+  height: 0.375rem;
+  appearance: none;
+  overflow: hidden;
+  border: 0;
+  border-radius: 9999px;
+  background-color: var(--color-muted);
+  color: var(--color-accent);
+}
+
+progress.bar::-webkit-progress-bar {
+  border-radius: 9999px;
+  background-color: var(--color-muted);
+}
+
+progress.bar::-webkit-progress-value {
+  border-radius: 9999px;
+  background-color: currentColor;
+  transition: width 500ms var(--ease-out-expo);
+}
+
+progress.bar::-moz-progress-bar {
+  border-radius: 9999px;
+  background-color: currentColor;
+}
+
+progress.bar.bar-warning { color: var(--color-warning); }
+progress.bar.bar-danger { color: var(--color-danger); }
+progress.bar.bar-muted { color: var(--color-line-strong); }
+
+/* Charts (CrewWeb.Charts). Categorical series colors in fixed order,
+   validated (dataviz validate_palette.js) against the raised surface in
+   each theme; light slots 3-5 are under 3:1, so stacked charts always
+   carry a legend with values. */
+:root {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #a1a1af;
+}
+
+[data-theme="dark"] {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #55556a;
+}
+
+.chart-value { font-variant-numeric: normal; }
+
+.chart-grid { height: 0; border-top: 1px solid var(--color-line); }
+
+.chart-tick { background: var(--color-raised); padding-right: 0.25rem; }
+
+/* Series hues as classes: production's CSP blocks inline styles. */
+.series-1 { --c: var(--series-1); }
+.series-2 { --c: var(--series-2); }
+.series-3 { --c: var(--series-3); }
+.series-4 { --c: var(--series-4); }
+.series-5 { --c: var(--series-5); }
+.series-6 { --c: var(--series-6); }
+.series-7 { --c: var(--series-7); }
+.series-8 { --c: var(--series-8); }
+.series-other { --c: var(--series-other); }
+.series-accent { --c: var(--color-accent); }
+
+.chart-line {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-line-thin { stroke-width: 1.5px; }
+
+/* Stacked bands: a wash of the series hue, with a 2px surface gap
+   between neighbours. */
+.chart-area {
+  fill: color-mix(in srgb, var(--c) 22%, transparent);
+  stroke: var(--color-raised);
+  stroke-width: 2px;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-ref {
+  stroke: var(--color-line-strong);
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-crosshair { width: 0; border-left: 1px solid var(--color-ink-3); }
+
+.chart-plot { outline: none; touch-action: pan-y; }
+.chart-plot:focus-visible { box-shadow: 0 0 0 2px var(--color-focus); border-radius: 0.25rem; }
+
+.chart-key-line,
+.chart-key-area {
+  display: inline-block;
+  background: var(--c);
+}
+.chart-key-line { width: 0.75rem; height: 2px; border-radius: 1px; }
+.chart-key-area { width: 0.625rem; height: 0.625rem; border-radius: 2px; }
+
+/* The range picker: a segmented control. */
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border-radius: 0.5rem;
+  background: var(--color-muted);
+}
+.segmented a {
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-ink-2);
+  font-variant-numeric: tabular-nums;
+}
+.segmented a:hover { color: var(--color-ink); }
+.segmented a[aria-current="true"] {
+  background: var(--color-raised);
+  color: var(--color-ink);
+  box-shadow: var(--shadow-xs);
+}
