@@ -16,10 +16,12 @@ defmodule CrewCache.Fetcher do
   client that has caught up parks, and gets one wake-up when there's
   more: a client that reads slowly never collects a mailbox of updates.
 
-  **Space:** a download with a `Content-Length` reserves it in the store
-  first (`CrewCache.Store.reserve/1`), so downloads in flight count
-  against the quota; one that won't fit is refused (and the client goes
-  upstream). At most `max_fetches` run at once.
+  **Space:** a download reserves space in the store before it writes
+  (`CrewCache.Store.reserve/2`), held by this process until it commits
+  or fails: its `Content-Length`, or `reserve_step` ahead of what's
+  written when there's none. So downloads in flight count against the
+  quota; one refused at the start is a 404 (the client goes upstream),
+  one refused later is cut short. At most `max_fetches` run at once.
 
   When the SHA-256 matches, the file is synced and committed and the
   fetch ends. When it doesn't, nothing is stored, the mismatch is
@@ -327,7 +329,11 @@ defmodule CrewCache.Fetcher do
 
   # Shut down before the download finished: it mustn't leave its file.
   @impl true
-  def terminate(_reason, %{done: nil} = state), do: File.rm(state.tmp)
+  def terminate(_reason, %{done: nil} = state) do
+    File.rm(state.tmp)
+    Store.release()
+  end
+
   def terminate(_reason, _state), do: :ok
 
   defp verify({:ok, hex, size, content_type}, source, %{spec: spec} = state) do
@@ -382,6 +388,8 @@ defmodule CrewCache.Fetcher do
   # while without asking again. Anything else, or anything from the
   # parent, ends the fetch: the next try starts afresh (or goes upstream).
   defp finish({:error, reason} = error, source, state) do
+    # Its file is gone (verify/3); so is the space it held.
+    Store.release()
     state = %{state | done: error}
     notify(state, error)
 
@@ -416,7 +424,9 @@ defmodule CrewCache.Fetcher do
       limit: limit,
       media_type: nil,
       error: nil,
-      started: false
+      started: false,
+      reserved: 0,
+      step: CrewCache.Config.get().reserve_step
     }
 
     headers = if spec.accept, do: [{"accept", spec.accept}], else: []
@@ -451,43 +461,61 @@ defmodule CrewCache.Fetcher do
   defp outcome({:error, reason, _sink}), do: {:error, reason}
   defp outcome({:error, reason}), do: {:error, reason}
 
+  # Space is reserved before a byte is written, held by the fetch process
+  # (acc.parent) until it commits or fails: the whole length when the
+  # upstream gives one, otherwise `reserve_step` ahead of what's written.
+  # A reservation refused at the headers is a clean failure (no client
+  # has seen anything); one refused later cuts the fetch short.
   defp sink({:headers, _status, headers}, acc) do
-    size =
-      case Integer.parse(Upstream.header(headers, "content-length") || "") do
-        {n, ""} when n >= 0 -> n
-        _ -> nil
-      end
+    size = content_length(headers)
+    initial = size || min(acc.step, acc.limit)
 
     cond do
       size && size > acc.limit ->
         {:halt, %{acc | error: :too_large}}
 
-      # The reservation lasts as long as this process (the store watches it).
-      size && Store.reserve(size) != :ok ->
-        {:halt, %{acc | error: :too_large}}
+      initial > 0 and Store.reserve(acc.parent, initial) != :ok ->
+        {:halt, %{acc | error: :no_space}}
 
       true ->
         content_type = Upstream.header(headers, "content-type")
         send(acc.parent, {:headers, size, content_type})
-        {:cont, %{acc | media_type: content_type, started: true}}
+        {:cont, %{acc | media_type: content_type, started: true, reserved: initial}}
     end
   end
 
   defp sink({:data, data}, acc) do
     written = acc.written + byte_size(data)
 
-    if written > acc.limit do
-      {:halt, %{acc | error: :too_large}}
+    with :ok <- within_limit(written, acc),
+         {:ok, acc} <- reserve_for(written, acc),
+         :ok <- :file.write(acc.io, data) do
+      :atomics.put(acc.counter, 1, written)
+      send(acc.parent, :progress)
+      {:cont, %{acc | hash: :crypto.hash_update(acc.hash, data), written: written}}
     else
-      case :file.write(acc.io, data) do
-        :ok ->
-          :atomics.put(acc.counter, 1, written)
-          send(acc.parent, :progress)
-          {:cont, %{acc | hash: :crypto.hash_update(acc.hash, data), written: written}}
+      {:error, reason} -> {:halt, %{acc | error: reason}}
+    end
+  end
 
-        {:error, reason} ->
-          {:halt, %{acc | error: {:write, reason}}}
-      end
+  defp content_length(headers) do
+    case Integer.parse(Upstream.header(headers, "content-length") || "") do
+      {n, ""} when n >= 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp within_limit(written, acc),
+    do: if(written > acc.limit, do: {:error, :too_large}, else: :ok)
+
+  defp reserve_for(written, %{reserved: reserved} = acc) when written <= reserved, do: {:ok, acc}
+
+  defp reserve_for(written, acc) do
+    more = min(max(acc.step, written - acc.reserved), acc.limit - acc.reserved)
+
+    case Store.reserve(acc.parent, more) do
+      :ok -> {:ok, %{acc | reserved: acc.reserved + more}}
+      :full -> {:error, :no_space}
     end
   end
 

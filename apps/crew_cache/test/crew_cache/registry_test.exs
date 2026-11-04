@@ -287,6 +287,46 @@ defmodule CrewCache.RegistryTest do
       assert statuses == [200, 200, 404]
     end
 
+    # Without a Content-Length a download reserves as it goes, ahead of
+    # what it writes; one the store can't make room for is refused (at
+    # the start, a 404) or cut short.
+    @tag cache: [max_bytes: 1_000_000]
+    test "downloads without a Content-Length count against the quota too", %{ctx: ctx} do
+      blobs = for _ <- 1..3, do: :crypto.strong_rand_bytes(400_000)
+      FakeRegistry.put_image("library/postgres", "12", blobs)
+
+      for b <- blobs do
+        FakeRegistry.chunked(FakeRegistry.digest(b))
+        FakeRegistry.slow(FakeRegistry.digest(b), 30)
+      end
+
+      assert statuses(ctx, "library/postgres", blobs) == [200, 404, 404]
+      assert %{reserved: 0} = Store.usage()
+    end
+
+    @tag cache: [max_bytes: 3_000_000, reserve_step: 100_000]
+    test "concurrent downloads of unknown length never write past the quota",
+         %{ctx: ctx, tmp_dir: dir} do
+      blobs = for _ <- 1..3, do: :crypto.strong_rand_bytes(1_000_000)
+      FakeRegistry.put_image("library/postgres", "11", blobs)
+
+      for b <- blobs do
+        FakeRegistry.chunked(FakeRegistry.digest(b))
+        FakeRegistry.slow(FakeRegistry.digest(b), 10)
+      end
+
+      sampler = Task.async(fn -> sample_tmp(Path.join(dir, "tmp"), 0) end)
+      results = statuses(ctx, "library/postgres", blobs)
+      send(sampler.pid, :stop)
+      most = Task.await(sampler)
+
+      # 3 MB of downloads don't fit in 95% of a 3 MB store at once.
+      assert most <= 2_850_000
+      assert 200 in results
+      assert Enum.any?(results, &(&1 != 200))
+      assert %{reserved: 0} = Store.usage()
+    end
+
     test "a manifest first asked for as a blob is still served as a manifest", %{ctx: ctx} do
       image = FakeRegistry.put_image("library/busybox", "2", layers())
 
@@ -569,6 +609,44 @@ defmodule CrewCache.RegistryTest do
 
       assert code == 0, out
       assert out =~ "status: 200 registry/2.0"
+    end
+  end
+
+  # Each blob's GET at once: its status, or :cut for a response cut short.
+  defp statuses(ctx, repo, blobs) do
+    blobs
+    |> Enum.map(fn b ->
+      Task.async(fn ->
+        try do
+          resp = req(ctx, :get, "/v2/docker.io/#{repo}/blobs/#{FakeRegistry.digest(b)}")
+          if resp.status == 200 and resp.body != b, do: :cut, else: resp.status
+        rescue
+          _ -> :cut
+        end
+      end)
+    end)
+    |> Task.await_many(30_000)
+    |> Enum.sort()
+  end
+
+  # The most bytes seen in the store's temporary files at once.
+  defp sample_tmp(dir, most) do
+    now =
+      dir
+      |> File.ls!()
+      |> Enum.map(
+        &(File.stat(Path.join(dir, &1))
+          |> then(fn
+            {:ok, s} -> s.size
+            _ -> 0
+          end))
+      )
+      |> Enum.sum()
+
+    receive do
+      :stop -> max(most, now)
+    after
+      2 -> sample_tmp(dir, max(most, now))
     end
   end
 

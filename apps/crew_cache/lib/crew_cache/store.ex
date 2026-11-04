@@ -17,7 +17,7 @@ defmodule CrewCache.Store do
   purges and evictions go through this process.
 
   **The quota** (§15.3): past 95% of `max_bytes`, counting space
-  reserved by downloads in flight (`reserve/1`), the least recently
+  reserved by downloads in flight (`reserve/2`), the least recently
   accessed objects are evicted until the store is at 85%. Files being
   read when they're evicted stay readable until closed.
 
@@ -81,10 +81,15 @@ defmodule CrewCache.Store do
   end
 
   @doc """
-  Hold `size` bytes for a download for as long as the calling process
-  lives, evicting to make room. `:full` when it can't fit.
+  Hold `size` more bytes for a download, for `owner` (the calling
+  process by default), evicting to make room. `:full` when it can't
+  fit. The hold lasts until the owner commits, releases or exits.
   """
-  def reserve(size), do: GenServer.call(__MODULE__, {:reserve, self(), size}, 60_000)
+  def reserve(owner \\ self(), size),
+    do: GenServer.call(__MODULE__, {:reserve, owner, size}, 60_000)
+
+  @doc "Drop what `owner` holds."
+  def release(owner \\ self()), do: GenServer.cast(__MODULE__, {:release, owner})
 
   @doc "Move a verified temporary file into the store."
   @spec commit(Path.t(), digest, meta) :: :ok | {:error, term}
@@ -199,7 +204,10 @@ defmodule CrewCache.Store do
     end
   end
 
-  def handle_call({:commit, tmp, digest, meta}, _from, state) do
+  # The committer's reservation becomes the object's bytes.
+  def handle_call({:commit, tmp, digest, meta}, {pid, _}, state) do
+    state = drop_reservation(state, pid)
+
     case lookup(digest) do
       {:ok, %{kind: :blob} = existing} when meta.kind == :manifest ->
         File.rm(tmp)
@@ -275,6 +283,20 @@ defmodule CrewCache.Store do
     case Map.pop(state.reserved, pid) do
       {{^ref, _size}, reserved} -> {:noreply, %{state | reserved: reserved}}
       _ -> {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_cast({:release, pid}, state), do: {:noreply, drop_reservation(state, pid)}
+
+  defp drop_reservation(state, pid) do
+    case Map.pop(state.reserved, pid) do
+      {{ref, _size}, reserved} ->
+        Process.demonitor(ref, [:flush])
+        %{state | reserved: reserved}
+
+      {nil, _} ->
+        state
     end
   end
 

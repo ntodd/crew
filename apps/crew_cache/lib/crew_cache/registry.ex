@@ -344,6 +344,7 @@ defmodule CrewCache.Registry do
   defp status_for(:busy), do: {503, "UNAVAILABLE"}
   defp status_for({:status, status}) when status in 400..499, do: {404, "NAME_UNKNOWN"}
   defp status_for(:too_large), do: {404, "BLOB_UNKNOWN"}
+  defp status_for(:no_space), do: {404, "BLOB_UNKNOWN"}
   defp status_for(:eacces), do: {404, "NAME_UNKNOWN"}
   defp status_for(%{reason: :eacces}), do: {404, "NAME_UNKNOWN"}
   defp status_for(_), do: {502, "UNAVAILABLE"}
