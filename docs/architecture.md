@@ -406,8 +406,12 @@ The other spikes are recorded here as they run.
   the challenge's realm is ignored, its `service` used.
 - **site4** in the cache is its own connected subnets (every 10
   minutes), `CREW_EXTRA_BLOCKED`, and a `site4` list the agent can push
-  in `POST /config` (the egress address it learns). The agent doesn't
-  push it yet.
+  in `POST /config` (the egress address it learns), alone if it likes:
+  the other settings stay as they are. A new policy applies at once:
+  lookups and dials read it, cached DNS answers are dropped, and when it
+  refuses more the upstream pool restarts, so no open connection to a
+  newly refused address is reused (fetches in flight on it fail and
+  their clients retry).
 - **Tags:** a HEAD or GET by tag asks the upstream (HEAD, with the
   client's `Accept`), then fetches and stores the manifest if it's new,
   so the GET by digest that follows is a hit. An upstream HEAD without
@@ -424,10 +428,13 @@ The other spikes are recorded here as they run.
   Manifests (at most 4 MiB) are verified before they're served, and
   stored with their own `mediaType` when they have one; bytes first
   stored through `/blobs/` become a manifest when fetched as one.
-- **Space and load:** a download with a `Content-Length` reserves it in
-  the store before it writes, so downloads in flight count against the
-  quota, and one that can't fit is a 404 (containerd goes upstream). One
-  object may take at most half the quota. At most 512 fetches run at
+- **Space and load:** every download reserves space in the store before
+  it writes, held by its fetch until it commits or fails, so downloads
+  in flight count against the quota: the whole length when there's a
+  `Content-Length`, otherwise 8 MiB ahead of what's written. One that
+  can't reserve at the start is a 404 (containerd goes upstream); one
+  that can't later is cut short. One object may take at most half the
+  quota. At most 512 fetches run at
   once (`max_fetches`); past that a miss is a 503. Files are synced
   before the rename that commits them; at start, rows whose file is
   missing or the wrong size are dropped, files no row knows are removed,
