@@ -153,6 +153,32 @@ func TestSite4EgressIsAddOnly(t *testing.T) {
 	}
 }
 
+// The agent's site4 and crew-net's timer can overlap: each runs the
+// update of the addresses seen and the load of site4 under one lock, so
+// neither drops an address the other just added, nor loads an older set
+// over a newer one.
+func TestSite4RefillsOneAtATime(t *testing.T) {
+	b := newBox(t)
+	b.root[paths.Egress()] = []byte("203.0.113.5\n")
+	if err := server(t, b.fakeSys, time.Now()).RefreshSite4(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"lock egress4", "write egress4 under egress4", "nft -f - under egress4", "unlock egress4"}
+	if !reflect.DeepEqual(b.events, want) {
+		t.Fatalf("%q", b.events)
+	}
+
+	// Held by another: this one waits its turn rather than going ahead.
+	busy := newBox(t)
+	busy.locked = "egress4"
+	if err := server(t, busy.fakeSys, time.Now()).RefreshSite4(t.Context()); err == nil {
+		t.Fatal("refilled site4 without the lock")
+	}
+	if busy.ran("nft", "-f", "-") {
+		t.Fatal("loaded site4 without the lock")
+	}
+}
+
 func TestSite4EgressHistoryIsBounded(t *testing.T) {
 	b := newBox(t)
 	var seen []string

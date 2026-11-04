@@ -44,6 +44,10 @@ type Sys interface {
 	// WriteState replaces a file in crew-vmctl's own state directory
 	// (Paths.State) atomically; the directory is made root's if missing.
 	WriteState(name string, data []byte) error
+	// Lock takes an exclusive lock, across crew-vmctl's processes, on
+	// <name>.lock in its state directory, waiting a while for it; the
+	// function returned releases it.
+	Lock(name string) (func(), error)
 	Exists(path string) bool
 	Glob(pattern string) []string
 	// PrepareJail lays out the VM's jail directory (README.md); it fails

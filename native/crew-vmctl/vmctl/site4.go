@@ -172,6 +172,15 @@ func disjoint(ps []netip.Prefix) []string {
 // crew-net's timer). A full list of addresses is logged and refills
 // site4 without the new one.
 func (s *Server) RefreshSite4(ctx context.Context) error {
+	// One refill at a time across crew-vmctl's processes (the agent's
+	// site4 and crew-net's timer can overlap): the update of the addresses
+	// seen is a read-modify-write, and a slower refill mustn't load an
+	// older set over a newer one.
+	unlock, err := s.Sys.Lock(egressState)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.recordEgress(); err != nil {
 		fmt.Fprintln(os.Stderr, "crew-vmctl site4:", err)
 	}

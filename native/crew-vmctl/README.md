@@ -244,6 +244,12 @@ intervals. `nft-verify` holds the loaded set to the same root-side
 inputs, and reports the egress addresses in it. crew-vmctl reads nothing
 from `agent/env`.
 
+A refill takes an exclusive lock (`flock` on `/srv/crew/vmctl/egress4.lock`,
+root's) for the update of the addresses seen and the load of site4, so
+the agent's `site4` and crew-net's timer can overlap without one dropping
+an address the other just added, and the list is written through a
+temporary file of the writer's own.
+
 ## The packet filter and `nft-verify`
 
 `etc/nft.conf` is §14.2's ruleset with three changes:
