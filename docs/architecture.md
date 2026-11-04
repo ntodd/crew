@@ -729,13 +729,17 @@ The other spikes are recorded here as they run.
   would cut crewcache off from its release in `current/cache`, so
   `crew-quota` sets it back at every boot and `provision.sh` right after
   enrollment.
-- **The data disk** is formatted (`mkfs.xfs -L crew-data -m reflink=1`)
+- **The data disk** is formatted (`mkfs.xfs -K -L crew-data -m reflink=1`)
   only when it has no filesystem and no partition table and no disk
   already has the label, and mounted by the label with `prjquota` and
-  `nofail`, so a renamed disk on bare metal still mounts and a bad one
-  doesn't stop the boot. Add box takes `/dev/...` paths including
-  `/dev/disk/by-id/...`; the launchers' VMs use `/dev/vdb` (QEMU's also
-  has the serial `crew-data`).
+  `nofail`, so a bad one doesn't stop the boot. The mount only wants
+  `crew-format-data` (ordered after it, for a first boot), and the
+  formatter has no dependency on the configured device: it's skipped
+  once the label exists, and otherwise scans for the label and waits up
+  to 90 s for the device itself. So a disk added as `/dev/sdb` that's
+  `/dev/sdc` after a reboot still mounts, whatever is at `/dev/sdb` now.
+  Add box takes `/dev/...` paths including `/dev/disk/by-id/...`; the
+  launchers' VMs use `/dev/vdb` (QEMU's also has the serial `crew-data`).
 - **Quotas (§12.4):** project 10 is `vms/` + `jail/` (half the disk),
   11 `cache/` (a quarter), 12 `agent/` + `images/` (the rest), set at
   every boot from the disk's size. crew_cache's own default (a quarter

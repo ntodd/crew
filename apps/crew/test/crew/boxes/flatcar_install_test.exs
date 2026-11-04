@@ -193,4 +193,61 @@ defmodule Crew.Boxes.FlatcarInstallTest do
     assert {out, 1} = install(etc, ctx.data)
     assert out =~ "the agent's signature doesn't verify"
   end
+
+  # crew-format-data's script, with blkid, mkfs.xfs and udevadm stubbed:
+  # a crew-data disk under any name is left alone, and with none, the
+  # configured device is what's formatted, or nothing is.
+  describe "formatting the data disk" do
+    setup ctx do
+      etc = render_etc(ctx.root, ctx.key, release(ctx.files))
+      bin = Path.join(ctx.root, "format-stubs")
+      log = Path.join(ctx.root, "format.log")
+      File.mkdir_p!(bin)
+
+      for {name, body} <- [
+            {"blkid",
+             """
+             echo "blkid $*" >> "#{log}"
+             case "$*" in
+               *LABEL=crew-data*) if [ -n "${STUB_LABELLED:-}" ]; then echo "$STUB_LABELLED"; exit 0; fi ;;
+             esac
+             exit 2
+             """},
+            {"mkfs.xfs", ~s(echo "mkfs.xfs $*" >> "#{log}"\n)},
+            {"udevadm", "exit 0\n"}
+          ] do
+        File.write!(Path.join(bin, name), "#!/bin/sh\n" <> body)
+        File.chmod!(Path.join(bin, name), 0o755)
+      end
+
+      %{etc: etc, bin: bin, log: log}
+    end
+
+    defp format(ctx, device, env) do
+      System.cmd("sh", [Path.join(ctx.etc, "format-data.sh"), device],
+        env:
+          [
+            {"PATH", ctx.bin <> ":" <> System.get_env("PATH")},
+            {"CREW_BOX_ETC", ctx.etc},
+            {"CREW_BOX_DEVICE_WAIT", "2"}
+          ] ++ env,
+        stderr_to_stdout: true
+      )
+    end
+
+    test "leaves a crew-data disk alone, whatever it's called now", ctx do
+      # Added as /dev/sdb; it's /dev/sdc this boot, and /dev/sdb is gone.
+      assert {_, 0} = format(ctx, "/dev/crew-test-sdb", [{"STUB_LABELLED", "/dev/sdc"}])
+      refute File.read!(ctx.log) =~ "mkfs.xfs"
+    end
+
+    test "with no crew-data disk and no device, formats nothing and says why", ctx do
+      assert {out, 1} = format(ctx, "/dev/crew-test-sdb", [])
+
+      assert out =~
+               "crew-box: there's no data disk at /dev/crew-test-sdb, and no disk is labelled crew-data"
+
+      refute File.read!(ctx.log) =~ "mkfs.xfs"
+    end
+  end
 end

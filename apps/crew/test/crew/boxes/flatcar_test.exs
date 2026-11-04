@@ -209,7 +209,6 @@ defmodule Crew.Boxes.FlatcarTest do
         config = ignition(type: type)
         format = body(config, "crew-format-data.service")
         assert format =~ "ExecStart=/bin/sh /etc/crew-box/format-data.sh /dev/vdb"
-        assert format =~ "BindsTo=dev-vdb.device"
       end
     end
 
@@ -217,7 +216,28 @@ defmodule Crew.Boxes.FlatcarTest do
       config = ignition(type: "linux-metal", data_disk: "/dev/disk/by-id/nvme-Samsung_SSD_990_S7")
       format = body(config, "crew-format-data.service")
       assert format =~ "format-data.sh /dev/disk/by-id/nvme-Samsung_SSD_990_S7"
-      assert format =~ ~S"BindsTo=dev-disk-by\x2did-nvme\x2dSamsung_SSD_990_S7.device"
+    end
+
+    # A disk can come back under another name (/dev/sdb is /dev/sdc after
+    # a reboot on bare metal). The mount is by label and owes nothing to
+    # the configured device; only a box with no crew-data disk anywhere
+    # needs the device, to format it.
+    for {type, disk} <- [{"linux-metal", "/dev/sdb"}, {"linux-vm", "/dev/vdb"}] do
+      test "the mount doesn't depend on the configured device (#{type})" do
+        config = ignition(type: unquote(type), data_disk: unquote(disk))
+        mount = body(config, "srv-crew.mount")
+        assert mount =~ "What=/dev/disk/by-label/crew-data"
+        assert mount =~ "Wants=crew-format-data.service"
+        assert mount =~ "After=crew-format-data.service"
+        refute mount =~ "Requires=crew-format-data.service"
+        refute mount =~ unquote(disk)
+
+        format = body(config, "crew-format-data.service")
+        assert format =~ "ConditionPathExists=!/dev/disk/by-label/crew-data"
+        refute format =~ "BindsTo="
+        refute format =~ ".device"
+        assert format =~ "ExecStart=/bin/sh /etc/crew-box/format-data.sh #{unquote(disk)}"
+      end
     end
 
     test "bare metal needs one, and only a device path" do
@@ -237,7 +257,7 @@ defmodule Crew.Boxes.FlatcarTest do
       assert format =~ "Type=oneshot"
 
       script = contents(config, "/etc/crew-box/format-data.sh")
-      assert script =~ "mkfs.xfs -q -L \"$label\" -m reflink=1"
+      assert script =~ "mkfs.xfs -q -K -L \"$label\" -m reflink=1"
       assert script =~ "blkid -p"
       assert script =~ "won't format it"
     end
@@ -248,7 +268,6 @@ defmodule Crew.Boxes.FlatcarTest do
       assert mount =~ "What=/dev/disk/by-label/crew-data"
       assert mount =~ "Type=xfs"
       assert mount =~ ~r/^Options=.*prjquota/m
-      assert mount =~ "Requires=crew-format-data.service"
     end
 
     test "gets the three areas of §12.4 as XFS project quotas" do
@@ -603,13 +622,6 @@ defmodule Crew.Boxes.FlatcarTest do
       assert {:error, :bad_name} = Flatcar.ignition(%{@opts | name: "Not OK"})
       assert {:error, :bad_type} = Flatcar.ignition(%{@opts | type: "mac-vz"})
     end
-  end
-
-  test "escapes a device path as systemd names its unit" do
-    assert Flatcar.device_unit("/dev/vdb") == "dev-vdb.device"
-
-    assert Flatcar.device_unit("/dev/disk/by-id/ata-WDC_WD40.x:1") ==
-             ~S"dev-disk-by\x2did-ata\x2dWDC_WD40.x:1.device"
   end
 
   test "reads its pins from images/flatcar/VERSION" do
