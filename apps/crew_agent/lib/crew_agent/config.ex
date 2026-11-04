@@ -20,6 +20,7 @@ defmodule CrewAgent.Config do
             guest_api_ip: nil,
             guest_api_port: 7777,
             vzd_socket: nil,
+            vmctl_socket: "/run/crew/vmctl.sock",
             vz_host_reserve_vcpus: 2,
             vz_host_reserve_mib: 8192,
             vz_vm_area_gib: 400,
@@ -34,7 +35,9 @@ defmodule CrewAgent.Config do
             null_guest_cmd: nil,
             dev: false,
             connect: true,
-            proc: "/proc"
+            proc: "/proc",
+            sys: "/sys",
+            devfs: "/dev"
 
   @type t :: %__MODULE__{}
 

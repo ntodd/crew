@@ -37,6 +37,7 @@ defmodule CrewAgent.Application do
         CrewAgent.GuestAPI,
         {DynamicSupervisor, name: CrewAgent.GuestAPI.Sockets, strategy: :one_for_one},
         null_supervisor(config),
+        if(config.driver == "firecracker", do: CrewAgent.Driver.Firecracker.Monitor),
         CrewAgent.VMs,
         CrewAgent.Ops,
         if(config.cache_mgmt_url, do: CrewAgent.Cache.Stats),

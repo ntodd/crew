@@ -97,6 +97,23 @@ defmodule CrewAgent.Site do
     end
   end
 
+  @doc """
+  Keeps the egress address. On a Firecracker box crew-net fills the
+  kernel's site4 from it (`crew-vmctl site4`, every 10 minutes), so it's
+  also written to `agent/egress4`.
+  """
+  def record_egress(config, ip) do
+    :persistent_term.put({__MODULE__, :egress}, ip)
+
+    if config.driver == "firecracker" do
+      dir = Config.agent_dir(config)
+      File.mkdir_p!(dir)
+      CrewAgent.SafeFS.write_atomic(Path.join(dir, "egress4"), ip <> "\n", 0o644)
+    end
+
+    :ok
+  end
+
   # -- the egress address --------------------------------------------------------
 
   @impl true
@@ -113,7 +130,7 @@ defmodule CrewAgent.Site do
          {:ok, %{status: 200, body: body}} <-
            Req.get(url, retry: false, receive_timeout: 10_000, redirect: false),
          ip when is_binary(ip) <- parse_egress(to_string(body)) do
-      :persistent_term.put({__MODULE__, :egress}, ip)
+      record_egress(Config.get(), ip)
     else
       nil ->
         :ok

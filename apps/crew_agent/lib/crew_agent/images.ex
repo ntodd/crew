@@ -153,14 +153,9 @@ defmodule CrewAgent.Images do
 
     with true <- kernel != nil and File.exists?(Path.join(src, "rootfs.ext4")),
          :ok <- File.mkdir_p(d),
-         {_, 0} <-
-           System.cmd("cp", ["-c", Path.join(src, kernel), Path.join(d, "kernel")],
-             stderr_to_stdout: true
-           ),
-         {_, 0} <-
-           System.cmd("cp", ["-c", Path.join(src, "rootfs.ext4"), Path.join(d, "rootfs.ext4")],
-             stderr_to_stdout: true
-           ),
+         {_, 0} <- copy_dev(Path.join(src, kernel), Path.join(d, "kernel")),
+         {_, 0} <- copy_dev(Path.join(src, "rootfs.ext4"), Path.join(d, "rootfs.ext4")),
+         :ok <- File.chmod(Path.join(d, "kernel"), 0o444),
          :ok <- File.chmod(Path.join(d, "rootfs.ext4"), 0o440),
          :ok <- File.write(Path.join(d, "ready"), "") do
       report(image.id, "ready", 100, nil)
@@ -170,6 +165,18 @@ defmodule CrewAgent.Images do
         report(image.id, "failed", 0, "copying the development image failed: #{inspect(other)}")
         {:error, "image_failed", "copying the development image failed"}
     end
+  end
+
+  # A clone where the filesystem can (APFS, XFS), a copy where it can't:
+  # GNU cp's -c is SELinux contexts, not clonefile.
+  defp copy_dev(src, dest) do
+    args =
+      case :os.type() do
+        {:unix, :darwin} -> ["-c", src, dest]
+        _ -> ["--reflink=auto", src, dest]
+      end
+
+    System.cmd("cp", args, stderr_to_stdout: true)
   end
 
   @doc false

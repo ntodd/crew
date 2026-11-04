@@ -5,6 +5,7 @@ defmodule CrewAgent.Handler do
   """
 
   alias CrewAgent.{Cache, Config, Images, Reporter, VMs}
+  alias CrewAgent.Driver.Firecracker
   alias CrewProtocol.Command
 
   @spec handle(Command.t()) :: :ok | {:ok, map()} | {:error, String.t(), String.t()}
@@ -30,6 +31,14 @@ defmodule CrewAgent.Handler do
 
   def handle(%Command{type: "cache.purge", payload: %{scope: s}}),
     do: Cache.purge(Config.get(), s)
+
+  # Through crew-vmctl reboot on Firecracker boxes (§12.1).
+  def handle(%Command{type: "box.restart", payload: p}) do
+    case Config.get() do
+      %Config{driver: "firecracker"} -> Firecracker.reboot(p.boot_id, p.force)
+      _ -> {:error, "unsupported", "box.restart isn't supported by this driver yet"}
+    end
+  end
 
   def handle(%Command{type: type}),
     do: {:error, "unsupported", "#{type} isn't supported by this agent yet"}
