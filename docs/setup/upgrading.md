@@ -48,6 +48,13 @@ when it comes up: it keeps its progress in
 `/var/lib/crew-update/run.state`, and the path unit starts it whenever
 that file exists.
 
+A backup is read back whole before the update goes on, and again before
+a rollback empties the volume to restore it. If it has gone missing or
+can't be read by then, the updater restores nothing: it leaves the data
+as the new version left it and Crew stopped, and the Deployment page and
+`crew-update status` say so. Restore an older backup by hand (below), or
+start the new version again, as the release notes suggest.
+
 The page follows along and reconnects once the new version is up. Read
 the release notes first all the same: they say whether the protocol
 changed and which migrations run.

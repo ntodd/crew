@@ -231,11 +231,26 @@ recover() {
     dc stop "$SERVICE"
   fi
   restore_env
-  if [ "$step" = backing_up ] && [ -n "$backup_name" ]; then rm -f "$DIR/backups/$backup_name"; fi
-  if [ "$step" = starting ] && [ -n "$saved" ] && ! restore "$saved"; then
-    rm -f "$(run_state)"
-    state failed "$1, and restoring $saved failed. Restore it by hand (docs/setup/upgrading.md)."
-    exit 1
+  if [ "$step" = backing_up ] && [ -n "$backup_name" ]; then
+    rm -f "$DIR/backups/$backup_name" "$DIR/backups/$backup_name.part"
+  fi
+  if [ "$step" = starting ] && [ -n "$saved" ]; then
+    restore "$saved"
+    case $? in
+      0) ;;
+      2)
+        # The data is as the new version left it, which the previous one
+        # may not read: leave it, and Crew, for someone to decide.
+        rm -f "$(run_state)"
+        state failed "$1, and the backup $saved is missing or can't be read, so nothing was restored: the data is as $to left it, and Crew is stopped. Restore a backup by hand (docs/setup/upgrading.md)."
+        exit 1
+        ;;
+      *)
+        rm -f "$(run_state)"
+        state failed "$1, and restoring $saved failed. Restore it by hand (docs/setup/upgrading.md)."
+        exit 1
+        ;;
+    esac
   fi
 
   if dc up -d --no-deps "$SERVICE" && healthy "$old_image"; then
@@ -256,20 +271,35 @@ data_mount() {
   docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$DATA\"}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}{{end}}{{end}}" "$1"
 }
 
+# Backs the volume up to backups/$backup_name, the name run.state
+# records, so a rollback restores the file that was written. It's
+# written as .part, read back whole, and only then given its name: a
+# backup under that name is complete and readable.
 backup() {
-  name=crew-data-$from-$(date -u +%Y%m%dT%H%M%SZ).tgz
-  docker run --rm --network none --user 0 --entrypoint tar \
+  [ -n "$backup_name" ] || return 1
+  docker run --rm --network none --user 0 --entrypoint sh \
     -v "$data:/data:ro" -v "$DIR/backups:/backup" "$old_image" \
-    --numeric-owner --exclude="./$NOT_BACKED_UP" -czf "/backup/$name" -C /data . || return 1
-  echo "$name"
+    -c 'tar --numeric-owner --exclude="./$2" -czf "/backup/$1.part" -C /data . &&
+        tar -tzf "/backup/$1.part" > /dev/null &&
+        mv "/backup/$1.part" "/backup/$1"' sh "$backup_name" "$NOT_BACKED_UP"
 }
 
-# Puts a backup back, keeping what it left out.
+# backup_readable NAME: backups/NAME is a regular file that reads whole.
+backup_readable() {
+  [ -f "$DIR/backups/$1" ] && [ ! -L "$DIR/backups/$1" ] &&
+    docker run --rm --network none --user 0 --entrypoint tar \
+      -v "$DIR/backups:/backup:ro" "$old_image" -tzf "/backup/$1" > /dev/null
+}
+
+# Puts a backup back, keeping what it left out. Returns 2, having
+# touched nothing, when the backup isn't there or doesn't read whole, and
+# 1 when the restore itself failed, after the volume was emptied.
 restore() {
+  backup_readable "$1" || return 2
   docker run --rm --network none --user 0 --entrypoint sh \
     -v "$data:/data" -v "$DIR/backups:/backup:ro" "$old_image" \
     -c 'find /data -mindepth 1 -maxdepth 1 ! -name "$2" -exec rm -rf {} + &&
-        tar --numeric-owner -xzf "/backup/$1" -C /data' sh "$1" "$NOT_BACKED_UP"
+        tar --numeric-owner -xzf "/backup/$1" -C /data' sh "$1" "$NOT_BACKED_UP" || return 1
 }
 
 # healthy IMAGE: the control plane runs IMAGE and /healthz answers, within
