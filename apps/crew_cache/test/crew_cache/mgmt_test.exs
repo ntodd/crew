@@ -150,6 +150,44 @@ defmodule CrewCache.MgmtTest do
       assert %{status: 200} = mgmt(ctx, :post, "/config", json: %{"site4" => ["81.2.3.4/32"]})
       assert %{status: 404} = req(ctx, :get, "/v2/docker.io/library/nginx/blobs/#{digest}")
     end
+
+    test "site4 alone leaves the other settings as they were", %{ctx: ctx} do
+      parent = %{"url" => "https://parent.test:5443", "token" => "t0k", "ca_pem" => CA.root_pem()}
+
+      config = %{
+        "enabled_hosts" => ["ghcr.io", "quay.io"],
+        "allowlist" => ["ghcr.io/actions/*"],
+        "parent" => parent
+      }
+
+      assert %{status: 200} = mgmt(ctx, :post, "/config", json: config)
+      before = CrewCache.Settings.saved()
+      assert %{status: 200} = mgmt(ctx, :post, "/config", json: %{"site4" => ["81.2.3.4/32"]})
+
+      assert CrewCache.Settings.saved() == %{before | "site4" => ["81.2.3.4/32"]}
+      assert CrewCache.Settings.current().parent.token == "t0k"
+    end
+
+    test "a site4 that refuses more drops the upstream pool's open connections", %{ctx: ctx} do
+      FakeRegistry.put_image("library/alpine", "3.22", layers())
+      pull(ctx, "docker.io", "library/alpine", "3.22")
+      pool = pool_pid()
+
+      {:ok, _} = CrewCache.Settings.apply(%{"site4" => ["81.2.3.4/32"]})
+      refute pool_pid() == pool
+
+      # The same again refuses nothing new: the pool stays.
+      pool = pool_pid()
+      {:ok, _} = CrewCache.Settings.apply(%{"site4" => ["81.2.3.4/32"]})
+      assert pool_pid() == pool
+    end
+  end
+
+  defp pool_pid do
+    {_, pid, _, _} =
+      CrewCache.Supervisor |> Supervisor.which_children() |> List.keyfind(:upstream_pool, 0)
+
+    pid
   end
 
   describe "POST /purge" do

@@ -47,6 +47,15 @@ defmodule CrewCache.DNS.Cache do
 
   def max_ttl, do: @max_ttl
 
+  @doc "Forget every answer: they were filtered under a policy that's changed."
+  def clear do
+    :ets.delete_all_objects(@answers)
+    :ok
+  rescue
+    # The resolver isn't running.
+    ArgumentError -> :ok
+  end
+
   defp age(answer, 0), do: answer
 
   defp age(answer, seconds) do

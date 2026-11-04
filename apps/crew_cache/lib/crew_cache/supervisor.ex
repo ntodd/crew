@@ -29,7 +29,9 @@ defmodule CrewCache.Supervisor do
         {CA, dir: config.dir, ip: config.listen},
         {Settings, config},
         CrewCache.Upstream.Memo,
-        {Finch, name: CrewCache.Finch, pools: %{default: pool(config)}},
+        Supervisor.child_spec({Finch, name: CrewCache.Finch, pools: %{default: pool(config)}},
+          id: :upstream_pool
+        ),
         CrewCache.Parent,
         {Registry, keys: :unique, name: CrewCache.Fetcher.Registry},
         {DynamicSupervisor,
