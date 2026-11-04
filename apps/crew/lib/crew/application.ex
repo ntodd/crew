@@ -50,7 +50,7 @@ defmodule Crew.Application do
         {Bandit,
          plug: CrewWeb.HookEndpoint,
          scheme: :http,
-         ip: {127, 0, 0, 1},
+         ip: Application.get_env(:crew, :hook_ip, {127, 0, 0, 1}),
          port: Application.get_env(:crew, :hook_port, 4001),
          thousand_island_options: [num_acceptors: 10]},
         Crew.Reconciler.Ticker,

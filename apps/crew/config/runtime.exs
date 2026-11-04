@@ -223,7 +223,11 @@ if config_env() == :prod do
     |> String.to_charlist()
     |> :inet.parse_address()
 
+  # The webhook listener (§6.2) is on the same address: loopback on a
+  # host, the container's own address in docker/compose.yml, which
+  # publishes both ports on the host's loopback.
   config :crew,
+    hook_ip: ip,
     force_ssl: System.get_env("CREW_FORCE_SSL", "true") == "true",
     secure_cookies: System.get_env("CREW_SECURE_COOKIES", "true") == "true"
 
