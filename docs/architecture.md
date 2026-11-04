@@ -711,8 +711,8 @@ The other spikes are recorded here as they run.
   at every boot, so a reprovisioned OS disk gets them back from the data
   disk; it starts them itself, since units installed mid-boot aren't in
   the boot's transaction. A rollback moves `root/current` with
-  `agent/current`. `agent.update` (§20.2) has to put a new release's
-  root half in `root/` through the same root step.
+  `agent/current`. An update's root half gets to `root/` through
+  `crew-root-install` (see "Update notes").
 - **What's still the agent's to change:** crew-vmctl's `Paths.bin`
   names `agent/current/bin` for jailer, Firecracker and the VM unit's
   `ExecStopPost=crew-vmctl exited`, so root (systemd-run, jailer before
@@ -897,3 +897,149 @@ The other spikes are recorded here as they run.
   the M3, attached to the release); the x86_64 guest image and its
   conformance run on a hosted runner (guest-image.yml is arm64 only);
   Foreman's DinD run of the updater (`e2e/updater/run.sh` there).
+
+## Update notes
+
+Agent and cache updates (§20.2): `Crew.Agents.Updates` on the control
+plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
+`crew-agent-rollback` on a Flatcar box, `crew-launch` and crew-vzd's
+`restart` on a Mac.
+
+- **`agent.update`** carries the agent tarball's `url`, `sha256`, `size`
+  and `signature`, and on Linux a `cache` object with crew_cache's at the
+  same version. Each signature is checked against
+  `CREW_RELEASE_PUBLIC_KEY` before anything is downloaded, over this
+  build's own target, so a tarball for another target doesn't verify;
+  an agent without the key refuses updates (`no_release_key`). Downloads
+  reuse `image.prepare`'s (capped at `size`, retried, resumed).
+- **Updates download from the control plane's copies**
+  (`/agent/releases/<version>/<target>/<file>`, the image's
+  `CREW_AGENT_RELEASE_DIR`), as Foreman's do; only a first install
+  downloads from the GitHub release. The agent swaps in the host it
+  already reaches the control plane at (`CREW_URL`); the signature
+  doesn't cover the URL.
+- **A box's target** is its join's `os` and `arch` (`boxes.arch`, new),
+  not its guests'. **Its version** is the pin, or else the newest
+  registered for the target that it can update to (Linux needs the
+  agent's and the cache's tarball), passing over prereleases unless
+  there's nothing else.
+- **When it's sent:** on join, after a release registers (to the boxes
+  online), after a pin or a Retry, and from `Crew.Agents.UpdateSweep`
+  every minute; to a box online, behind, with no update under way, and
+  not for a version that failed twice there.
+- **How it settles.** The agent answers once it has swapped releases
+  (`restart: true`, with `from`), which leaves the operation `running`
+  with `restart_reported_at`. It's `succeeded` when the box joins on the
+  version, whatever was reported. It's `failed` when the agent refuses
+  it; when the release it rolled back to reports `rolled_back` (the
+  control plane takes a result for a `running` update); when the box
+  joins on `from` 30 s or more after the restart was reported (sooner is
+  the old release reconnecting before it exits); or when it's overdue,
+  20 minutes after it was sent (the agent may wait 10 for operations) or
+  10 after the restart (5 to join, and the rollbacks). A failure sends
+  it again at once.
+- **Two failures** of a version in a row on a box set the box's
+  `failed_agent_version`, and it isn't sent there again. Updates that
+  never reached the box (`offline`) don't count, and Retry (admin,
+  audited) marks the failures `retried` so the version gets two more
+  tries. Pinning another version clears it too. A success between two
+  failures breaks the row.
+- **On the agent** a release is `agent/<version>/` (the agent tarball,
+  and on Linux the cache's in `cache/`), beside `current`, `previous`
+  and the marker `update-pending`: JSON with `op_id`, `version`, `from`
+  and `installed_at`. A tarball may hold only plain relative files and
+  directories: no `..`, nothing absolute, no links of any kind (so
+  `build-darwin.sh` refuses a release with links). It must hold what the
+  box runs: on Linux the agent, crew-vmctl, jailer, Firecracker, the
+  ruleset, the five units and crew_cache; on a Mac the agent, crew-vz,
+  crew-launch and the sandbox profile.
+- **The waits** come after the release is unpacked beside the current
+  one and before anything moves: other operations in flight, at most 10
+  minutes; then no VM `starting` (booted, without its payload: only the
+  agent's memory holds the JIT config), at most 90 s. After either bound
+  it goes ahead; a VM still starting is stopped on the new release's
+  adoption (`boot_failed`, `agent_restart`).
+- **After the swap** the agent exits 0 once every result is
+  acknowledged (30 s at most), and the service manager starts `current`.
+  On joining, the release `current` points at drops `previous`, the
+  marker and `crashes`, and prunes releases nothing points at.
+- **Rollbacks rename the marker `rolled-back`,** whoever does them, and
+  the release that comes back fails the update's operation with why when
+  it joins: `rolled_back`, with the reason the agent's watchdog wrote or
+  "it crash-looped".
+  - **Crash loops:** on Flatcar, `crew-agent.service`'s start limit (5 in
+    120 s) fails it into `crew-agent-rollback.service`, as Foreman's; on
+    a Mac, `crew-launch` counts starts in `agent/crashes` while an update
+    is pending and switches back at the third within 120 s.
+  - **No join within 5 minutes** (timed from the later of the install and
+    the start): on a Mac the agent switches back itself and exits 1. On a
+    Firecracker box root's half has to move too, so it exits 75, which
+    `crew-agent.service` doesn't restart (`RestartPreventExitStatus=75`):
+    the unit fails, and the rollback unit runs.
+- **Root's half on Linux** never comes from the agent's directory. The
+  agent stages `agent.tar.gz`, `cache.tar.gz` and a `request` in
+  `agent/update/` (`NONCE`, `VERSION`, `TARGET`, and each tarball's
+  `*_SHA256` and `*_SIG`); `crew-root-install.path` (`PathExists`, so a
+  request made before a reboot still counts) starts
+  `crew-root-install.service`. `root-install.sh` takes the request out of
+  the agent's directory first (it's the trigger, so it can't loop),
+  refuses links, copies the tarballs into `root/.update.<pid>`, checks
+  both against the request and root's own copy of the release key
+  (`/etc/crew-box/release-key.pem`, which the Ignition now writes in the
+  reprovision mode too), installs the root half with the first install's
+  code (`lib.sh`'s `root_half`), moves `root/current`, puts the units in
+  place, and answers `ok <nonce> <version>` or `error <nonce> <why>` in
+  `root/update.result`. The agent waits for its nonce (3 minutes at
+  most), then moves its own `current` and restarts crew-cache through
+  `crew-vmctl restart-cache`.
+- **A changed ruleset is loaded with `crew-vmctl net-up` directly,** not
+  by restarting crew-net: `crew-agent.service` and `crew-cache.service`
+  `Requires=` crew-net, so a restart would restart the agent in the
+  middle of its update. net-up puts the running VMs' `vm_pairs` back. If
+  it fails, root goes back to the old release's half and answers an
+  error. The rollback unit still restarts crew-net.
+- **Root keeps** the new release's half, the one before it and the one
+  the agent's `previous` names; the rest go. The first install's
+  `agent/<version>/` stays root's and read-only, so the agent can't
+  prune it; an update back to that version reuses it as it was checked.
+- **What's left inconsistent:** if the agent dies after root answered
+  and before it moves its own `current` (nothing is pending then, so
+  nothing rolls back), `root/current` stays a version ahead until the
+  next update.
+- **On a Mac the releases are the agent's,** in
+  `<data>/agent/<version>/` (`agent/` is 0750 `_crewagent:crewvm`, the
+  release files not group- or world-writable), not root's
+  `/usr/local/crew`: the agent updates itself and there's no root daemon
+  to install anything (§10.8). Both LaunchDaemons run from
+  `agent/current`: the agent through `crew-launch`, crew-vzd as
+  `agent/current/bin/crew-vz` with `agent/current/share/sandbox.sb`. That
+  lets `_crewagent` change what `_crewvm` runs; neither is root, and the
+  agent already starts every VM through crew-vzd.
+- **crew-vzd's update:** it resolves its own path and the sandbox
+  profile's at start, so it keeps launching helpers from the release it
+  started from. The agent (`CrewAgent.Driver.VZ.Upgrade`, every 30 s)
+  asks crew-vzd's `version`, and once it differs from `current`'s and no
+  VM runs, asks it to `restart`; crew-vzd refuses (`busy`) while any VM
+  runs or is starting, else exits for launchd to start the new one. It's
+  asked once per version, and crew-vzd's release is kept when old ones
+  are pruned.
+- **`install-macos.sh`** installs the release it's run from as the
+  update leaves one, and writes `CREW_RELEASE_PUBLIC_KEY` from
+  `--release-key` (Add box's command carries it, beside the fingerprint
+  the admin compares), kept on a reinstall. The darwin tarball
+  (`packaging/release/build-darwin.sh`) is the agent's release with
+  `bin/crew-vz`, `bin/crew-launch`, `share/sandbox.sb`, `launchd/`,
+  `install-macos.sh` and `VERSION` at its root. It doesn't carry vfkit
+  (§20.1 lists it): that's the mac-vm launcher's, not a mac-vz box's.
+- **An update depends on the tarballs' versions:** a box is sent its
+  target until it joins on that version, so a release whose
+  `bin/crew_agent version` isn't its tag's would be sent forever. Both
+  builds pass `CREW_VERSION` (the smoke test holds them to it).
+- **Tests:** the agent's `UpdaterTest`, `RootStepTest`,
+  `VZ.UpgradeTest` and `CrewLaunchTest` (crew-launch run for real);
+  crew-vzd's `version` and `restart` in `native/`; the control plane's
+  `UpdatesTest` and the box page; `FlatcarRootInstallTest` runs
+  `root-install.sh` and `agent-rollback.sh` against signed fixtures with
+  `systemctl` stubbed; `e2e/tests/13-agent-update.spec.js` (`E2E_AGENT_UPDATE=1`)
+  updates a real development release to another and rolls back one that
+  crashes, twice.
