@@ -101,7 +101,7 @@ defmodule CrewCache.Upstream do
   # -- sending ----------------------------------------------------------------------
 
   defp send_following(method, url, headers, auth, opts, hops \\ 0) do
-    with {:ok, resp} <- send_one(method, url, headers ++ auth, opts) do
+    with {:ok, resp} <- send_one(method, url, headers ++ auth, opts) |> drop_sink() do
       location = header(resp.headers, "location")
 
       cond do
@@ -127,21 +127,34 @@ defmodule CrewCache.Upstream do
     {ua.scheme, ua.host, ua.port} == {ub.scheme, ub.host, ub.port}
   end
 
-  defp send_one(method, url, headers, opts) do
+  defp drop_sink({:error, error, _sink}), do: {:error, error}
+  defp drop_sink(other), do: other
+
+  @doc """
+  One request, no redirects or tokens: `{:ok, %{status, headers, body,
+  sink}}` or `{:error, reason, sink_acc}`, so a caller can tell whether
+  its sink had started. `:finch` picks the pool (the parent has its
+  own).
+  """
+  def send_one(method, url, headers, opts) do
     request = Finch.build(method, url, [{"user-agent", "crew-cache"} | headers])
     sink = Keyword.get(opts, :sink)
     max_body = Keyword.get(opts, :max_body, 4 * 1024 * 1024)
     acc = %{status: nil, headers: [], body: [], size: 0, sink: sink && elem(sink, 1), over: false}
 
     result =
-      Finch.stream_while(request, @finch, acc, &step(&1, &2, sink, max_body),
+      Finch.stream_while(
+        request,
+        Keyword.get(opts, :finch, @finch),
+        acc,
+        &step(&1, &2, sink, max_body),
         receive_timeout: Keyword.get(opts, :receive_timeout, 30_000),
         pool_timeout: 10_000
       )
 
     case result do
-      {:ok, %{over: true}} ->
-        {:error, :body_too_large}
+      {:ok, %{over: true} = acc} ->
+        {:error, :body_too_large, acc.sink}
 
       {:ok, acc} ->
         {:ok,
@@ -152,8 +165,8 @@ defmodule CrewCache.Upstream do
            sink: acc.sink
          }}
 
-      {:error, error, _acc} ->
-        {:error, error}
+      {:error, error, acc} ->
+        {:error, error, acc.sink}
     end
   end
 

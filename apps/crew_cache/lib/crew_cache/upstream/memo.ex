@@ -4,7 +4,8 @@ defmodule CrewCache.Upstream.Memo do
 
   - anonymous tokens per `(host, repository)`, until they expire;
   - the tag micro-cache (§15.3): `(host, repo, tag, normalised Accept)`
-    to what the upstream's HEAD said, for `tag_ttl_ms`.
+    to what the upstream's HEAD said, for `tag_ttl_ms`;
+  - flags with a lifetime (digests the parent is skipped for).
 
   Expired entries are swept every minute; each table holds at most
   #{10_000} entries (a full table stops remembering until the sweep).
@@ -13,6 +14,7 @@ defmodule CrewCache.Upstream.Memo do
 
   @tokens :crew_cache_tokens
   @tags :crew_cache_tags
+  @flags :crew_cache_flags
   @max 10_000
 
   def start_link(_), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
@@ -22,6 +24,9 @@ defmodule CrewCache.Upstream.Memo do
 
   def tag(key), do: get(@tags, key)
   def put_tag(key, value, ttl_ms), do: put(@tags, key, value, ttl_ms)
+
+  def flag(key, ttl_ms), do: put(@flags, key, true, ttl_ms)
+  def flagged?(key), do: get(@flags, key) == {:ok, true}
 
   defp get(table, key) do
     now = now()
@@ -43,7 +48,7 @@ defmodule CrewCache.Upstream.Memo do
 
   @impl true
   def init(_) do
-    for t <- [@tokens, @tags],
+    for t <- [@tokens, @tags, @flags],
         do: :ets.new(t, [:named_table, :public, :set, read_concurrency: true])
 
     Process.send_after(self(), :sweep, 60_000)
@@ -54,7 +59,7 @@ defmodule CrewCache.Upstream.Memo do
   def handle_info(:sweep, state) do
     now = now()
 
-    for t <- [@tokens, @tags],
+    for t <- [@tokens, @tags, @flags],
         do: :ets.select_delete(t, [{{:_, :_, :"$1"}, [{:<, :"$1", now}], [true]}])
 
     Process.send_after(self(), :sweep, 60_000)

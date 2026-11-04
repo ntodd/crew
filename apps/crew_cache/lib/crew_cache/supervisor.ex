@@ -30,6 +30,7 @@ defmodule CrewCache.Supervisor do
         {Settings, config},
         CrewCache.Upstream.Memo,
         {Finch, name: CrewCache.Finch, pools: %{default: pool(config)}},
+        CrewCache.Parent,
         {Registry, keys: :unique, name: CrewCache.Fetcher.Registry},
         {DynamicSupervisor, name: CrewCache.Fetcher.Supervisor, strategy: :one_for_one}
       ] ++ registry(config) ++ dns(config) ++ mgmt(config)
