@@ -95,8 +95,12 @@ jobs:
         with:
           go-version-file: native/go.mod
           cache: false
-      # From the module proxy, checked against Go's checksum database.
+      # From the module proxy, checked against Go's checksum database. It
+      # builds with a newer Go than native/ pins, which the go command
+      # fetches and checks the same way; the scan runs with native/'s.
       - name: Install govulncheck
+        env:
+          GOTOOLCHAIN: auto
         run: go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
       - name: crew-vmctl
         if: matrix.os == 'linux'
