@@ -215,8 +215,61 @@ defmodule CrewCache.CATest do
 
       assert {true, %{permitted: [{:iPAddress, <<10, 199, 0, 9, 255, 255, 255, 255>>}]}} =
                CA.load_chain(dir).intermediate |> Certs.decode() |> Certs.ext(:name_constraints)
+
+      # The leaf is replaced with the chain: every intermediate has the
+      # same name, so a name check alone would keep the old one.
+      {leaf, _key} = served_leaf(dir)
+      assert verifies?(leaf, CA.load_chain(dir).intermediate)
+
+      assert Certs.ext(Certs.decode(leaf), :subject_alt_name) ==
+               {false, [{:iPAddress, <<10, 199, 0, 9>>}]}
+    end
+
+    test "rotate/0 replaces the leaf too", %{tmp_dir: dir} do
+      start_supervised!({CA, dir: dir, ip: @ip})
+      :ok = CA.rotate()
+      {leaf, _} = served_leaf(dir)
+      assert verifies?(leaf, CA.load_chain(dir).intermediate)
+    end
+
+    test "a leaf from another chain with the same names is replaced at start", %{tmp_dir: dir} do
+      start_supervised!({CA, dir: dir, ip: @ip})
+      stop_supervised!(CA)
+
+      chain = CA.load_chain(dir)
+      {stranger, key} = Certs.leaf(Certs.chain(@ip), @ip)
+      assert :public_key.pkix_is_issuer(stranger, chain.intermediate)
+      CA.write_leaf(dir, chain, stranger, key)
+
+      start_supervised!({CA, dir: dir, ip: @ip})
+      {leaf, _} = served_leaf(dir)
+      refute leaf == stranger
+      assert verifies?(leaf, chain.intermediate)
+    end
+
+    test "a leaf whose key doesn't match is replaced at start", %{tmp_dir: dir} do
+      start_supervised!({CA, dir: dir, ip: @ip})
+      stop_supervised!(CA)
+      {leaf, _} = served_leaf(dir)
+      {_, other_key} = Certs.leaf(CA.load_chain(dir), @ip)
+      File.write!(Path.join([dir, "ca", "leaf.key"]), Certs.key_pem(other_key))
+
+      start_supervised!({CA, dir: dir, ip: @ip})
+      {new_leaf, new_key} = served_leaf(dir)
+      refute new_leaf == leaf
+      assert Certs.public_of(new_key) == new_leaf |> Certs.decode() |> Certs.public_key()
     end
   end
+
+  defp served_leaf(dir) do
+    [{_, leaf, _} | _] =
+      File.read!(Path.join([dir, "ca", "leaf.pem"])) |> :public_key.pem_decode()
+
+    {leaf, File.read!(Path.join([dir, "ca", "leaf.key"])) |> Certs.key_from_pem()}
+  end
+
+  defp verifies?(leaf, intermediate),
+    do: :public_key.pkix_verify(leaf, intermediate |> Certs.decode() |> Certs.public_key())
 
   defp openssl_verify(dir, leaf, extra) do
     leaf_path = Path.join(dir, "leaf-#{System.unique_integer([:positive])}.pem")
