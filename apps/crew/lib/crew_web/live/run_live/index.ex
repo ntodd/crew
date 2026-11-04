@@ -70,9 +70,9 @@ defmodule CrewWeb.RunLive.Index do
     |> Enum.sort_by(&DateTime.to_unix(&1.newest, :microsecond), :desc)
   end
 
-  defp slug(text),
-    do:
-      (text || "") |> String.downcase() |> String.replace(~r/[^a-z0-9]+/, "-") |> String.trim("-")
+  # Branch names repeat across repos, and slugs collide (feat/a, feat-a).
+  defp stack_id(group),
+    do: "stack-#{:erlang.phash2({group.repo.id, group.branch}, 4_294_967_296)}"
 
   defp visible_repos(scope) do
     case Repos.readable_ids(scope) do
@@ -187,10 +187,15 @@ defmodule CrewWeb.RunLive.Index do
       </.form>
 
       <div :if={@filters["view"] == "stack"} id="stack" class="space-y-3">
-        <.panel :for={group <- @stack} id={"stack-#{slug(group.branch)}"} padded={false}>
+        <.panel
+          :for={group <- @stack}
+          id={stack_id(group)}
+          data-branch={group.branch}
+          title={group.branch}
+          padded={false}
+        >
           <:subtitle>
-            <span class="font-medium text-ink">{group.branch}</span>
-            · {group.repo.full_name}<span :for={pr <- group.pr || []}> · PR #{pr["number"]}</span>
+            {group.repo.full_name}<span :for={pr <- group.pr || []}> · PR #{pr["number"]}</span>
           </:subtitle>
           <ul data-current class="divide-y divide-line">
             <.run_row :for={run <- group.current} run={run} now={@now} />

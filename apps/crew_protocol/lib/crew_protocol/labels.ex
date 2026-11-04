@@ -125,16 +125,29 @@ defmodule CrewProtocol.Labels do
   end
 
   @doc """
-  Reads a `runs-on` value as someone would type it into the label tester:
-  a single label, or a YAML flow list.
+  Reads a `runs-on` value as someone would paste it into the label
+  tester: a single label, a YAML flow list, or a block list, with or
+  without the `runs-on:` key, quoted or not.
   """
   def parse_runs_on(text) when is_binary(text) do
     text
-    |> String.trim()
-    |> String.trim_leading("[")
-    |> String.trim_trailing("]")
-    |> String.split(",")
-    |> Enum.map(&(&1 |> String.trim() |> String.trim("\"") |> String.trim("'") |> String.trim()))
+    |> String.replace(~r/^\s*runs-on:\s*/m, "")
+    |> String.replace(["[", "]"], " ")
+    |> String.split(~r/[,\n]/)
+    |> Enum.map(&unquote_label/1)
     |> Enum.reject(&(&1 == ""))
+  end
+
+  defp unquote_label(item) do
+    item = item |> String.trim() |> String.replace_prefix("- ", "") |> String.trim()
+
+    case item do
+      <<q, rest::binary>> when q in [?", ?'] ->
+        if String.ends_with?(rest, <<q>>), do: String.slice(rest, 0..-2//1), else: rest
+
+      _ ->
+        item
+    end
+    |> String.trim()
   end
 end

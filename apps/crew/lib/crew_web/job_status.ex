@@ -119,4 +119,14 @@ defmodule CrewWeb.JobStatus do
       true -> "#{div(s, 86_400)}d"
     end
   end
+
+  @doc """
+  A wait or blocked reason as a member sees it on a job in a repo they
+  can't read (§18.3). The reasons are fixed text except for the stalled
+  class's labels (§8.2), which can name the repo, so those go.
+  """
+  def masked_reason(nil), do: nil
+
+  def masked_reason(reason) when is_binary(reason),
+    do: String.replace(reason, ~r/ runners labelled \[[^\]]*\]/, " its runners")
 end

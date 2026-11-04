@@ -121,7 +121,7 @@ defmodule Crew.Scheduler do
   `[self-hosted, crew-m]` or a YAML list), and which boxes could hold it.
   """
   def label_test(text) do
-    labels = parse_runs_on(text)
+    labels = CrewProtocol.Labels.parse_runs_on(text)
     sizes = Sizes.list()
 
     result =
@@ -148,21 +148,6 @@ defmodule Crew.Scheduler do
       boxes: boxes,
       sizes: Map.new(sizes, &{&1.id, &1})
     }
-  end
-
-  defp parse_runs_on(text) do
-    text
-    |> String.replace(~r/^\s*runs-on:\s*/m, "")
-    |> String.replace(["[", "]"], " ")
-    |> String.split(~r/[,\n]/)
-    |> Enum.map(
-      &(&1
-        |> String.trim()
-        |> String.trim_leading("- ")
-        |> String.trim(~s("'))
-        |> String.trim())
-    )
-    |> Enum.reject(&(&1 == ""))
   end
 
   @doc "What a box offers job VMs (overcommit included), or nil before it reports."

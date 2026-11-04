@@ -134,4 +134,14 @@ defmodule Crew.SchedulerTest do
       eventually(fn -> VMs.list_live() != [] end)
     end
   end
+
+  describe "the label tester" do
+    test "quoted YAML labels parse" do
+      assert %{result: {:ours, _}, key: ["crew-m", "self-hosted"]} =
+               Scheduler.label_test(~s(["self-hosted", "crew-m"]))
+
+      assert %{result: {:ours, _}} = Scheduler.label_test("runs-on: [ 'crew-m' ]")
+      assert %{key: ["crew-m", "linux"]} = Scheduler.label_test("- crew-m\n- linux")
+    end
+  end
 end

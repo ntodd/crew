@@ -19,6 +19,9 @@ end
 
 config :crew, Oban, testing: :manual
 
+# Tests read the charts right after writing their rows.
+config :crew, chart_cache_ms: 0
+
 config :crew, CrewWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base: "e/Y5OfWQvLQ62yfWWoqWxf2uf5xbDAh/05h3jTT3BKyCPDKEikFPkDG7Xe2K4lFD",

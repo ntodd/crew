@@ -40,8 +40,8 @@ defmodule CrewWeb.DashboardLive do
       counts: Jobs.counts(),
       waiting: Jobs.longest_waiting(10),
       recent: Jobs.recently_completed(20),
-      started: Jobs.started_series(now),
-      phases: Jobs.phase_series(now),
+      started: Crew.Cache.fetch(:started_series, chart_cache_ms(), &Jobs.started_series/0),
+      phases: Crew.Cache.fetch(:phase_series, chart_cache_ms(), &Jobs.phase_series/0),
       repos?: Repos.list() != []
     )
   end
@@ -73,8 +73,16 @@ defmodule CrewWeb.DashboardLive do
 
   def handle_info(_message, socket), do: {:noreply, socket}
 
+  # Every viewer sees the same day: read it once per interval.
+  defp chart_cache_ms, do: Application.get_env(:crew, :chart_cache_ms, 30_000)
+
   defp readable?(:all, _), do: true
   defp readable?(ids, repo_id), do: repo_id in ids
+
+  defp reason(readable, job) do
+    reason = job.blocked_reason || job.wait_reason
+    if readable?(readable, job.repo_id), do: reason, else: JobStatus.masked_reason(reason)
+  end
 
   defp pct(points, field, total_field \\ nil) do
     Enum.map(points, fn m ->
@@ -215,7 +223,7 @@ defmodule CrewWeb.DashboardLive do
                   <span class="block text-xs text-ink-3">{job.size && job.size.name}</span>
                 <% end %>
                 <span :if={job.blocked_reason || job.wait_reason} class="block text-xs text-warning">
-                  {job.blocked_reason || job.wait_reason}
+                  {reason(@readable, job)}
                 </span>
               </span>
               <span class="shrink-0 tabular-nums text-xs text-ink-3">

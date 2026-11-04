@@ -26,22 +26,27 @@ defmodule CrewWeb.StackViewTest do
   test "groups by branch, newest first, with older SHAs folded", %{conn: conn} do
     {:ok, view, _} = live(conn, ~p"/runs?view=stack")
 
-    assert has_element?(view, "#stack-feat-a [data-current] [data-run='802']")
-    assert has_element?(view, "#stack-feat-a [data-current] [data-run='803']")
+    assert has_element?(view, "[data-branch='feat/a'] [data-current] [data-run='802']")
+    assert has_element?(view, "[data-branch='feat/a'] [data-current] [data-run='803']")
 
     assert has_element?(
              view,
-             "#stack-feat-a details[data-superseded] [data-run='801']",
+             "[data-branch='feat/a'] details[data-superseded] [data-run='801']",
              "aaaa111"
            )
 
-    assert has_element?(view, "#stack-feat-a details[data-superseded] summary", "1 superseded")
-    assert has_element?(view, "#stack-feat-b [data-current] [data-run='804']")
+    assert has_element?(
+             view,
+             "[data-branch='feat/a'] details[data-superseded] summary",
+             "1 superseded"
+           )
+
+    assert has_element?(view, "[data-branch='feat/b'] [data-current] [data-run='804']")
 
     # Newest branch first.
     html = render(view)
-    {a, _} = :binary.match(html, "stack-feat-a")
-    {b, _} = :binary.match(html, "stack-feat-b")
+    {a, _} = :binary.match(html, ~s(data-branch="feat/a"))
+    {b, _} = :binary.match(html, ~s(data-branch="feat/b"))
     assert a < b
   end
 
@@ -51,5 +56,26 @@ defmodule CrewWeb.StackViewTest do
     assert_patch(view, ~p"/runs?view=stack")
     view |> element("#view-list") |> render_click()
     assert_patch(view, ~p"/runs")
+  end
+
+  test "each group is headed by its branch, with ids unique across repos", %{
+    conn: conn,
+    repo: repo
+  } do
+    other = repo_fixture(name: "lib")
+
+    for {r, id} <- [{repo, 805}, {other, 806}] do
+      {:ok, _} = Jobs.handle_workflow_run(workflow_run_payload(r, id: id, head_branch: "main"))
+    end
+
+    {:ok, _} =
+      Jobs.handle_workflow_run(workflow_run_payload(repo, id: 807, head_branch: "feat-a"))
+
+    {:ok, view, html} = live(conn, ~p"/runs?view=stack")
+
+    assert has_element?(view, "[data-branch='feat/a'] h2", "feat/a")
+    ids = Regex.scan(~r/id="(stack-\d+)"/, html, capture: :all_but_first) |> List.flatten()
+    assert length(ids) == 5
+    assert ids == Enum.uniq(ids)
   end
 end
