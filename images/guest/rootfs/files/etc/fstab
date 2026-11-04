@@ -1,0 +1,3 @@
+# The kernel mounts / (root=/dev/vda rw, §13.3); this only adds noatime.
+# No fsck: the disk is a fresh clone of a checked image.
+/dev/vda  /  ext4  defaults,noatime  0  0

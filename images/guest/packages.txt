@@ -1,0 +1,156 @@
+# The packages the guest image installs (docs/crew_spec.md §13.1), with
+# --no-install-recommends. Their dependencies come with them, and every
+# resolved version is pinned in packages.lock.
+#
+# One package per line: `name`, or `name=version` to pin a version that
+# isn't the snapshot's (the third-party repos, which aren't snapshotted).
+# A trailing `[arm64]` or `[x64]` limits a line to that arch.
+
+# Init, devices and the system bus. (logind is in the systemd package;
+# there's no systemd-logind package in noble.)
+systemd
+systemd-sysv
+udev
+dbus
+libpam-systemd
+iproute2
+kmod
+
+# The root filesystem: resize2fs at boot (crew-guest), growpart.
+e2fsprogs
+cloud-guest-utils
+
+# The base set, as on runners/base and GitHub's hosted runners.
+ca-certificates
+curl
+wget
+git
+git-lfs
+openssh-client
+gnupg
+jq
+build-essential
+pkg-config
+autoconf
+automake
+libtool
+m4
+bison
+flex
+python3
+python3-venv
+python3-pip
+python3-dev
+python-is-python3
+locales
+tzdata
+tini
+sudo
+procps
+psmisc
+less
+file
+rsync
+time
+lsb-release
+iputils-ping
+bind9-dnsutils
+netcat-openbsd
+# Archivers
+zip
+unzip
+xz-utils
+bzip2
+zstd
+lz4
+7zip
+pigz
+cpio
+
+# actions/runner's .NET dependencies (its installdependencies.sh).
+libicu74
+libkrb5-3
+liblttng-ust1t64
+libssl3t64
+zlib1g
+
+# Playwright's system libraries (`playwright install-deps chromium` on
+# ubuntu24.04: its tools and chromium lists).
+xvfb
+fonts-noto-color-emoji
+fonts-unifont
+libfontconfig1
+libfreetype6
+xfonts-cyrillic
+xfonts-scalable
+fonts-liberation
+fonts-ipafont-gothic
+fonts-wqy-zenhei
+fonts-tlwg-loma-otf
+fonts-freefont-ttf
+libasound2t64
+libatk-bridge2.0-0t64
+libatk1.0-0t64
+libatspi2.0-0t64
+libcairo2
+libcups2t64
+libdbus-1-3
+libdrm2
+libgbm1
+libglib2.0-0t64
+libnspr4
+libnss3
+libpango-1.0-0
+libx11-6
+libxcb1
+libxcomposite1
+libxdamage1
+libxext6
+libxfixes3
+libxkbcommon0
+libxrandr2
+
+# The per-repo images' union. Ruby's native deps:
+libssl-dev
+libyaml-dev
+libreadline-dev
+zlib1g-dev
+libffi-dev
+libgmp-dev
+libgdbm-dev
+libncurses-dev
+libdb-dev
+uuid-dev
+libpq-dev
+libsqlite3-dev
+libxml2-dev
+libxslt1-dev
+# Erlang's:
+unixodbc-dev
+libsctp-dev
+xsltproc
+# The rest:
+inotify-tools
+ffmpeg
+libavcodec-dev
+libavdevice-dev
+libavfilter-dev
+libavformat-dev
+libavutil-dev
+libswresample-dev
+libswscale-dev
+libx264-dev
+libfdk-aac-dev
+poppler-utils
+shellcheck
+
+# Docker Engine, from Docker's repo (key: DOCKER_APT_KEY_FPR).
+docker-ce=5:29.9.2-1~ubuntu.24.04~noble
+docker-ce-cli=5:29.9.2-1~ubuntu.24.04~noble
+containerd.io=2.4.2-3~ubuntu.24.04~noble
+docker-buildx-plugin=0.38.1-1~ubuntu.24.04~noble
+docker-compose-plugin=5.7.0-1~ubuntu.24.04~noble
+
+# PostgreSQL clients, from PGDG (key: PGDG_APT_KEY_FPR).
+postgresql-client-17=17.11-1.pgdg24.04+2
+postgresql-client-18=18.6-1.pgdg24.04+2
