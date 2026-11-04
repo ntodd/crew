@@ -170,3 +170,77 @@ The other spikes are recorded here as they run.
 - **While someone has a running job's page open,** its steps come from
   the API every 10 s (rate-limited per job, however many are watching),
   as an optional call.
+
+## Guest image notes
+
+- **The build** is `images/guest` (`make -C images/guest`). Every step
+  runs in Docker on a builder image: ubuntu:24.04 by digest, with
+  packages from the guest's own snapshot, so the toolchain (gcc,
+  e2fsprogs, zstd) is pinned too. The manifest tools are
+  `images/guest/tools`, a Mix project over `crew_protocol`.
+- **Every pin** is in `versions.env` (kernel, moby's check script, apt
+  key fingerprints, the runner, Playwright, the Elixir build image) or
+  `packages.lock` (the base digest, the snapshot timestamp and every
+  installed package per arch, the base image's and the third-party
+  repos' included). The lock drives apt (a pin per package) and the
+  build fails unless `dpkg-query` matches it exactly. PGDG's archive repo
+  is configured at low priority so a pinned client still installs after
+  PGDG drops it from the main repo.
+- **The kernel config** is a fragment, `kernel/arm64.fragment`, over the
+  pinned version's defconfig; the full result is committed as
+  `kernel/arm64.config`, and the build refuses one that olddefconfig
+  would change. Whatever boot, Docker and the Crew list need is built in
+  (the check reads the Crew list's "present" as `=y`); defconfig's other
+  modules ship in `/usr/lib/modules`. Since 6.15 the iptables tables
+  need `NETFILTER_XTABLES_LEGACY`. The tarball's `.sign` must be by Greg
+  Kroah-Hartman's or Linus Torvalds's key (`kernel/keys/`).
+- **check-config.sh** also reports on the machine it runs on (cgroups,
+  AppArmor, sysctls); only its `CONFIG_` lines under "Generally
+  Necessary" count, and it runs with a `uname -r` that answers the
+  config's version. It needs GNU sed, so on macOS it runs in the builder.
+- **eth0 stays eth0.** 6.18 lets udev rename an interface that's up, and
+  predictable naming would, leaving crew-guest's
+  `net.ipv6.conf.eth0.disable_ipv6` with nothing to write. The image
+  masks `99-default.link`.
+- **The job-started hook** is installed as
+  `/opt/crew/hooks/job-started.sh`: actions/runner picks a hook's shell
+  by its extension. §13.1 and §19.5 name it without `.sh`.
+- **The runner's `.env`** also sets `LANG=C.UTF-8`, `ImageOS=ubuntu24`
+  (as on GitHub's runners; some setup actions read it) and
+  `PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`. The cache CA's variables are
+  crew-guest's to add at boot.
+- **Playwright** 1.64.1's Chromium is Chrome for Testing, which does now
+  build for linux-arm64. The image has Chromium, its headless shell and
+  ffmpeg, laid out as `playwright install` would, owned by the runner,
+  with a `.links` entry so another version's `playwright install` keeps
+  them.
+- **More is masked than §13.1 lists:** systemd-firstboot (every boot is
+  a first boot), getty.target and console-getty, e2scrub, fstrim and
+  dpkg-db-backup. The journal is volatile (64 MiB), units get 10 s to
+  stop, and `/etc/.updated` is written at build time so ldconfig doesn't
+  run at every boot. The finished image's apt sources are the live
+  archive, as on a hosted runner; the snapshot is for the build.
+- **The manifest** uses `Crew.Images.Image`'s field names. `rootfs_sha256`
+  and `rootfs_size` describe the `.rootfs.ext4.zst`, what `image.prepare`'s
+  `rootfs` file ref is checked against; `rootfs_ext4_*` describe the
+  decompressed file. It adds `kernel_version`, `packages_lock_sha256` and
+  `disable_update`. Arches are the protocol's `arm64` and `x64`, also in
+  the file names (`crew-guest-<version>-arm64.*`).
+- **The signature** is `CrewProtocol.Auth.sign_manifest/2`'s: ed25519 over
+  `"crew-manifest-v1\n"` and the manifest's exact bytes, base64, no
+  newline. CI's sign job uses `images/guest/sign.sh` (openssl only, since
+  the job runs no third-party actions); a test holds it to the same
+  bytes. The key is `CREW_RELEASE_SIGNING_KEY` in the `release-signing`
+  environment (the base64 32-byte seed); the `CREW_RELEASE_PUBLIC_KEY`
+  repository variable is its public half, as the control plane takes it.
+  `images/guest/keys/test-signing.key` is a development-only test key,
+  refused by `--release`.
+- **Measured on the M4 Max** (Docker Desktop, 16 CPUs): the kernel builds
+  in 3.5 minutes; the rootfs in 3.5 minutes with every stage rebuilt
+  (2.8 of them in apt) and about 40 s warm; compression (`zstd -19
+  --long=27`) takes 75 s. The image is 3.9 GiB (2.9 GiB used) and 734 MB
+  compressed. `make smoke` boots it through crew-vzd: `start` returns in
+  about 120 ms, crew-guest fetches the payload 0.85 s after `start`,
+  Docker answers at 1.2 s of guest uptime and the runner starts at 1.23
+  s. The power button powers the guest off in 0.26 s with the runner up,
+  and in 5.3 s while crew-guest is still waiting for its payload.
