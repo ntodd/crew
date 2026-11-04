@@ -103,11 +103,34 @@ defmodule CrewProtocol.Auth do
 
   @spec verify_release(String.t(), String.t(), String.t(), String.t(), binary()) ::
           :ok | {:error, :bad_signature}
-  def verify_release(version, target, sha256, signature, public),
-    do: verify_b64(release_message(version, target, sha256), signature, public)
+  def verify_release(version, target, sha256, signature, public) do
+    if Enum.all?([version, target, sha256], &field?/1),
+      do: verify_b64(release_message(version, target, sha256), signature, public),
+      else: {:error, :bad_signature}
+  end
 
-  defp release_message(version, target, sha256),
-    do: "crew-release-v1\n#{version}\n#{target}\n#{sha256}"
+  @doc """
+  The bytes a release tarball's signature covers (§20.1): the domain
+  line, then the version, the target (`linux-amd64`, `linux-arm64`,
+  `darwin-arm64`) and the tarball's SHA-256 in lowercase hex, each on
+  its own line, with no newline after the last:
+
+      crew-release-v1\\n<version>\\n<target>\\n<sha256>
+
+  The signature is ed25519 over them, base64 with no newline, as the
+  `.sig` beside the tarball holds it. A box's first install rebuilds
+  them with `printf 'crew-release-v1\\n%s\\n%s\\n%s'` and checks the
+  signature with openssl. A field can't hold a newline.
+  """
+  @spec release_message(String.t(), String.t(), String.t()) :: binary()
+  def release_message(version, target, sha256) do
+    unless Enum.all?([version, target, sha256], &field?/1),
+      do: raise(ArgumentError, "a release field can't be empty or hold a newline")
+
+    "crew-release-v1\n#{version}\n#{target}\n#{sha256}"
+  end
+
+  defp field?(value), do: is_binary(value) and value != "" and not String.contains?(value, "\n")
 
   @doc "Signs a guest image manifest's exact bytes."
   def sign_manifest(bytes, private), do: sign(manifest_message(bytes), private)
