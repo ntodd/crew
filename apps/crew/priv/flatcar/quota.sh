@@ -43,25 +43,31 @@ clone_mib=$((total_mib / 2))
 cache_mib=$((total_mib / 4))
 rest_mib=$((total_mib - clone_mib - cache_mib))
 
+cache_gib=$((cache_mib * 9 / 10 / 1024))
+[ "$cache_gib" -ge 1 ] || cache_gib=1
+mkdir -p /run/crew-box
+echo "CREW_CACHE_MAX_GIB=$cache_gib" > /run/crew-box/cache.env
+
 project() { # id path...
   id=$1
   shift
   for d in "$@"; do
     if [ "$(xfs_io -c lsproj "$d" 2>/dev/null | sed -n 's/^projid = //p')" != "$id" ]; then
-      xfs_quota -x -c "project -s -p $d $id" "$data" >/dev/null
+      xfs_quota -x -c "project -s -p $d $id" "$data" >/dev/null || return 1
     fi
   done
 }
 
-project 10 "$data/vms" "$data/jail"
-project 11 "$data/cache"
-project 12 "$data/agent" "$data/images"
-xfs_quota -x -c "limit -p bhard=${clone_mib}m 10" "$data"
-xfs_quota -x -c "limit -p bhard=${cache_mib}m 11" "$data"
-xfs_quota -x -c "limit -p bhard=${rest_mib}m 12" "$data"
-
-cache_gib=$((cache_mib * 9 / 10 / 1024))
-[ "$cache_gib" -ge 1 ] || cache_gib=1
-mkdir -p /run/crew-box
-echo "CREW_CACHE_MAX_GIB=$cache_gib" > /run/crew-box/cache.env
-echo "data disk: ${total_mib} MiB; clones ${clone_mib}, cache ${cache_mib}, agent and images ${rest_mib}"
+# The directories above are what the box needs to run; a quota that
+# can't be set is said loudly, and doesn't keep the box (or tailscaled,
+# whose state is here) down.
+if project 10 "$data/vms" "$data/jail" &&
+  project 11 "$data/cache" &&
+  project 12 "$data/agent" "$data/images" &&
+  xfs_quota -x -c "limit -p bhard=${clone_mib}m 10" "$data" &&
+  xfs_quota -x -c "limit -p bhard=${cache_mib}m 11" "$data" &&
+  xfs_quota -x -c "limit -p bhard=${rest_mib}m 12" "$data"; then
+  echo "data disk: ${total_mib} MiB; clones ${clone_mib}, cache ${cache_mib}, agent and images ${rest_mib}"
+else
+  say "couldn't set the data disk's quotas; one area filling up can starve the others (journalctl -u crew-quota)"
+fi

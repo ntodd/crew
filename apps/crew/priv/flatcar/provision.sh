@@ -47,8 +47,12 @@ systemctl start crew-agent-install.service ||
   fail "the agent's install failed (journalctl -u crew-agent-install)"
 
 say "starting the agent"
-systemctl start crew-net.service crew-cache.service crew-agent.service ||
-  fail "the agent didn't start (journalctl -u crew-net -u crew-cache -u crew-agent)"
+# On a retry the agent may have hit its start limit.
+systemctl reset-failed crew-agent.service 2>/dev/null || true
+# crew-agent wants crew-cache, and starts without it if it fails: the
+# agent reports the cache's health, and the box enrolls either way.
+systemctl start crew-net.service crew-agent.service ||
+  fail "the agent didn't start (journalctl -u crew-net -u crew-agent)"
 
 say "waiting for the agent to enroll"
 i=0
