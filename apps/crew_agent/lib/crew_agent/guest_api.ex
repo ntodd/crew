@@ -235,6 +235,8 @@ defmodule CrewAgent.GuestAPI do
   defp reply(conn, {:ok, body}) when is_map(body), do: json(conn, 200, body)
   defp reply(conn, {:error, :too_large}), do: send_resp(conn, 413, "")
   defp reply(conn, {:error, :rate_limited}), do: send_resp(conn, 429, "")
+  # The agent is stopping: the guest keeps the lines for the next one.
+  defp reply(conn, {:error, :draining}), do: send_resp(conn, 503, "")
   defp reply(conn, {:error, :no_vm}), do: send_resp(conn, 404, "")
   defp reply(conn, {:error, _}), do: send_resp(conn, 422, "")
 

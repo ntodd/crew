@@ -397,6 +397,8 @@ defmodule CrewAgent.VM do
       steps_timer: nil,
       guest_metrics: nil,
       refetch_reported: false,
+      # The agent is stopping: new log lines are the next agent's.
+      draining: false,
       adopted_dead: false,
       exited: false
     })
@@ -479,6 +481,9 @@ defmodule CrewAgent.VM do
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  def handle_call({:log, _body}, _from, %{draining: true} = state),
+    do: {:reply, {:error, :draining}, state}
 
   def handle_call({:log, body}, _from, state) do
     limit = state.meta["log_limit_bytes"] || 104_857_600
@@ -580,6 +585,14 @@ defmodule CrewAgent.VM do
     end
 
     {:reply, :ok, state}
+  end
+
+  # An agent stop (CrewAgent.VMs.drain_logs/1): the lines held for the
+  # next batch go now, no more are taken (the guest keeps them for the
+  # next agent), and the reply says whether every batch is acked.
+  def handle_call(:drain_logs, _from, state) do
+    state = %{flush(state) | draining: true}
+    {:reply, state.unacked == [], state}
   end
 
   # Booted but without its payload yet: the JIT config is only in this
