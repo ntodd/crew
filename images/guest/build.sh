@@ -22,7 +22,8 @@
 # run mix, default `mix`); SIGN for `artifacts`: `test` (the default, the
 # development test key), `release` (CREW_RELEASE_SIGNING_KEY, never the
 # test key) or `none`; PUBLIC_KEY (base64) to verify against instead of
-# the test key.
+# the test key; BUILDX_ARGS, extra `docker buildx build` arguments for the
+# rootfs (a cache, or `--no-cache-filter packages` to re-run apt).
 # Caches: the Docker volumes crew-guest-kernel (kernel downloads, source
 # and object trees) and crew-guest-rootfs (the unpacked tree), and
 # BuildKit's cache (layers, the apt archive, downloads).
@@ -55,7 +56,7 @@ UBUNTU_SNAPSHOT=$(awk '$1 == "snapshot" { print $2 }' "$lock")
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$repo" log -1 --format=%ct)}
 export SOURCE_DATE_EPOCH
 
-sha256() { shasum -a 256 "$@" 2>/dev/null || sha256sum "$@"; }
+sha256() { if command -v sha256sum >/dev/null; then sha256sum; else shasum -a 256; fi; }
 
 builder_tag() {
   local h
@@ -120,7 +121,7 @@ rootfs_build() {
     --build-arg PLAYWRIGHT_FFMPEG_SHA256="${!sha_ffmpeg}" \
     --build-arg HEX_VERSION="$HEX_VERSION" \
     --build-arg REBAR3_VERSION="$REBAR3_VERSION" --build-arg REBAR3_SHA256="$REBAR3_SHA256" \
-    "$@" "$here"
+    ${BUILDX_ARGS:+$BUILDX_ARGS} "$@" "$here"
 }
 
 step=${1:?usage: build.sh builder|kernel-config|kernel|kernel-check|kernel-check-test|rootfs|lock|artifacts}
@@ -136,6 +137,9 @@ kernel)
   mkdir -p "$out/kernel"
   in_builder -v "$here:/guest:ro" -v crew-guest-kernel:/build -v "$out/kernel:/out" -- \
     bash /guest/kernel/build-in-container.sh build
+  # out/<arch>/ then holds Image and rootfs.ext4 side by side, which is
+  # what the agent's CREW_DEV_IMAGE_DIR takes.
+  ln -f "$out/kernel/$kimage" "$out/$kimage"
   ;;
 kernel-check)
   # check-config.sh needs GNU tools: on Linux it runs here, elsewhere in the
@@ -188,7 +192,7 @@ artifacts)
   in_builder -v "$out:/out" -- \
     zstd -q -T0 -19 --long=27 -f /out/rootfs.ext4 -o "/out/release/$base.rootfs.ext4.zst"
   echo "build: compressed the rootfs in $(( $(date +%s) - t0 ))s"
-  mix=(${MIX:-mix})
+  read -r -a mix <<<"${MIX:-mix}"
   (cd "$here/tools" && "${mix[@]}" crew_image.write "$release" \
     --version "$VERSION" --arch "$ARCH" \
     --kernel "$out/kernel/$kimage" --kernel-release "$out/kernel/release" \
@@ -200,9 +204,10 @@ artifacts)
     none) echo "build: not signing (SIGN=none)"; exit 0 ;;
     *) echo "build: SIGN must be test, release or none" >&2; exit 1 ;;
   esac
-  (cd "$here/tools" && "${mix[@]}" crew_image.verify "$release/$base.manifest.json" \
-    --rootfs-ext4 "$out/rootfs.ext4" ${PUBLIC_KEY:+--public-key "$PUBLIC_KEY"} \
-    $([ "${SIGN:-test}" = release ] && echo --release))
+  verify=(--rootfs-ext4 "$out/rootfs.ext4")
+  [ -n "${PUBLIC_KEY:-}" ] && verify+=(--public-key "$PUBLIC_KEY")
+  [ "${SIGN:-test}" = release ] && verify+=(--release)
+  (cd "$here/tools" && "${mix[@]}" crew_image.verify "$release/$base.manifest.json" "${verify[@]}")
   ls -l "$release"
   ;;
 kernel-check-test)
