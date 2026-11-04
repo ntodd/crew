@@ -7,7 +7,7 @@
 import {expect, test} from "@playwright/test"
 import {randomBytes} from "node:crypto"
 import {readFileSync} from "node:fs"
-import {shot, signIn} from "./helpers.js"
+import {connected, shot, signIn} from "./helpers.js"
 
 const layer = "12-flatcar"
 const breakGlass = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBreakGlassE2E admin@laptop"
@@ -48,6 +48,7 @@ async function toMobile(page) {
 
 async function startAdding(page, name, type) {
   await page.goto("/boxes/new")
+  await connected(page)
   await page.getByLabel("Name").fill(name)
   await page.locator(`input[name="box[box_type]"][value="${type}"]`).check()
 }
