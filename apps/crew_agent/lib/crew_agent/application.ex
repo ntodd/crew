@@ -33,6 +33,7 @@ defmodule CrewAgent.Application do
         {Registry, keys: :unique, name: CrewAgent.Registry},
         CrewAgent.Outbox,
         CrewAgent.Net,
+        CrewAgent.Site,
         CrewAgent.GuestAPI,
         {DynamicSupervisor, name: CrewAgent.GuestAPI.Sockets, strategy: :one_for_one},
         null_supervisor(config),

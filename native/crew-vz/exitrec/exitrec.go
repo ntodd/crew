@@ -38,7 +38,12 @@ const (
 )
 
 // ErrExists is returned by Write when a record is already present.
-var ErrExists = errors.New("exited.json already exists")
+// FileName is the record's name in the VM's directory. It's fixed, so
+// crew-vzd finds it even after the agent removes vz.json, and it never
+// collides with the agent's own exited.json.
+const FileName = "vz-exited.json"
+
+var ErrExists = errors.New("the exit record already exists")
 
 // Record is exited.json.
 type Record struct {

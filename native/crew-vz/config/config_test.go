@@ -69,7 +69,7 @@ func newFixture(t *testing.T) *fixture {
 		ConsoleLog:  filepath.Join(vmDir, "console.log"),
 		GuestSocket: filepath.Join(vmDir, "guest.sock"),
 		CtlSocket:   filepath.Join(vmDir, "ctl.sock"),
-		ExitedPath:  filepath.Join(vmDir, "exited.json"),
+		ExitedPath:  filepath.Join(vmDir, "vz-exited.json"),
 		Lease:       Lease{Gateway: "10.200.0.1/30", Guest: "10.200.0.2/30", MAC: "02:00:0a:c8:00:02"},
 		ServiceIP:   "10.199.0.1",
 		CacheAddr:   "192.168.64.5",
@@ -188,7 +188,7 @@ func TestPathRules(t *testing.T) {
 		{"per-vm file in another vm dir", func(f *fixture) {
 			other := filepath.Join(f.dataDir, "vms", "vm2")
 			os.MkdirAll(other, 0o750)
-			f.cfg.ExitedPath = filepath.Join(other, "exited.json")
+			f.cfg.ExitedPath = filepath.Join(other, "vz-exited.json")
 		}, "exited_path"},
 		{"per-vm file at data dir root", func(f *fixture) {
 			f.cfg.ConsoleLog = filepath.Join(f.dataDir, "console.log")
@@ -236,7 +236,8 @@ func TestPathRules(t *testing.T) {
 			long := filepath.Join(f.vmDir, strings.Repeat("s", 100)+".sock")
 			f.cfg.CtlSocket = long
 		}, "ctl_socket"},
-		{"same file twice", func(f *fixture) { f.cfg.ExitedPath = f.cfg.ConsoleLog }, "same path"},
+		{"same file twice", func(f *fixture) { f.cfg.ConsoleLog = f.cfg.GuestSocket }, "same path"},
+		{"exit record under another name", func(f *fixture) { f.cfg.ExitedPath = filepath.Join(filepath.Dir(f.cfg.ExitedPath), "exited.json") }, "must be named vz-exited.json"},
 		{"kernel is the disk", func(f *fixture) { f.cfg.Kernel = f.cfg.Disk }, "kernel"},
 	}
 	for _, tc := range cases {

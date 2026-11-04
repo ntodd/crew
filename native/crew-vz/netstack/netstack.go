@@ -194,10 +194,11 @@ func tuneTCP(s *stack.Stack) error {
 		ptr(tcpip.TCPSACKEnabled(true)),
 		ptr(tcpip.TCPModerateReceiveBufferOption(true)),
 		// The guest is microseconds away, so small windows still fill the
-		// link; they also bound what a hostile guest can pin in this process
-		// (max_conns x buffers). 2 MiB at 100us RTT is 160 Gbit/s.
-		&tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 256 << 10, Max: 2 << 20},
-		&tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 512 << 10, Max: 2 << 20},
+		// link (1 MiB at 100us RTT is 80 Gbit/s); they also bound what a
+		// guest can pin in this process, which is outside its own memory:
+		// max_conns x (receive + send) at most, 2 GiB at 1024 connections.
+		&tcpip.TCPReceiveBufferSizeRangeOption{Min: 4 << 10, Default: 128 << 10, Max: 1 << 20},
+		&tcpip.TCPSendBufferSizeRangeOption{Min: 4 << 10, Default: 128 << 10, Max: 1 << 20},
 		ptr(tcpip.CongestionControlOption("cubic")),
 	}
 	for _, o := range opts {

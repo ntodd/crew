@@ -174,7 +174,7 @@ func (b *box) addVM(id string, o vmOpts) *vm {
 		"console_log":  filepath.Join(dir, "console.log"),
 		"guest_socket": filepath.Join(dir, "guest.sock"),
 		"ctl_socket":   filepath.Join(dir, "ctl.sock"),
-		"exited_path":  filepath.Join(dir, "exited.json"),
+		"exited_path":  filepath.Join(dir, "vz-exited.json"),
 		"lease":        map[string]string{"gateway": "10.200.0.1/30", "guest": "10.200.0.2/30", "mac": "02:00:0a:c8:00:02"},
 		"service_ip":   "10.199.0.1",
 		"dns_fallback": "1.1.1.1:53",
@@ -628,7 +628,7 @@ func TestDeadlineWhileDaemonIsDown(t *testing.T) {
 	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
-	rec, err := exitrec.Read(filepath.Join(v.dir, "exited.json"))
+	rec, err := exitrec.Read(filepath.Join(v.dir, exitrec.FileName))
 	if err != nil || rec.Code != 3 {
 		t.Fatalf("exited.json %+v %v", rec, err)
 	}

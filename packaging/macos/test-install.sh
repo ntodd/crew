@@ -49,4 +49,34 @@ plutil -extract ProgramArguments json -o - "$out/com.crew.vzd.plist" | grep -q s
 "$here/install-macos.sh" --dry-run --url ws://x --token cj_t --name m4 > /dev/null 2>&1 && fail "ws:// was accepted"
 "$here/install-macos.sh" --dry-run --url wss://x --token cj_t --name "Not A Label" > /dev/null 2>&1 && fail "a bad name was accepted"
 
+# A reinstall keeps the box's identity, name, URL and the admin's own
+# settings; only the installer's lines are rewritten.
+data="$out/data"
+mkdir -p "$data/agent"
+echo '{"agent_id":"x"}' > "$data/agent/identity.json"
+cat > "$data/agent/env" <<'ENV'
+CREW_URL='wss://old.example.ts.net/agent/websocket'
+CREW_BOX_NAME='m4-old'
+CREW_DATA_DIR='/somewhere/else'
+CREW_EXTRA_BLOCKED='198.51.100.0/24'
+CREW_VZ_HOST_RESERVE_MIB='16384'
+ENV
+rm -f "$out/env"
+CREW_DRY_RUN_OUT="$out" "$here/install-macos.sh" --dry-run --data-dir "$data" > "$out/log2"
+has "$out/env" "CREW_URL='wss://old.example.ts.net/agent/websocket'"
+has "$out/env" "CREW_BOX_NAME='m4-old'"
+has "$out/env" "CREW_DATA_DIR='$data'"
+has "$out/env" "CREW_EXTRA_BLOCKED='198.51.100.0/24'"
+has "$out/env" "CREW_VZ_HOST_RESERVE_MIB='16384'"
+grep -q "CREW_JOIN_TOKEN" "$out/env" && fail "a reinstall wrote a join token"
+[ "$(grep -c '^CREW_DATA_DIR=' "$out/env")" = 1 ] || fail "CREW_DATA_DIR twice"
+
+# Uninstall stops the VMs: helpers outlive crew-vzd by design.
+"$here/install-macos.sh" --dry-run --uninstall > "$out/log3"
+has "$out/log3" "'launchctl' 'bootout' 'system/com.crew.agent'"
+has "$out/log3" "'pkill' '-KILL' '-U' '_crewvm' '-f' 'crew-vz run'"
+agent_line=$(grep -n "bootout' 'system/com.crew.agent'" "$out/log3" | cut -d: -f1)
+kill_line=$(grep -n "'pkill'" "$out/log3" | cut -d: -f1)
+[ "$agent_line" -lt "$kill_line" ] || fail "VMs were stopped before the agent, which could start more"
+
 echo "install-macos.sh: ok"

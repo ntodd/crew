@@ -116,6 +116,18 @@ The other spikes are recorded here as they run.
     through the guest API's control channel, so either way works.
   - VZ can't tell a guest power-off from a reboot or a panic, so all exit
     0 (`guest_stopped`).
+- **`site4` on vz** is computed when each VM starts: the Mac's connected
+  IPv4 subnets, the site's egress address (from `CREW_EGRESS_ECHO_URL`,
+  every 10 minutes) and `CREW_EXTRA_BLOCKED`. A running VM keeps the set
+  it started with.
+- **The cache VM's address** comes from `hostvm/cachevm.ip`
+  (`CREW_VZ_CACHE_ADDR` overrides it). Until the cache VM exists (§12.3),
+  guests need `CREW_VZ_DNS_FALLBACK` to resolve names.
+- **The helper's network memory** is bounded, not budgeted: TCP buffers
+  are at most 1 MiB each way per connection and the agent sends
+  `max_conns` 1024, so a VM can hold at most about 2 GiB in its helper,
+  outside its own memory. The 8 GiB host reserve covers one such VM; a
+  per-VM aggregate budget is a known gap (security.md).
 - **`firewall_ok` on vz** means crew-vzd answers. There's no host
   firewall to verify: the boundary is the helper's netstack, and its
   policy tests run against a real guest in `make integration`.
@@ -129,6 +141,8 @@ The other spikes are recorded here as they run.
   downloading (the download comes with the guest image).
 - **`install-macos.sh`** (`packaging/macos/`) creates `_crewagent`,
   `_crewvm` and `crewvm`, lays out the data directory, installs the two
-  LaunchDaemons and waits for enrollment. `test-install.sh` checks a dry
+  LaunchDaemons and waits for enrollment. A reinstall keeps the box's
+  identity, name, URL and the admin's settings in `agent/env`; an
+  uninstall stops the agent first, then every job VM. `test-install.sh` checks a dry
   run's plists and env without root. Spike S3 (launchd as `_crewvm`, with
   nobody logged in, after a reboot) still needs a real install.
