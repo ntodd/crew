@@ -60,6 +60,8 @@ if config_env() != :test do
     cache_mgmt_token: System.get_env("CREW_CACHE_MGMT_TOKEN"),
     release_public_key: System.get_env("CREW_RELEASE_PUBLIC_KEY"),
     null_guest_cmd: System.get_env("CREW_NULL_GUEST_CMD"),
+    # Conformance mode (§11.6): only this box's own env turns it on.
+    conformance: System.get_env("CREW_CONFORMANCE") == "1",
     dev: dev,
     connect: System.get_env("CREW_URL") not in [nil, ""]
 end

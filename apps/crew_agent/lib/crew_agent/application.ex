@@ -2,11 +2,20 @@ defmodule CrewAgent.Application do
   @moduledoc false
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     config = CrewAgent.Config.load()
     CrewAgent.Config.put(config)
     rollback_if_due(config)
+
+    if config.conformance,
+      do:
+        Logger.warning(
+          "CREW_CONFORMANCE=1: every VM runs the guest image's conformance checks instead of its job (§11.6)"
+        )
+
     File.mkdir_p!(CrewAgent.Config.vms_dir(config))
     File.mkdir_p!(CrewAgent.Config.images_dir(config))
 

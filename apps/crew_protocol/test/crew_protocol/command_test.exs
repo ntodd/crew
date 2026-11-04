@@ -42,6 +42,15 @@ defmodule CrewProtocol.CommandTest do
   describe "vm.start" do
     setup do: %{start: Examples.command("vm.start")}
 
+    # Conformance mode (§11.6) is the agent's own setting: the control
+    # plane has no way to ask for it.
+    test "can't carry a conformance object or flag", %{start: start} do
+      for value <- [%{"checks" => ["sizing"]}, true, "1"] do
+        assert {:error, [{"conformance", "is not allowed"}]} =
+                 Command.new("vm.start", Map.put(start, "conformance", value))
+      end
+    end
+
     test "a jit_config over 16 KiB is refused", %{start: start} do
       big = Base.encode64(:binary.copy("a", 16 * 1024))
 

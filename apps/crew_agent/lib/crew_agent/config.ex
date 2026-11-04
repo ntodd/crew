@@ -33,6 +33,9 @@ defmodule CrewAgent.Config do
             cache_mgmt_token: nil,
             release_public_key: nil,
             null_guest_cmd: nil,
+            # CREW_CONFORMANCE=1: guests run the image's conformance checks
+            # instead of the runner (§11.6, CrewAgent.Conformance).
+            conformance: false,
             dev: false,
             connect: true,
             proc: "/proc",
