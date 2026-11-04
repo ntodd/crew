@@ -1,0 +1,19 @@
+# crew-net (spec §12.2, §14.2): at boot, the crew0 dummy interface with
+# 10.199.0.1/32, then the packet filter (etc/nft.conf with $UPLINK filled
+# in, and etc/connlimit.rules), loaded once, and site4. It's never
+# reloaded on a timer: crew-net-site4.timer only refills site4.
+[Unit]
+Description=Crew network: crew0, the packet filter and site4 (crew-net)
+Documentation=https://github.com/ntodd/crew/blob/main/native/crew-vmctl/README.md
+Wants=network-online.target
+After=network-online.target
+Before=crew-agent.service crew-cache.service crew-vmctl.socket
+RequiresMountsFor=/srv/crew
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/srv/crew/agent/current/bin/crew-vmctl net-up
+
+[Install]
+WantedBy=multi-user.target

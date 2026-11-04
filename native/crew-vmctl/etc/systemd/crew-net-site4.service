@@ -1,0 +1,13 @@
+# crew-net's one periodic action (spec §14.2): flush and refill site4 in
+# one nft transaction, from the uplink's subnets, the site's egress
+# address (the agent's agent/egress4) and CREW_EXTRA_BLOCKED.
+[Unit]
+Description=Crew network: refill site4 (crew-net)
+Documentation=https://github.com/ntodd/crew/blob/main/native/crew-vmctl/README.md
+Requisite=crew-net.service
+After=crew-net.service
+RequiresMountsFor=/srv/crew
+
+[Service]
+Type=oneshot
+ExecStart=/srv/crew/agent/current/bin/crew-vmctl site4

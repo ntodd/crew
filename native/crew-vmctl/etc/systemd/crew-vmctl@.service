@@ -1,0 +1,22 @@
+# One crew-vmctl request (spec §10.8), started by crew-vmctl.socket with
+# the connection on stdin and stdout. Root, since its verbs need it, but
+# its settings come from here and never from the agent: CREW_VM_NET must
+# match the agent's (§14.1) and the address range nft.conf names.
+[Unit]
+Description=Crew root helper request (crew-vmctl)
+Documentation=https://github.com/ntodd/crew/blob/main/native/crew-vmctl/README.md
+RequiresMountsFor=/srv/crew
+After=crew-net.service
+CollectMode=inactive-or-failed
+
+[Service]
+Type=simple
+ExecStart=/srv/crew/agent/current/bin/crew-vmctl serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+Environment=CREW_VM_NET=10.200.0.0/16
+RuntimeMaxSec=200
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes

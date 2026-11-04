@@ -2,6 +2,7 @@
 # builds never touch the network.
 #
 #   make            build and ad-hoc sign crew-vz (VZ refuses unsigned binaries)
+#   make crew-vmctl build crew-vmctl for linux amd64 and arm64 (static)
 #   make hostvm-dev a Flatcar host VM with nested virtualization, for development
 #   make test vet   unit tests and vet
 #   make guest      build the integration-test guest (Docker) into ../tmp/crew-vz-guest
@@ -11,12 +12,13 @@
 GO ?= mise exec -- go
 VERSION ?= dev
 BIN := crew-vz/bin/crew-vz
+VMCTL := crew-vmctl/bin
 GUEST := $(abspath ../tmp/crew-vz-guest)
 
 export GOFLAGS := -mod=vendor
 export GOPROXY := off
 
-.PHONY: all crew-vz hostvm-dev test vet guest integration vendor clean
+.PHONY: all crew-vz crew-vmctl hostvm-dev test vet guest integration vendor clean
 
 all: crew-vz
 
@@ -28,6 +30,13 @@ crew-vz:
 hostvm-dev:
 	CGO_ENABLED=1 $(GO) build -trimpath -o hostvm-dev/hostvm-dev ./hostvm-dev
 	codesign --force -s - --entitlements entitlements.plist hostvm-dev/hostvm-dev
+
+# The Firecracker boxes' root helper (§10.8): static, so it runs on Flatcar.
+crew-vmctl:
+	for arch in amd64 arm64; do \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$arch $(GO) build -trimpath -ldflags "-X main.version=$(VERSION)" \
+			-o $(VMCTL)/linux-$$arch/crew-vmctl ./crew-vmctl/cmd/crew-vmctl || exit 1; \
+	done
 
 test:
 	$(GO) test ./...
@@ -47,4 +56,4 @@ vendor:
 	GOFLAGS= GOPROXY=https://proxy.golang.org,direct $(GO) mod vendor
 
 clean:
-	rm -rf crew-vz/bin
+	rm -rf crew-vz/bin crew-vmctl/bin
