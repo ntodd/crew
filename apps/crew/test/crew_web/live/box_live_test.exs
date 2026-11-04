@@ -104,6 +104,19 @@ defmodule CrewWeb.BoxLiveTest do
       assert {:ok, _} = Boxes.enroll(token, %{"public_key" => Base.encode64(public)})
     end
 
+    # The agent checks its updates against it (§20.2).
+    test "the mac-vz command gives the agent the release key", %{conn: conn} do
+      key = Crew.ImageFixtures.keypair()
+      Crew.ImageFixtures.trust(key)
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+
+      view
+      |> form("#add-box", %{"box" => %{"box_name" => "m1ultra", "box_type" => "mac-vz"}})
+      |> render_submit()
+
+      assert has_element?(view, "#join-command", "--release-key #{Base.encode64(key.public)}")
+    end
+
     test "shows the launcher command for linux-vm and mac-vm", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/boxes/new")
 

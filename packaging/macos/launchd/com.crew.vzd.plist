@@ -2,14 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- crew-vzd (§11.4): owns every job VM's helper. Helpers run in their own
      sessions and must outlive this job, so launchd mustn't kill the
-     process group when it stops. -->
+     process group when it stops. It runs from the agent's release, and
+     restarts onto a new one only once no VM runs (§20.2). -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
   <string>com.crew.vzd</string>
   <key>ProgramArguments</key>
   <array>
-    <string>__PREFIX__/bin/crew-vz</string>
+    <string>__DATA__/agent/current/bin/crew-vz</string>
     <string>daemon</string>
     <string>--socket</string>
     <string>__DATA__/run/vzd.sock</string>
