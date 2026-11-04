@@ -38,7 +38,7 @@ for app in crew_agent crew_cache; do
   echo "build-linux: $app for $target"
   docker run --rm --platform "$platform" \
     -v "$root/apps/crew_protocol:/src/crew_protocol:ro" -v "$root/apps/$app:/src/$app:ro" \
-    -v "$work:/out" -e MIX_ENV=prod -e APP="$app" -e VERSION="$version" \
+    -v "$work:/out" -e MIX_ENV=prod -e APP="$app" -e CREW_VERSION="$version" \
     "$ELIXIR_IMAGE" bash -euc '
       # muontrap builds a small C port: the image has no compiler.
       command -v make >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential >/dev/null; }
