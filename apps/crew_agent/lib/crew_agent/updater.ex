@@ -527,21 +527,55 @@ defmodule CrewAgent.Updater do
   end
 
   @doc """
-  True when an update hasn't joined, there's a release to go back to,
-  and this process (running since `running_since`) has had 5 minutes.
-  Timed from the later of the install and the start, so a box shut down
-  right after an update gets the whole 5 minutes when it boots. Only for
-  the release `current` points at.
+  At every start of the agent, before anything else: the release an
+  update installed records its first start on this boot in the marker
+  (`first_start_at`, `boot_id`), and keeps it through any number of
+  restarts. Once 5 minutes have passed since then without a join, it
+  rolls back here, as the watchdog would (`watchdog/3`'s answer). That
+  catches a release that dies every minute or so, too slowly for the
+  service manager's crash-loop limits, which a timer per process never
+  would. A host reboot starts the 5 minutes again, so a box shut down
+  right after an update gets them when it boots. Options (the defaults
+  are the real ones): `:running`, `:boot_id`, `:now`.
   """
-  @spec rollback_due?(Config.t(), integer(), integer(), String.t()) :: boolean()
-  def rollback_due?(%Config{} = config, running_since, now, running \\ Identity.version()) do
+  @spec on_start(Config.t(), keyword()) :: :ok | {:stop, integer()}
+  def on_start(%Config{} = config, opts \\ []) do
     root = Config.agent_dir(config)
+    running = Keyword.get_lazy(opts, :running, &Identity.version/0)
+    boot = Keyword.get_lazy(opts, :boot_id, &CrewAgent.Boot.id/0)
+    now = Keyword.get_lazy(opts, :now, fn -> System.os_time(:second) end)
+    path = Path.join(root, @pending)
 
     with true <- current_version(root) == running,
-         {:ok, %{"installed_at" => at}} when is_integer(at) <-
+         {:ok, %{} = marker} <- read_json(path) do
+      if marker["boot_id"] != boot or not is_integer(marker["first_start_at"]) do
+        write_json!(path, Map.merge(marker, %{"boot_id" => boot, "first_start_at" => now}))
+        :ok
+      else
+        watchdog(config, now, running: running, boot_id: boot)
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  @doc """
+  True when an update hasn't joined, there's a release to go back to,
+  and 5 minutes have passed since the release's first start on this boot
+  (`on_start/2`). Only for the release `current` points at. Options:
+  `:running` and `:boot_id`, defaulting to the real ones.
+  """
+  @spec rollback_due?(Config.t(), integer(), keyword()) :: boolean()
+  def rollback_due?(%Config{} = config, now, opts \\ []) do
+    root = Config.agent_dir(config)
+    running = Keyword.get_lazy(opts, :running, &Identity.version/0)
+    boot = Keyword.get_lazy(opts, :boot_id, &CrewAgent.Boot.id/0)
+
+    with true <- current_version(root) == running,
+         {:ok, %{"first_start_at" => first, "boot_id" => ^boot}} when is_integer(first) <-
            read_json(Path.join(root, @pending)),
-         prev when is_binary(prev) <- link(root, "previous") do
-      now - max(at, running_since) >= @rollback_after
+         prev when is_binary(prev) <- release_link(root, "previous") do
+      now - first >= @rollback_after
     else
       _ -> false
     end
@@ -555,16 +589,18 @@ defmodule CrewAgent.Updater do
   def rollback_exit_status, do: @rollback_exit
 
   @doc """
-  The connection's watchdog, while the agent hasn't joined: once
-  `rollback_due?/4`, answers how to stop. On a Firecracker box root's
-  half has to move back too, so the agent leaves it to
-  `crew-agent-rollback.service` (`{:stop, 75}`); elsewhere it switches
-  back itself and exits to be restarted (`{:stop, 1}`).
+  The connection's watchdog, while the agent hasn't joined, and
+  `on_start/2`'s: once `rollback_due?/3`, answers how to stop. On a
+  Firecracker box root's half has to move back too, so the agent leaves
+  it to `crew-agent-rollback.service` (`{:stop, 75}`); elsewhere it
+  switches back itself and exits to be restarted (`{:stop, 1}`).
   """
-  @spec watchdog(Config.t(), integer(), integer(), String.t()) :: :ok | {:stop, integer()}
-  def watchdog(%Config{} = config, running_since, now, running \\ Identity.version()) do
+  @spec watchdog(Config.t(), integer(), keyword()) :: :ok | {:stop, integer()}
+  def watchdog(%Config{} = config, now, opts \\ []) do
+    running = Keyword.get_lazy(opts, :running, &Identity.version/0)
+
     cond do
-      not rollback_due?(config, running_since, now, running) ->
+      not rollback_due?(config, now, opts) ->
         :ok
 
       config.driver == "firecracker" ->

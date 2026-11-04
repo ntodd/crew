@@ -473,16 +473,77 @@ defmodule CrewAgent.UpdaterTest do
       assert File.exists?(Path.join(ctx.agent_dir, "update-pending"))
     end
 
-    test "rolls back after 5 minutes without joining, timed from the later of install and start",
-         ctx do
-      installed = marker(ctx)["installed_at"]
+    # The clock is the test's: `now` and the boot id are given.
+    defp start(ctx, now, opts \\ []) do
+      Updater.on_start(
+        Keyword.get(opts, :config, ctx.config),
+        Keyword.merge([running: "0.2.0", boot_id: "boot-1", now: now], opts)
+      )
+    end
 
-      refute Updater.rollback_due?(ctx.config, installed, installed + 299, "0.2.0")
-      assert Updater.rollback_due?(ctx.config, installed, installed + 300, "0.2.0")
-      # A box shut down right after the update gets the full 5 minutes.
-      refute Updater.rollback_due?(ctx.config, installed + 3600, installed + 3700, "0.2.0")
-      # Only the release current points at rolls back.
-      refute Updater.rollback_due?(ctx.config, installed, installed + 999, "0.1.0")
+    defp due?(ctx, now, opts \\ []),
+      do:
+        Updater.rollback_due?(
+          ctx.config,
+          now,
+          Keyword.merge([running: "0.2.0", boot_id: "boot-1"], opts)
+        )
+
+    test "the first start this boot is kept in the marker, however many follow", ctx do
+      t0 = 1_800_000_000
+      refute due?(ctx, t0 + 10_000)
+
+      assert :ok = start(ctx, t0)
+      assert %{"first_start_at" => ^t0, "boot_id" => "boot-1"} = marker(ctx)
+      assert :ok = start(ctx, t0 + 90)
+      assert :ok = start(ctx, t0 + 180)
+      assert marker(ctx)["first_start_at"] == t0
+
+      refute due?(ctx, t0 + 299)
+      assert due?(ctx, t0 + 300)
+    end
+
+    # A release that dies every 90 s never trips the service manager's
+    # crash-loop limits, and restarted the old 5 minutes with each process.
+    test "a release that keeps dying slowly is rolled back 5 minutes after its first start",
+         ctx do
+      t0 = 1_800_000_000
+
+      for n <- 0..3, do: assert(:ok = start(ctx, t0 + n * 90))
+
+      assert {:stop, 1} = start(ctx, t0 + 4 * 90)
+      assert link(ctx, "current") == "0.1.0"
+
+      assert {:rolled_back, %{reason: reason}} = Updater.confirm(ctx.config, running: "0.1.0")
+      assert reason =~ "5 minutes"
+    end
+
+    test "on Firecracker the rollback at start is left to root's rollback unit", ctx do
+      t0 = 1_800_000_000
+      fc = %{ctx.config | driver: "firecracker"}
+      assert :ok = start(ctx, t0, config: fc)
+      assert {:stop, 75} = start(ctx, t0 + 301, config: fc)
+      assert link(ctx, "current") == "0.2.0"
+    end
+
+    test "a host reboot gives the release its 5 minutes again", ctx do
+      t0 = 1_800_000_000
+      assert :ok = start(ctx, t0)
+      assert :ok = start(ctx, t0 + 3600, boot_id: "boot-2")
+      assert marker(ctx)["first_start_at"] == t0 + 3600
+      refute due?(ctx, t0 + 3600 + 299, boot_id: "boot-2")
+      assert due?(ctx, t0 + 3600 + 300, boot_id: "boot-2")
+      # A start from the boot before doesn't count on this one.
+      refute due?(ctx, t0 + 9999, boot_id: "boot-3")
+    end
+
+    test "only the release current points at is timed", ctx do
+      t0 = 1_800_000_000
+      # The old release, still waiting to restart into the new one.
+      assert :ok = start(ctx, t0, running: "0.1.0")
+      refute Map.has_key?(marker(ctx), "first_start_at")
+      assert :ok = start(ctx, t0)
+      refute due?(ctx, t0 + 999, running: "0.1.0")
     end
 
     test "a rollback goes back to previous and leaves a note for the release it lands on", ctx do
@@ -490,7 +551,7 @@ defmodule CrewAgent.UpdaterTest do
       assert link(ctx, "current") == "0.1.0"
       refute link(ctx, "previous")
       refute File.exists?(Path.join(ctx.agent_dir, "update-pending"))
-      refute Updater.rollback_due?(ctx.config, 0, System.os_time(:second), "0.1.0")
+      refute Updater.rollback_due?(ctx.config, System.os_time(:second) + 999, running: "0.1.0")
 
       # 0.1.0, joining, reports the update as failed (§20.2's two failures).
       assert {:rolled_back,
@@ -506,21 +567,22 @@ defmodule CrewAgent.UpdaterTest do
 
     test "the watchdog rolls back on macOS, and leaves it to root's rollback unit on Linux",
          ctx do
-      installed = marker(ctx)["installed_at"]
-      later = installed + 301
+      t0 = 1_800_000_000
+      assert :ok = start(ctx, t0)
+      opts = [running: "0.2.0", boot_id: "boot-1"]
 
-      assert :ok = Updater.watchdog(ctx.config, installed, installed + 10, "0.2.0")
+      assert :ok = Updater.watchdog(ctx.config, t0 + 10, opts)
       assert link(ctx, "current") == "0.2.0"
 
       # Firecracker: root's half moves too, so crew-agent-rollback.service
       # does it, started by an exit systemd doesn't restart.
       fc = %{ctx.config | driver: "firecracker"}
-      assert {:stop, 75} = Updater.watchdog(fc, installed, later, "0.2.0")
+      assert {:stop, 75} = Updater.watchdog(fc, t0 + 301, opts)
       assert link(ctx, "current") == "0.2.0"
       assert Updater.rollback_exit_status() == 75
 
       # Elsewhere the agent switches back itself and exits to be restarted.
-      assert {:stop, 1} = Updater.watchdog(ctx.config, installed, later, "0.2.0")
+      assert {:stop, 1} = Updater.watchdog(ctx.config, t0 + 301, opts)
       assert link(ctx, "current") == "0.1.0"
 
       assert {:rolled_back, %{reason: reason}} = Updater.confirm(ctx.config, running: "0.1.0")
