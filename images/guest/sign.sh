@@ -15,20 +15,23 @@
 #
 # Signatures are base64 with no newline.
 #
-#   sign.sh [--release] [--key-file F] FILE...
+#   sign.sh [--release] [--key-file F] [--public-key-file P] FILE...
 #
 # The key is the base64 32-byte ed25519 seed, from CREW_RELEASE_SIGNING_KEY
 # or --key-file (which may have # comments). --release refuses the
-# development test key (keys/test-signing.key).
+# development test key (keys/test-signing.key). --public-key-file refuses
+# a key whose public half isn't the one in P (the release workflow passes
+# packaging/release/release-key.pub), before anything is signed.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-usage="usage: sign.sh [--release] [--key-file F] FILE..."
-release=0 key_file=""
+usage="usage: sign.sh [--release] [--key-file F] [--public-key-file P] FILE..."
+release=0 key_file="" public_file=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --release) release=1; shift ;;
     --key-file) key_file=${2:?$usage}; shift 2 ;;
+    --public-key-file) public_file=${2:?$usage}; shift 2 ;;
     --) shift; break ;;
     -*) echo "sign: unknown option $1" >&2; exit 1 ;;
     *) break ;;
@@ -83,6 +86,10 @@ if [ "$public" = "$test_public" ]; then
     exit 1
   fi
   echo "sign: signing with the TEST KEY (development only)" >&2
+fi
+if [ -n "$public_file" ] && [ "$public" != "$(key_lines < "$public_file")" ]; then
+  echo "sign: the signing key's public half ($public) isn't the key in $public_file" >&2
+  exit 1
 fi
 
 # sign MESSAGE_FILE OUT: the base64 signature, written whole or not at all.

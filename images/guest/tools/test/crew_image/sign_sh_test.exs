@@ -126,6 +126,27 @@ defmodule CrewImage.SignShTest do
       end
     end
 
+    # The sign job's guard: the secret's public half must be the key the
+    # repo commits to (packaging/release/release-key.pub), before
+    # anything is signed.
+    test "--public-key-file refuses a key whose public half isn't the file's", %{tmp_dir: tmp} do
+      {public, private} = Auth.generate_keypair()
+      [tarball | _] = for name <- @tarballs, do: Path.join(tarballs!(Path.join(tmp, "t")), name)
+      key = [{"CREW_RELEASE_SIGNING_KEY", Base.encode64(private)}]
+
+      other = Path.join(tmp, "other.pub")
+      File.write!(other, "# someone else's\n#{Base.encode64(elem(Auth.generate_keypair(), 0))}\n")
+      assert {out, status} = sign_sh(["--public-key-file", other, tarball], key)
+      assert status != 0
+      assert out =~ "isn't the key in"
+      refute File.exists?(tarball <> ".sig")
+
+      ours = Path.join(tmp, "ours.pub")
+      File.write!(ours, "# ours\n#{Base.encode64(public)}\n")
+      assert {_, 0} = sign_sh(["--public-key-file", ours, tarball], key)
+      assert File.exists?(tarball <> ".sig")
+    end
+
     test "refuses the test key with --release", %{tmp_dir: tmp} do
       [tarball | _] = for name <- @tarballs, do: Path.join(tarballs!(tmp), name)
 
