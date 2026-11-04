@@ -3,7 +3,7 @@
 // view, a run's actions and jobs table, a box's controls, and Sizes &
 // labels. No page may trip the CSP.
 import {expect, test} from "@playwright/test"
-import {addBox, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "08-ui"
 let agent
@@ -76,6 +76,7 @@ test("runs by branch, and a run's actions and jobs", async ({page, request}) => 
   // The held run can be cancelled.
   const held = (await fakeState(request)).runs.find(r => r.name === "Release")
   await page.goto(`/runs/${held.id}/attempts/1`)
+  await connected(page)
   page.once("dialog", d => d.accept())
   await page.locator("#cancel-run").click()
   await expect(page.getByText("Cancelling the run")).toBeVisible()
@@ -88,6 +89,7 @@ test("a box's controls", async ({page}) => {
   await page.locator("[id^=box-]", {hasText: "null-ui"}).click()
   await expect(page.locator("#images")).toContainText("0.0.0-dev")
   await expect(page.locator("#capacity")).toBeVisible()
+  await connected(page)
   page.once("dialog", d => d.accept())
   await page.locator("#drain").click()
   await expect(page.locator("#box-status")).toContainText("Draining")
@@ -99,6 +101,7 @@ test("a box's controls", async ({page}) => {
 test("Sizes & labels, and the label tester", async ({page}) => {
   await signIn(page)
   await page.goto("/admin/sizes")
+  await connected(page)
   await page.locator("input[name=runs_on]").fill("[self-hosted, crew-l-arm64]")
   await expect(page.locator("#tested")).toContainText("Crew job")
   await expect(page.locator("#tested")).toContainText("null-ui")
