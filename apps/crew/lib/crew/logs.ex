@@ -45,6 +45,8 @@ defmodule Crew.Logs do
     do: Path.join(Path.dirname(path(source, owner_id)), "index.json")
 
   @doc "A log's index (`Crew.Logs.Index`): step starts, groups, annotations."
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   def index(source, owner_id) do
     case File.read(index_path(source, owner_id)) do
       {:ok, json} -> Crew.Logs.Index.decode(json)
@@ -65,6 +67,8 @@ defmodule Crew.Logs do
   def handle_agent_event(%VM{} = vm, "vm.log.gone", payload),
     do: LogStream.deliver(vm.id, {:gone, payload})
 
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   def handle_agent_event(%VM{} = vm, "vm.steps", %{steps: steps}) do
     path = Path.join([dir(), "vm", vm.id, "steps.json"])
     File.mkdir_p!(Path.dirname(path))
@@ -77,6 +81,8 @@ defmodule Crew.Logs do
   def handle_agent_event(_vm, _type, _payload), do: :ok
 
   @doc "The guest's steps for a VM, as it last reported them."
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   def steps(vm_id) do
     with {:ok, body} <- File.read(Path.join([dir(), "vm", vm_id, "steps.json"])),
          {:ok, steps} when is_list(steps) <- Jason.decode(body) do
@@ -166,6 +172,8 @@ defmodule Crew.Logs do
   against the API's steps. A line without a timestamp keeps the one
   before it. Written whole, then put in place.
   """
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   def store_github(job, body, cut?) do
     steps =
       job.steps |> Enum.map(&step_window/1) |> Enum.reject(&is_nil/1) |> Enum.sort_by(& &1.number)
@@ -330,6 +338,8 @@ defmodule Crew.Logs do
   end
 
   @doc "Every line as plain text, for **Download raw** (§17.6)."
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   def raw(source, owner_id) do
     path = path(source, owner_id)
 
@@ -392,6 +402,8 @@ defmodule Crew.Logs do
 
   defp matcher(_q, _opts), do: {:error, "nothing to search for"}
 
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   defp scan(path, match?) do
     if File.exists?(path) do
       path

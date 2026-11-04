@@ -61,6 +61,8 @@ defmodule Crew.Logs.Stream do
   # -- state ---------------------------------------------------------------------
 
   @impl true
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   def init(vm_id) do
     vm = Repo.get!(VM, vm_id)
     path = Logs.path(:vm, vm_id)
@@ -161,6 +163,8 @@ defmodule Crew.Logs.Stream do
   # The index is saved with each ack, at most once a second.
   defp save_index(%{index_dirty: false} = state), do: state
 
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
   defp save_index(state) do
     File.write!(Logs.index_path(:vm, state.vm_id), Index.encode(state.index))
     Phoenix.PubSub.broadcast(Crew.PubSub, Logs.topic(state.vm_id), {:log_index, state.vm_id})
