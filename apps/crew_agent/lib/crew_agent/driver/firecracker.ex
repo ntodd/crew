@@ -199,16 +199,42 @@ defmodule CrewAgent.Driver.Firecracker do
     with :ok <- firewall_ready(),
          {:ok, _} <- vmctl_ok(%{"verb" => "tap-add", "lease_index" => lease.index}),
          {:ok, _} <- vmctl_ok(%{"verb" => "pair-add", "lease_index" => lease.index}),
+         :ok <- copy_kernel(config, spec),
          :ok <-
            SafeFS.write_atomic(
              Path.join(spec.vm_dir, "fc.json"),
-             Jason.encode!(fc_json(config, spec)),
+             Jason.encode!(fc_json(spec)),
              0o640
            ),
          {:ok, _} <- vmctl_ok(%{"verb" => "start", "vm_id" => spec.vm_id}) do
       :ok
     end
   end
+
+  # The VM's own copy of its image's kernel, beside the clone, which
+  # crew-vmctl hard-links into the jail. Not the image's: with §12.4's XFS
+  # project quotas images/ and vms/ + jail/ are different projects, and
+  # XFS refuses hard links between them (EXDEV). A reflink where the
+  # filesystem can, else a copy (the kernel is ~50 MB).
+  defp copy_kernel(config, spec) do
+    dest = vm_kernel(spec)
+
+    case System.cmd("cp", reflink_args(Images.kernel(config, spec.image.id), dest),
+           stderr_to_stdout: true
+         ) do
+      {_, 0} -> File.chmod(dest, 0o444)
+      {out, _} -> {:error, "copying the kernel: #{String.trim(out)}"}
+    end
+  end
+
+  defp reflink_args(src, dest) do
+    case :os.type() do
+      {:unix, :darwin} -> ["-c", src, dest]
+      _ -> ["--reflink=auto", src, dest]
+    end
+  end
+
+  defp vm_kernel(spec), do: Path.join(spec.vm_dir, "kernel")
 
   defp firewall_ready do
     case Monitor.ready() do
@@ -232,12 +258,12 @@ defmodule CrewAgent.Driver.Firecracker do
   paths and the size's rate limiters. crew-vmctl checks every value and
   adds the logger and metrics.
   """
-  def fc_json(config, spec) do
+  def fc_json(spec) do
     lease = spec.net
 
     %{
       "boot-source" => %{
-        "kernel_image_path" => Images.kernel(config, spec.image.id),
+        "kernel_image_path" => vm_kernel(spec),
         "boot_args" => spec.boot_args
       },
       "drives" => [

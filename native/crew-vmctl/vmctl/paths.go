@@ -49,11 +49,17 @@ func (p Paths) Exited(vmID string) string  { return filepath.Join(p.JailDir(vmID
 
 // VMsDir and VMDir are the agent's (§10.1): crew-vmctl reads them with
 // care, never following a symlink.
-func (p Paths) VMsDir() string             { return filepath.Join(p.Data, "vms") }
-func (p Paths) VMDir(vmID string) string   { return filepath.Join(p.VMsDir(), vmID) }
-func (p Paths) Clone(vmID string) string   { return filepath.Join(p.VMDir(vmID), "rootfs.ext4") }
-func (p Paths) ImagesDir() string          { return filepath.Join(p.Data, "images") }
-func (p Paths) Kernel(image string) string { return filepath.Join(p.ImagesDir(), image, "kernel") }
+func (p Paths) VMsDir() string           { return filepath.Join(p.Data, "vms") }
+func (p Paths) VMDir(vmID string) string { return filepath.Join(p.VMsDir(), vmID) }
+func (p Paths) Clone(vmID string) string { return filepath.Join(p.VMDir(vmID), "rootfs.ext4") }
+
+// VMKernel is the VM's own copy of its image's kernel, beside the clone:
+// on a box with XFS project quotas images/ and vms/ are different
+// projects, and XFS refuses a hard link from one to another (EXDEV), so
+// the jail links this one.
+func (p Paths) VMKernel(vmID string) string { return filepath.Join(p.VMDir(vmID), "kernel") }
+func (p Paths) ImagesDir() string           { return filepath.Join(p.Data, "images") }
+func (p Paths) Kernel(image string) string  { return filepath.Join(p.ImagesDir(), image, "kernel") }
 
 // AgentEnv is the agent's settings (§21.2). crew-vmctl reads nothing from
 // it: what root's packet filter is built from comes from root's files.

@@ -65,6 +65,10 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     vm_dir = Config.vm_dir(config, vm_id)
     File.mkdir_p!(vm_dir)
     clone = Path.join(vm_dir, "rootfs.ext4")
+    image_id = CrewProtocol.uuid7()
+    image = Path.join([config.data_dir, "images", image_id])
+    File.mkdir_p!(image)
+    File.write!(Path.join(image, "kernel"), "the image's kernel")
     File.write!(clone, "")
     lease = CrewAgent.Net.lease(3)
 
@@ -79,7 +83,7 @@ defmodule CrewAgent.Driver.FirecrackerTest do
       memory_mib: 8192,
       disk_gib: 60,
       limits: limits,
-      image: %{id: CrewProtocol.uuid7()},
+      image: %{id: image_id},
       clone: clone,
       boot_args: "console=ttyS0 panic=1 crew.vm=#{vm_id}",
       net: lease,
@@ -121,7 +125,7 @@ defmodule CrewAgent.Driver.FirecrackerTest do
       # checks it and adds the logger and metrics (native/crew-vmctl).
       assert fc == %{
                "boot-source" => %{
-                 "kernel_image_path" => Path.join([ctx.data, "images", spec.image.id, "kernel"]),
+                 "kernel_image_path" => Path.join(spec.vm_dir, "kernel"),
                  "boot_args" => spec.boot_args
                },
                "drives" => [
@@ -140,6 +144,12 @@ defmodule CrewAgent.Driver.FirecrackerTest do
              }
 
       assert File.stat!(Path.join(spec.vm_dir, "fc.json")).mode |> Bitwise.band(0o777) == 0o640
+
+      # The kernel is the VM's own copy, beside the clone: images/ may be
+      # another XFS project, which the jail can't hard-link from.
+      kernel = Path.join(spec.vm_dir, "kernel")
+      assert File.read!(kernel) == "the image's kernel"
+      assert File.stat!(kernel).mode |> Bitwise.band(0o777) == 0o444
     end
 
     test "the size's limits become rate limiters (§7.1): Mbit/s and IOPS, refilled each second",

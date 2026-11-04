@@ -169,6 +169,13 @@ The other spikes are recorded here as they run.
   checked (`AT_EMPTY_PATH`). `agent/env` is parsed for `CREW_UPLINK` and
   `CREW_EXTRA_BLOCKED` only, never given to systemd as an
   `EnvironmentFile`.
+- **Each VM has its own kernel,** `vms/<id>/kernel`, a reflink of the
+  image's (a copy where reflinks don't work; ~50 MB), and that's what
+  crew-vmctl hard-links into the jail. The image's own can't be: §12.4's
+  XFS project quotas put `images/` and `vms/` + `jail/` in different
+  projects, and XFS refuses hard links between projects (EXDEV). A real
+  Flatcar box failed every start on it; the `:kvm` runner now sets up the
+  same projects, and failed the same way before the fix.
 - **`fc.json`:** the agent writes it in Firecracker's own format with host
   paths and the size's rate limiters (a bucket of one second's worth,
   refilled each second; `*_mbps` limits are Mbit/s). crew-vmctl decodes

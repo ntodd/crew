@@ -144,6 +144,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
 
     assert Cleanup.pending?(ctx.config, vm_id)
     assert File.exists?(Path.join(dir, "rootfs.ext4"))
+    assert File.exists?(Path.join(dir, "kernel"))
     assert File.exists?(Path.join(dir, "exited.json"))
     other = CrewProtocol.uuid7()
     assert {:error, :taken} = Net.claim(other, index)
@@ -162,6 +163,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     Cleanup.retry_all()
     refute Cleanup.pending?(ctx.config, vm_id)
     refute File.exists?(Path.join(dir, "rootfs.ext4"))
+    refute File.exists?(Path.join(dir, "kernel"))
     assert {:ok, _} = Net.claim(other, index)
     Net.release(other)
   end
