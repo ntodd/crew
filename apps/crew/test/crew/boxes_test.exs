@@ -38,7 +38,11 @@ defmodule Crew.BoxesTest do
 
     test "tokens expire after an hour", %{admin: admin} do
       {:ok, raw} =
-        Boxes.create_join_token(admin, %{"box_name" => "late", "box_type" => "linux-metal"})
+        Boxes.create_join_token(admin, %{
+          "box_name" => "late",
+          "box_type" => "linux-metal",
+          "data_disk" => "/dev/sdb"
+        })
 
       Repo.update_all(Crew.Boxes.JoinToken,
         set: [expires_at: DateTime.add(DateTime.utc_now(), -1)]
