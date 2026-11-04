@@ -665,3 +665,86 @@ The other spikes are recorded here as they run.
 - **No parent from the control plane yet.** Parent serving (§15.7) isn't
   built, so `cache.config` never carries one and the agent sends no
   `parent` key: a parent given to the cache some other way stays.
+
+## Flatcar box notes
+
+- **No Butane.** §12.2 renders `images/flatcar/box.bu.eex`; Crew builds
+  the Ignition (3.4.0) as a map in `Crew.Boxes.Flatcar`, as Foreman
+  does: no binary to ship or pin, and the tests read the map. CI runs
+  `ignition-validate` (pinned by digest) on `mix crew.ignition` samples
+  for every box type, arch and mode.
+- **One file of pins,** `images/flatcar/VERSION`: the first-boot
+  Flatcar (version, image and kernel SHA-512s, verity hashes, USR-A),
+  the Tailscale sysext's version and SHA-256s, and vfkit. The Ignition
+  and the launchers compile it in; the launchers are served with it and
+  the control plane's URL filled in, and refuse a URL sh could act on.
+- **Release files,** registered from `CREW_AGENT_RELEASE_DIR` at boot
+  (`Crew.Agents.Releases`): `crew-<agent|cache>-<version>-<target>.tar.gz`,
+  `.sha256` (`<hex>` or `<hex>  <file>`) and `.sig`
+  (`CrewProtocol.Auth.sign_release/4`, base64, over
+  `release_message/3`). Both tarballs unpack at their root, without a
+  top directory. A target's install set is its newest version with both.
+  Boxes download from the GitHub release; with `CREW_DEV=1` and the file
+  here, from `/agent/releases/:version/:target/:file`.
+- **What the agent tarball must hold:** `bin/crew_agent` (an Elixir
+  release, `start`), `bin/crew-vmctl` and `etc/nft.conf`; the cache's,
+  `bin/crew_cache`. The install refuses a release without them.
+- **On the data disk:** `/srv/crew/agent/<version>/` is the agent
+  tarball and `<version>/cache/` the cache's, both root's and read-only;
+  `agent/current` points at the version, `agent/env` is root's 0600.
+  §10.1 names `agent/releases/<version>/`; the brief for this layer put
+  them directly under `agent/`. Units run `current/bin/crew_agent`,
+  `current/bin/crew-vmctl` and `current/cache/bin/crew_cache`, with
+  `RELEASE_TMP` in their runtime directories (the release itself is
+  read-only) and `RELEASE_DISTRIBUTION=none`.
+- **`agent/` is 0711:** `CrewAgent.Identity.save/2` makes it 0700, which
+  would cut crewcache off from its release in `current/cache`, so
+  `crew-quota` sets it back at every boot and `provision.sh` right after
+  enrollment.
+- **Known gap: the agent owns `agent/`,** so it can rename `current` to
+  a release of its own, and `crew-vmctl@.service` runs
+  `current/bin/crew-vmctl` as root (and `crew-net` loads `current/etc/nft.conf`
+  as root). Root-owned release directories stop it changing a release in
+  place, not swapping the link. The fix is a root-owned release tree
+  outside `agent/` (or crew-vmctl from a root-owned path), and an
+  `agent.update` that installs through crew-vmctl; until then §10.8's
+  "no root powers" doesn't hold against a compromised agent.
+- **The data disk** is formatted (`mkfs.xfs -L crew-data -m reflink=1`)
+  only when it has no filesystem and no partition table and no disk
+  already has the label, and mounted by the label with `prjquota` and
+  `nofail`, so a renamed disk on bare metal still mounts and a bad one
+  doesn't stop the boot. Add box takes `/dev/...` paths including
+  `/dev/disk/by-id/...`; the launchers' VMs use `/dev/vdb` (QEMU's also
+  has the serial `crew-data`).
+- **Quotas (§12.4):** project 10 is `vms/` + `jail/` (half the disk),
+  11 `cache/` (a quarter), 12 `agent/` + `images/` (the rest), set at
+  every boot from the disk's size. crew_cache's own default (a quarter
+  of `df`) would be a quarter of its quota, so `crew-quota` writes
+  `CREW_CACHE_MAX_GIB` (90% of the quota) to `/run/crew-box/cache.env`.
+  XFS charges a reflinked extent to every file that shares it, so a
+  clone counts its whole rootfs against the clone area: worth measuring
+  on the first real box.
+- **Users** have fixed ids (`_crewagent` 9100, `crewcache` 9101,
+  `crewvm` 9110), so a reprovisioned OS disk owns the data disk's files.
+- **First boot:** `crew-provision` joins the tailnet (with a key),
+  waits for `/healthz`, starts `crew-agent-install`, then `crew-net`,
+  `crew-cache` and `crew-agent`, and waits up to 3 minutes for
+  `agent/identity.json`. Then it drops `CREW_JOIN_TOKEN` from
+  `agent/env` and deletes `provision.env` and `/oem/config.ign`. Later
+  boots (and a reprovisioned one) start the installed agent directly,
+  and `crew-box-status` prints `crew-box: agent started`, which
+  `crew-box reimage` waits for.
+- **The join token** stays good through any number of Ignition fetches
+  until the agent enrolls with it. A Tailscale key minted with the OAuth
+  client (`Crew.Tailscale`, `tag:crew-box`, expiring with the token) is
+  kept on the token for the next fetch and cleared at enrollment.
+- **Tailscale's state** is bind-mounted from `/srv/crew/tailscale` into
+  `tailscaled`, so the node survives a new OS disk. An update is flagged
+  as `tailscale-<version>` without the bakery's `v`.
+- **Development:** with `CREW_DEV=1` and an `http://` base URL the
+  Ignition gives the agent `ws://` and `CREW_DEV=1`. `CREW_LISTEN_IP`
+  works in dev too, so a VM on a Mac's vmnet bridge reaches the control
+  plane at 192.168.64.1.
+- **`crew-box reimage`** wraps the given Ignition in one that merges it
+  (`ignition.config.merge`, a `data:` URL) and adds the launcher's own
+  SSH key for `crew-box ssh`.
