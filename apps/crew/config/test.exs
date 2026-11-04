@@ -54,3 +54,4 @@ config :phoenix_live_view,
 
 config :phoenix, sort_verified_routes_query_params: true
 config :crew, sync_dispatch: true
+config :crew, log_dir: Path.expand("../tmp/test-logs", __DIR__)

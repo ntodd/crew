@@ -261,6 +261,7 @@ defmodule Crew.Jobs do
 
     after_upsert(repo, job, attempt)
     runner_named(job)
+    if completed_now?(job, state, rank), do: Crew.Jobs.FetchLog.schedule(job)
     broadcast_job(job)
     {:ok, job}
   end
@@ -297,6 +298,15 @@ defmodule Crew.Jobs do
        do: refuse_fork(repo, attempt)
 
   defp after_upsert(_repo, _job, _attempt), do: :ok
+
+  # A Crew job's `completed` (the first one): GitHub's log is fetched.
+  defp completed_now?(
+         %Job{classification: "ours", gh_state: "completed", log_source: nil},
+         "completed",
+         _rank
+       ), do: true
+
+  defp completed_now?(_job, _state, _rank), do: false
 
   # GitHub named one of this deployment's runners: its VM is told (§8.6).
   defp runner_named(%Job{runner_name: name} = job) when is_binary(name) do
@@ -530,6 +540,13 @@ defmodule Crew.Jobs do
   end
 
   # -- helpers -----------------------------------------------------------------
+
+  @doc "Where the job page's log comes from: `github` once GitHub's is stored, else `live`."
+  def set_log_source(%Job{} = job, source) when source in ["github", "live"] do
+    job = job |> Ecto.Changeset.change(log_source: source) |> Repo.update!()
+    broadcast_job(job)
+    {:ok, job}
+  end
 
   @doc "Broadcasts that a job changed (another context wrote it)."
   def changed(job_id) do

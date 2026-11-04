@@ -379,6 +379,80 @@ defmodule Crew.GitHub.Client do
     )
   end
 
+  @doc """
+  Where a job's log is (§16.3): GitHub answers with a redirect to a
+  short-lived download URL, or 404 while the log isn't ready yet.
+  """
+  def job_log_location(installation_id, repo, job_id) do
+    case installation_request(
+           installation_id,
+           :get,
+           "#{repo_path(repo)}/actions/jobs/#{job_id}/logs",
+           endpoint: "/repos/{o}/{r}/actions/jobs/{id}/logs",
+           redirect: false,
+           retries: 0
+         ) do
+      {:ok, %{status: status} = resp} when status in [301, 302, 307] ->
+        case Req.Response.get_header(resp, "location") do
+          [url | _] -> {:ok, {:url, url}}
+          [] -> {:error, :no_location}
+        end
+
+      {:ok, %{status: 200, body: body}} when is_binary(body) ->
+        {:ok, {:body, body}}
+
+      {:ok, %{status: status}} when status in [404, 410] ->
+        {:error, :not_found}
+
+      other ->
+        unexpected(other)
+    end
+  end
+
+  @doc """
+  Downloads a log from the URL GitHub redirected to. It's another host,
+  so no token goes with it, and at most `limit` bytes are kept:
+  `{:ok, body, cut?}`.
+  """
+  def download_log(url, limit) do
+    into = fn {:data, data}, {req, resp} ->
+      kept = resp.body || ""
+      room = limit - byte_size(kept)
+
+      if byte_size(data) >= room do
+        resp =
+          %{resp | body: kept <> binary_part(data, 0, max(room, 0))}
+          |> Req.Response.put_private(:cut, true)
+
+        {:halt, {req, resp}}
+      else
+        {:cont, {req, %{resp | body: kept <> data}}}
+      end
+    end
+
+    req =
+      Req.new(
+        url: url,
+        retry: :transient,
+        max_retries: 2,
+        redirect: false,
+        into: into,
+        decode_body: false
+      )
+      |> Req.merge(Application.get_env(:crew, :github_req_options, []))
+
+    case Req.request(req) do
+      {:ok, %{status: 200} = resp} ->
+        {:ok, resp.body || "", Req.Response.get_private(resp, :cut, false)}
+
+      {:ok, %{status: status}} ->
+        {:error, {:status, status}}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
   @doc "A repo's runs with a status (`queued`, `in_progress`), for the reconciler."
   def list_runs(installation_id, repo, status, opts \\ []) do
     get_pages(

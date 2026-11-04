@@ -10,6 +10,8 @@ mkdir -p "$(dirname "$db")"
 rm -f "$db" "$db"-*
 
 export CREW_DEV_DATABASE="$db"
+export CREW_LOG_DIR="${CREW_LOG_DIR:-$root/tmp/e2e/logs}"
+rm -rf "$CREW_LOG_DIR"
 export CREW_SETUP_TOKEN="${CREW_SETUP_TOKEN:-e2e-setup-token-0123456789}"
 export CREW_GITHUB_API_URL="${CREW_GITHUB_API_URL:-http://localhost:4199}"
 export CREW_GITHUB_WEB_URL="${CREW_GITHUB_WEB_URL:-http://localhost:4199}"

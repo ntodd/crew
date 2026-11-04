@@ -80,7 +80,14 @@ if config_env() != :test do
     idle_max_s: int.("CREW_IDLE_MAX", 600),
     job_max_s: int.("CREW_JOB_MAX", 22_500),
     log_limit_bytes: int.("CREW_LOG_LIMIT_BYTES", 104_857_600),
-    log_dir: System.get_env("CREW_LOG_DIR", "/var/lib/crew/logs"),
+    log_dir:
+      System.get_env(
+        "CREW_LOG_DIR",
+        if(config_env() == :dev,
+          do: Path.expand("../../../tmp/logs", __DIR__),
+          else: "/var/lib/crew/logs"
+        )
+      ),
     log_max_gib: int.("CREW_LOG_MAX_GIB", 20),
     log_retention_days: int.("CREW_LOG_RETENTION_DAYS", 30),
     job_retention_days: int.("CREW_JOB_RETENTION_DAYS", 90),

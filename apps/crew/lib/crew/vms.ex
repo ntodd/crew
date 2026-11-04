@@ -177,8 +177,8 @@ defmodule Crew.VMs do
     :ok
   end
 
-  # Logs, steps and metrics are stored by their own contexts.
-  defp vm_event(_vm, _type, _payload), do: :ok
+  # Logs, steps and metrics (§16).
+  defp vm_event(vm, type, payload), do: Crew.Logs.handle_agent_event(vm, type, payload)
 
   # The guest's job-started hook refused a fork PR (§19.5).
   defp refused(vm, _detail) do
