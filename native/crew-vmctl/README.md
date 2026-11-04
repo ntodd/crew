@@ -204,7 +204,8 @@ The exit record:
 
 `crew-vmctl net-up` (crew-net.service, once at boot):
 
-1. the uplink: `CREW_UPLINK` from `agent/env`, else the default route's
+1. the uplink: `/etc/crew-box/uplink` (root's; the Ignition writes
+   `CREW_UPLINK` there), else the default route's
    interface. Not `lo`, `crew*`, `tailscale*` or `docker*`.
 2. `crew0`, a dummy interface with `10.199.0.1/32`;
 3. `etc/nft.conf` with `define UPLINK = "<uplink>"`, in one transaction
@@ -217,22 +218,27 @@ The exit record:
 7. site4.
 
 `crew-vmctl site4` (every 10 minutes, and the `site4` verb) flushes and
-refills `site4` in one nft transaction: the uplink's connected subnets,
-the egress address the agent learned (`agent/egress4`, one IPv4 address)
-and `CREW_EXTRA_BLOCKED`. A prefix inside another is left out, since nft
-refuses overlapping intervals.
+refills `site4` in one nft transaction. Everything in it comes from
+root's side, so the agent can add to it but never take anything out:
 
-crew-vmctl keeps the last valid egress address it read in
-`/run/crew/egress4` (root's). When `agent/egress4` is missing or isn't
-one IPv4 address, that one stays in `site4` rather than being dropped.
-At boot crew-net runs before the agent has asked the echo service, so
-`site4` starts with the address the agent wrote before the reboot
-(`agent/egress4` is on the data disk), if any; the agent asks for a
-refill as soon as it learns one.
+- the uplink's connected subnets;
+- **every egress address crew-vmctl has seen.** Each refill reads the
+  agent's `agent/egress4`, and a valid IPv4 address it hasn't seen is
+  added to its own list, `/srv/crew/vmctl/egress4` (root's, on the data
+  disk). Nothing is ever removed from that list by anything the agent
+  writes: another address, garbage or no file leaves it as it is. It
+  holds at most 64; when it's full a new address isn't added (logged),
+  rather than the oldest dropped, since an agent adding addresses could
+  otherwise push the real one out. An admin deletes the file to start
+  over.
+- **`/etc/crew-box/extra-blocked`**: the box's `CREW_EXTRA_BLOCKED`, which
+  its Ignition writes, root's, 0644; CIDRs by commas or lines, `#`
+  comments. Not the agent's env.
 
-`agent/env` is the agent's file, so crew-net parses it for exactly
-`CREW_UPLINK` and `CREW_EXTRA_BLOCKED`, and never hands it to systemd as
-an `EnvironmentFile` (it could set `LD_PRELOAD` for a root process).
+A prefix inside another is left out, since nft refuses overlapping
+intervals. `nft-verify` holds the loaded set to the same root-side
+inputs, and reports the egress addresses in it. crew-vmctl reads nothing
+from `agent/env`.
 
 ## The packet filter and `nft-verify`
 
@@ -358,8 +364,14 @@ about 2 s after `vm.start`, which is answered in about 170 ms.
 - **Directories:** `/srv/crew` root's 0755, `/srv/crew/jail` root's 0755
   (crew-vmctl makes it if it's missing, and refuses one anyone else can
   write); `/srv/crew/root/<version>/{bin,etc}` and the `root/current`
-  link, root's, from the release; `agent/`, `vms/`, `images/` the
-  agent's.
+  link, root's, from the release; `/srv/crew/vmctl` crew-vmctl's own
+  state, root's (it makes it); `agent/`, `vms/`, `images/` the agent's.
+- **The packet filter's settings, root's, 0644** (absent means none or
+  the default):
+  - `/etc/crew-box/extra-blocked`: `CREW_EXTRA_BLOCKED`'s CIDRs, by
+    commas or lines;
+  - `/etc/crew-box/uplink`: `CREW_UPLINK`, one interface name; without
+    it the default route's interface is the uplink.
 - **Units:** the four in `etc/systemd/`, enabled: `crew-net.service`,
   `crew-vmctl.socket`, `crew-net-site4.timer`.
 - **crew-agent.service:** `ReadWritePaths=` gets `/srv/crew/jail` as well

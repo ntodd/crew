@@ -200,6 +200,30 @@ func (h *LinuxSys) CreateFile(path string, data []byte) error {
 	return f.Close()
 }
 
+// WriteState writes <data>/vmctl/<name> through a temporary file and a
+// rename, in a directory only root can change.
+func (h *LinuxSys) WriteState(name string, data []byte) error {
+	if strings.ContainsAny(name, "/") || name == "" || strings.HasPrefix(name, ".") {
+		return fmt.Errorf("state %q: not a file name", name)
+	}
+	dfd, err := unix.Open(h.Paths.Data, unix.O_DIRECTORY|unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dfd)
+	sfd, err := rootDir(dfd, StateDir)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(sfd)
+	tmp := "." + name + ".tmp"
+	_ = unix.Unlinkat(sfd, tmp, 0)
+	if err := createAt(sfd, tmp, 0o644, data, 0, 0); err != nil {
+		return err
+	}
+	return unix.Renameat(sfd, tmp, sfd, name)
+}
+
 func (h *LinuxSys) Exists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil

@@ -1,8 +1,6 @@
 package vmctl
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,6 +41,9 @@ type Sys interface {
 	ReadFile(path string, max int64) ([]byte, error)
 	WriteFile(path string, data []byte) error
 	CreateFile(path string, data []byte) error
+	// WriteState replaces a file in crew-vmctl's own state directory
+	// (Paths.State) atomically; the directory is made root's if missing.
+	WriteState(name string, data []byte) error
 	Exists(path string) bool
 	Glob(pattern string) []string
 	// PrepareJail lays out the VM's jail directory (README.md); it fails
@@ -508,11 +509,14 @@ func (s *Server) NetUp(ctx context.Context) error {
 // ServiceIP is the guests' one host address (§14.1). nft.conf names it.
 const ServiceIP = "10.199.0.1"
 
-// findUplink is CREW_UPLINK from the agent's env, else the interface of
-// the default route.
+// findUplink is the box's /etc/crew-box/uplink (its Ignition writes
+// CREW_UPLINK there), else the interface of the default route. Never the
+// agent's env: the uplink is what forward accepts and masquerades to.
 func (s *Server) findUplink(ctx context.Context) (string, error) {
-	if up := s.agentEnv()["CREW_UPLINK"]; up != "" {
-		return up, ruleset.CheckUplink(up)
+	if body, err := s.Sys.ReadFile(UplinkFile, 64); err == nil {
+		if up := strings.TrimSpace(string(body)); up != "" {
+			return up, ruleset.CheckUplink(up)
+		}
 	}
 	out, err := s.Sys.Run(ctx, nil, "ip", "-j", "-4", "route", "show", "default")
 	if err != nil {
@@ -525,26 +529,6 @@ func (s *Server) findUplink(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("no default route to find the uplink by; set CREW_UPLINK")
 	}
 	return routes[0].Dev, ruleset.CheckUplink(routes[0].Dev)
-}
-
-// agentEnv reads the agent's env file for the two settings crew-net
-// takes from it. It's the agent's file, so it's parsed here, never
-// handed to systemd as an EnvironmentFile for a root process.
-func (s *Server) agentEnv() map[string]string {
-	out := map[string]string{}
-	body, err := s.Sys.ReadFile(s.Paths.AgentEnv(), 64<<10)
-	if err != nil {
-		return out
-	}
-	sc := bufio.NewScanner(bytes.NewReader(body))
-	for sc.Scan() {
-		k, v, ok := strings.Cut(strings.TrimSpace(sc.Text()), "=")
-		if !ok || (k != "CREW_UPLINK" && k != "CREW_EXTRA_BLOCKED") {
-			continue
-		}
-		out[k] = strings.Trim(strings.TrimSpace(v), `"'`)
-	}
-	return out
 }
 
 // -- the box -----------------------------------------------------------------------

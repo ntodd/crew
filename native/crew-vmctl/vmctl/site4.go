@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"os"
 	"sort"
 	"strings"
 )
@@ -13,35 +14,39 @@ import (
 // ErrSite4NotReady: site4 doesn't hold what crew-net would put there.
 const ErrSite4NotReady = "site4_not_ready"
 
-// lastEgressFile is the last valid egress address crew-vmctl read from
-// the agent's agent/egress4. Root's, so a missing or broken agent file
-// never drops the address from site4.
-const lastEgressFile = "/run/crew/egress4"
+// MaxEgress is how many egress addresses crew-vmctl keeps. When it has
+// that many it adds no more, rather than drop the oldest: an agent
+// adding addresses could otherwise push the site's real one out. An
+// admin clears <data>/vmctl/egress4 to start over.
+const MaxEgress = 64
+
+const egressState = "egress4"
 
 // Site4Status is what nft-verify reports about site4.
 type Site4Status struct {
-	Egress   string   `json:"egress,omitempty"` // the egress address in it, if crew-vmctl knows one
-	Prefixes []string `json:"prefixes"`         // what crew-net puts there
+	Egress   []string `json:"egress"`   // the egress addresses in it: every one crew-vmctl has seen
+	Prefixes []string `json:"prefixes"` // what crew-net puts there
 }
 
-// Site4 is the set crew-net keeps in site4 (§14.2): the uplink's
-// connected subnets, the site's egress address (the agent's
-// agent/egress4, or the last valid one) and CREW_EXTRA_BLOCKED. A prefix
-// inside another is left out, since nft refuses overlapping intervals.
+// Site4 is the set crew-net keeps in site4 (§14.2), from root's inputs
+// only: the uplink's connected subnets, every egress address crew-vmctl
+// has seen (the agent can add one, never take one out) and the box's
+// /etc/crew-box/extra-blocked. A prefix inside another is left out,
+// since nft refuses overlapping intervals.
 func (s *Server) Site4(ctx context.Context) ([]string, error) {
 	set, _, err := s.site4(ctx)
 	return set, err
 }
 
-func (s *Server) site4(ctx context.Context) ([]string, string, error) {
+func (s *Server) site4(ctx context.Context) ([]string, []string, error) {
 	up, err := s.uplink()
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	var prefixes []netip.Prefix
 	out, err := s.Sys.Run(ctx, nil, "ip", "-j", "-4", "addr", "show", "dev", up)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	var links []struct {
 		AddrInfo []struct {
@@ -50,7 +55,7 @@ func (s *Server) site4(ctx context.Context) ([]string, string, error) {
 		} `json:"addr_info"`
 	}
 	if err := json.Unmarshal(out, &links); err != nil {
-		return nil, "", fmt.Errorf("ip addr: %w", err)
+		return nil, nil, fmt.Errorf("ip addr: %w", err)
 	}
 	for _, l := range links {
 		for _, a := range l.AddrInfo {
@@ -59,40 +64,85 @@ func (s *Server) site4(ctx context.Context) ([]string, string, error) {
 			}
 		}
 	}
-	egress := s.egress()
-	if egress.IsValid() {
-		prefixes = append(prefixes, netip.PrefixFrom(egress, 32))
+	seen := s.egressSeen()
+	egress := make([]string, len(seen))
+	for i, a := range seen {
+		prefixes = append(prefixes, netip.PrefixFrom(a, 32))
+		egress[i] = a.String()
 	}
-	for _, c := range strings.Split(s.agentEnv()["CREW_EXTRA_BLOCKED"], ",") {
-		if p, err := netip.ParsePrefix(strings.TrimSpace(c)); err == nil && p.Addr().Is4() {
-			prefixes = append(prefixes, p.Masked())
-		}
-	}
-	e := ""
-	if egress.IsValid() {
-		e = egress.String()
-	}
-	return disjoint(prefixes), e, nil
+	prefixes = append(prefixes, s.extraBlocked()...)
+	return disjoint(prefixes), egress, nil
 }
 
-// egress is the agent's agent/egress4 when it holds one IPv4 address,
-// else the last one that did.
-func (s *Server) egress() netip.Addr {
-	parse := func(path string) netip.Addr {
-		body, err := s.Sys.ReadFile(path, 64)
-		if err != nil {
-			return netip.Addr{}
-		}
-		a, err := netip.ParseAddr(strings.TrimSpace(string(body)))
-		if err != nil || !a.Is4() {
-			return netip.Addr{}
-		}
-		return a
+// egressSeen is crew-vmctl's own list of the egress addresses it has
+// read from the agent, oldest first.
+func (s *Server) egressSeen() []netip.Addr {
+	body, err := s.Sys.ReadFile(s.Paths.State(egressState), 64<<10)
+	if err != nil {
+		return nil
 	}
-	if a := parse(s.Paths.Egress()); a.IsValid() {
-		return a
+	var out []netip.Addr
+	for _, line := range strings.Split(string(body), "\n") {
+		if a, err := netip.ParseAddr(strings.TrimSpace(line)); err == nil && a.Is4() && !contains(out, a) {
+			out = append(out, a)
+		}
 	}
-	return parse(lastEgressFile)
+	return out
+}
+
+func contains(as []netip.Addr, a netip.Addr) bool {
+	for _, x := range as {
+		if x == a {
+			return true
+		}
+	}
+	return false
+}
+
+// recordEgress adds the agent's agent/egress4, when it's one IPv4
+// address crew-vmctl hasn't seen, to the ones it has. It never removes
+// one.
+func (s *Server) recordEgress() error {
+	body, err := s.Sys.ReadFile(s.Paths.Egress(), 64)
+	if err != nil {
+		return nil
+	}
+	a, err := netip.ParseAddr(strings.TrimSpace(string(body)))
+	if err != nil || !a.Is4() || a.IsUnspecified() {
+		return nil
+	}
+	seen := s.egressSeen()
+	if contains(seen, a) {
+		return nil
+	}
+	if len(seen) >= MaxEgress {
+		return fmt.Errorf("egress address %s not added: %d are kept already (clear %s to start over)",
+			a, MaxEgress, s.Paths.State(egressState))
+	}
+	var b strings.Builder
+	for _, x := range append(seen, a) {
+		b.WriteString(x.String() + "\n")
+	}
+	return s.Sys.WriteState(egressState, []byte(b.String()))
+}
+
+// extraBlocked is the box's /etc/crew-box/extra-blocked: CIDRs, by commas
+// or lines, # comments. What doesn't parse is skipped.
+func (s *Server) extraBlocked() []netip.Prefix {
+	body, err := s.Sys.ReadFile(ExtraBlockedFile, 64<<10)
+	if err != nil {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, line := range strings.Split(string(body), "\n") {
+		line, _, _ = strings.Cut(line, "#")
+		for _, c := range strings.Split(line, ",") {
+			if p, err := netip.ParsePrefix(strings.TrimSpace(c)); err == nil && p.Addr().Is4() {
+				out = append(out, p.Masked())
+			}
+		}
+	}
+	return out
 }
 
 func disjoint(ps []netip.Prefix) []string {
@@ -117,10 +167,15 @@ func disjoint(ps []netip.Prefix) []string {
 	return out
 }
 
-// RefreshSite4 flushes and refills site4 in one nft transaction (the
-// `site4` verb, crew-net's timer), and keeps the egress address it used.
+// RefreshSite4 adds the agent's egress address to the ones seen, then
+// flushes and refills site4 in one nft transaction (the `site4` verb,
+// crew-net's timer). A full list of addresses is logged and refills
+// site4 without the new one.
 func (s *Server) RefreshSite4(ctx context.Context) error {
-	set, egress, err := s.site4(ctx)
+	if err := s.recordEgress(); err != nil {
+		fmt.Fprintln(os.Stderr, "crew-vmctl site4:", err)
+	}
+	set, _, err := s.site4(ctx)
 	if err != nil {
 		return err
 	}
@@ -128,13 +183,8 @@ func (s *Server) RefreshSite4(ctx context.Context) error {
 	if len(set) > 0 {
 		script += "add element inet crew site4 { " + strings.Join(set, ", ") + " }\n"
 	}
-	if _, err := s.Sys.Run(ctx, []byte(script), "nft", "-f", "-"); err != nil {
-		return err
-	}
-	if egress != "" {
-		return s.Sys.WriteFile(lastEgressFile, []byte(egress+"\n"))
-	}
-	return nil
+	_, err = s.Sys.Run(ctx, []byte(script), "nft", "-f", "-")
+	return err
 }
 
 // site4Ready checks that site4 holds everything crew-net puts there.

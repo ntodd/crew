@@ -55,9 +55,24 @@ func (p Paths) Clone(vmID string) string   { return filepath.Join(p.VMDir(vmID),
 func (p Paths) ImagesDir() string          { return filepath.Join(p.Data, "images") }
 func (p Paths) Kernel(image string) string { return filepath.Join(p.ImagesDir(), image, "kernel") }
 
-// AgentEnv is the agent's settings (§21.2); crew-net reads CREW_UPLINK
-// and CREW_EXTRA_BLOCKED from it, and nothing else.
+// AgentEnv is the agent's settings (§21.2). crew-vmctl reads nothing from
+// it: what root's packet filter is built from comes from root's files.
 func (p Paths) AgentEnv() string { return filepath.Join(p.Data, "agent", "env") }
+
+// StateDir is crew-vmctl's own state on the data disk (it outlives the
+// OS disk, §10.1), root's: <data>/vmctl, beside root/.
+const StateDir = "vmctl"
+
+// State is a file in StateDir.
+func (p Paths) State(name string) string { return filepath.Join(p.Data, StateDir, name) }
+
+// The box's own settings for the packet filter, which its Ignition
+// writes, root's (0644): CREW_EXTRA_BLOCKED and CREW_UPLINK, never read
+// from the agent's env.
+const (
+	ExtraBlockedFile = "/etc/crew-box/extra-blocked" // CIDRs, by commas or lines; # comments
+	UplinkFile       = "/etc/crew-box/uplink"        // one interface name; else the default route's
+)
 
 // Egress is where the agent keeps the site's egress address (§14.2).
 func (p Paths) Egress() string { return filepath.Join(p.Data, "agent", "egress4") }

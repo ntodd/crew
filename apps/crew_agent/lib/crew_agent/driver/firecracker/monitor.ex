@@ -193,16 +193,17 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
     nft_verify()
   end
 
-  # {:ok, the egress address site4 holds} or {{:error, why}, nil}.
+  # {:ok, the egress addresses site4 holds} or {{:error, why}, []}.
   defp nft_verify do
     case Firecracker.vmctl(%{"verb" => "nft-verify"}) do
-      {:ok, resp} -> {:ok, get_in(resp, ["site4", "egress"])}
-      {:error, code, detail} -> {{:error, "#{code}: #{detail}"}, nil}
+      {:ok, resp} -> {:ok, List.wrap(get_in(resp, ["site4", "egress"]))}
+      {:error, code, detail} -> {{:error, "#{code}: #{detail}"}, []}
     end
   end
 
   # With an echo service, site4 must hold the egress address the agent
-  # learned; an old one is refilled and looked at again.
+  # learned, among every one crew-vmctl has seen; if it doesn't, site4 is
+  # refilled (which adds it) and looked at again.
   defp egress(filter, loaded) do
     echo = Application.get_env(:crew_agent, :egress_echo_url)
     agent = Site.egress()
@@ -214,7 +215,7 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
       is_nil(agent) ->
         {filter, loaded, {:error, "the site's egress address isn't known yet (#{echo})"}}
 
-      filter == :ok and loaded == agent ->
+      filter == :ok and agent in loaded ->
         {filter, loaded, :ok}
 
       filter == :ok ->
@@ -227,14 +228,13 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
 
   defp refill_for(agent) do
     case refill_and_check() do
-      {:ok, ^agent} ->
-        {:ok, agent, :ok}
-
-      {:ok, other} ->
-        {:ok, other, {:error, "site4 holds #{other || "no"} egress address, not #{agent}"}}
+      {:ok, loaded} ->
+        if agent in loaded,
+          do: {:ok, loaded, :ok},
+          else: {:ok, loaded, {:error, "site4 doesn't hold the egress address #{agent}"}}
 
       {error, _} ->
-        {error, nil, {:error, "site4 couldn't be checked"}}
+        {error, [], {:error, "site4 couldn't be checked"}}
     end
   end
 

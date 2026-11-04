@@ -159,7 +159,12 @@ defmodule CrewAgent.FirecrackerKVMTest do
 
     CrewAgent.Site.record_egress(ctx.config, "198.51.100.77")
     assert Monitor.verify()
-    assert Monitor.status().site4_egress == "198.51.100.77"
+    assert "198.51.100.77" in Monitor.status().site4_egress
+
+    # Another address joins it: crew-vmctl never takes one out.
+    CrewAgent.Site.record_egress(ctx.config, "198.51.100.78")
+    assert Monitor.verify()
+    assert ["198.51.100.77", "198.51.100.78"] -- Monitor.status().site4_egress == []
   after
     Application.delete_env(:crew_agent, :egress_echo_url)
     :persistent_term.erase({CrewAgent.Site, :egress})

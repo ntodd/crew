@@ -412,7 +412,7 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     defp verified(egress) do
       fn
         %{"verb" => "nft-verify"} ->
-          %{"ok" => true, "site4" => %{"egress" => egress, "prefixes" => []}}
+          %{"ok" => true, "site4" => %{"egress" => List.wrap(egress), "prefixes" => []}}
 
         %{"verb" => "site4"} ->
           %{"ok" => true}
@@ -474,8 +474,13 @@ defmodule CrewAgent.Driver.FirecrackerTest do
           %{"ok" => true}
 
         %{"verb" => "nft-verify"} ->
-          egress = if :counters.get(loaded, 1) == 1, do: "198.51.100.20", else: "203.0.113.9"
-          %{"ok" => true, "site4" => %{"egress" => egress, "prefixes" => []}}
+          # Every address seen: the agent's is there once site4 is refilled.
+          egress =
+            if :counters.get(loaded, 1) == 1,
+              do: ["203.0.113.9", "198.51.100.20"],
+              else: ["203.0.113.9"]
+
+          %{"ok" => true, "site4" => %{"egress" => List.wrap(egress), "prefixes" => []}}
 
         req ->
           verified(nil).(req)
