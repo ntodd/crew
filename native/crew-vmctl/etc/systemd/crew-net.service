@@ -2,12 +2,19 @@
 # 10.199.0.1/32, then the packet filter (etc/nft.conf with $UPLINK filled
 # in, and etc/connlimit.rules), loaded once, and site4. It's never
 # reloaded on a timer: crew-net-site4.timer only refills site4.
+#
+# Not ordered before crew-vmctl.socket: a socket comes before
+# sockets.target, so before basic.target, which this service (with the
+# default dependencies) comes after; that's a cycle systemd breaks at
+# boot by dropping a job. The socket may answer before crew-net is done:
+# crew-vmctl's start checks the ruleset itself and refuses until it
+# verifies.
 [Unit]
 Description=Crew network: crew0, the packet filter and site4 (crew-net)
 Documentation=https://github.com/ntodd/crew/blob/main/native/crew-vmctl/README.md
 Wants=network-online.target
 After=network-online.target
-Before=crew-agent.service crew-cache.service crew-vmctl.socket
+Before=crew-agent.service crew-cache.service
 RequiresMountsFor=/srv/crew
 
 [Service]

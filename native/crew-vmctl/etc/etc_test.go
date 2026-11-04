@@ -39,3 +39,22 @@ func TestUnitsRunRootsBinaries(t *testing.T) {
 		t.Errorf("%d Exec lines, want 3 (crew-vmctl serve, net-up, site4)", execs)
 	}
 }
+
+// A socket comes before sockets.target and so before basic.target, which
+// a service with the default dependencies comes after: a service ordered
+// before a socket is a cycle at boot (the :kvm runner checks the whole
+// boot transaction with systemd-analyze too).
+func TestNoServiceIsOrderedBeforeASocket(t *testing.T) {
+	services, _ := filepath.Glob("systemd/*.service")
+	for _, u := range services {
+		body, _ := os.ReadFile(u)
+		if strings.Contains(string(body), "DefaultDependencies=no") {
+			continue
+		}
+		for _, line := range strings.Split(string(body), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok && k == "Before" && strings.Contains(v, ".socket") {
+				t.Errorf("%s: %s", u, line)
+			}
+		}
+	}
+}

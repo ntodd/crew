@@ -14,7 +14,8 @@
 #      checks its SHA-256;
 #   3. builds crew-vmctl (vendored, with no network);
 #   4. lays out /srv/crew/root/<version>/{bin,etc} and root/current as a box has them,
-#      puts the units in /run/systemd/system (runtime only, gone at reboot)
+#      checks the units in one boot transaction (systemd-analyze verify),
+#      puts them in /run/systemd/system (runtime only, gone at reboot)
 #      and starts crew-net and crew-vmctl.socket;
 #   5. runs `mix test --only kvm` as root, on the host's network;
 #   6. checks nothing is left: crew-vm units, taps, vm_pairs elements, jails;
@@ -157,6 +158,22 @@ for u in $units; do
   sed 's/^SocketGroup=_crewagent$/SocketGroup=root/' "$vmctl_src/etc/systemd/$u" >"/run/systemd/system/$u"
 done
 
+# The units in one boot transaction, as multi-user.target and
+# sockets.target pull them in together: systemd-analyze verify on each
+# alone doesn't see an ordering cycle between them. Any output fails.
+check=$(mktemp -d)
+for u in $units; do cp "/run/systemd/system/$u" "$check/"; done
+printf '[Unit]\nDescription=crew-vmctl kvm: the units at boot\nWants=%s\n' \
+  "crew-net.service crew-vmctl.socket crew-net-site4.timer network-online.target sockets.target basic.target timers.target" \
+  >"$check/crew-boot-check.target"
+# shellcheck disable=SC2086 # $units is a list
+verified=$(cd "$check" && systemd-analyze verify crew-boot-check.target $units 2>&1) || true
+rm -rf "$check"
+[ -z "$verified" ] || {
+  echo "$verified"
+  die "the units don't verify"
+}
+say "the units verify (systemd-analyze, one boot transaction)"
 systemctl daemon-reload
 systemctl restart crew-net.service
 systemctl restart crew-vmctl.socket
