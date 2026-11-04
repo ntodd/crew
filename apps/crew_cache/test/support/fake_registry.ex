@@ -233,7 +233,10 @@ defmodule CrewCache.FakeRegistry do
     defp route(conn, :storage, ["blobs", digest], _auth) do
       state = Fake.state()
 
-      case Map.fetch(state.blobs, digest) do
+      case Map.fetch(
+             Map.merge(state.blobs, Map.new(state.manifests, fn {d, {_, b}} -> {d, b} end)),
+             digest
+           ) do
         {:ok, body} ->
           body = if MapSet.member?(state.corrupt, digest), do: flip(body), else: body
 
@@ -302,7 +305,7 @@ defmodule CrewCache.FakeRegistry do
     end
 
     defp blob_redirect(conn, state, digest) do
-      if Map.has_key?(state.blobs, digest) do
+      if Map.has_key?(state.blobs, digest) or Map.has_key?(state.manifests, digest) do
         host = Map.get(state.redirect_host, digest, "storage.test")
 
         conn
