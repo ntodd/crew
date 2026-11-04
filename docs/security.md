@@ -64,6 +64,9 @@ departs.
   `sandbox-exec` profile. The guest's network is a userspace stack
   (gVisor's netstack, vendored) inside `crew-vz`, which only forwards to
   the destinations §14.4 allows.
+- Each VM's guest API is its own Unix socket, which has no peer address,
+  so failed tokens are counted per socket. A guest that floods bad tokens
+  locks only itself out, not the box's other VMs.
 
 ### Host VM and physical host
 
@@ -212,6 +215,13 @@ code.
     production; the release refuses the null driver without it.
 11. **crew-vmctl doesn't check that `root/current/bin` is root-owned**
     before using it; that rests on the install step.
+12. **Conformance mode** (`CREW_CONFORMANCE=1` in the agent's env) makes
+    every VM on the box run the image's fixed check script
+    (`/opt/crew/conformance/check`) instead of its job. Only the agent's
+    own config turns it on: `vm.start` has no field for it, the command
+    schema refuses unknown fields, and the object the agent adds holds
+    bounded values that the guest checks again. The agent logs a warning
+    at boot while it's on. Turn it off before the box takes real work.
 
 ## Fork PRs
 
