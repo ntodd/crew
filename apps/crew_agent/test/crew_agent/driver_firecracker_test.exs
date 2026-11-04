@@ -604,6 +604,53 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     end
   end
 
+  describe "a verdict that changes" do
+    test "has the reporter look at the capabilities again at once, either way", ctx do
+      verdict = :counters.new(1, [])
+
+      vmctl(ctx, fn %{"verb" => "nft-verify"} ->
+        if :counters.get(verdict, 1) == 0,
+          do: %{"ok" => true, "site4" => %{"egress" => []}},
+          else: %{"ok" => false, "error" => "nft_mismatch", "detail" => "x"}
+      end)
+
+      # Stand in for the reporter (it runs only with a link).
+      Process.register(self(), CrewAgent.Reporter)
+
+      try do
+        assert Monitor.verify()
+        assert_receive {:"$gen_cast", :capabilities_changed}
+
+        # The same verdict again: nothing to say.
+        assert Monitor.verify()
+        refute_receive {:"$gen_cast", :capabilities_changed}, 50
+
+        :counters.put(verdict, 1, 1)
+        refute Monitor.verify()
+        assert_receive {:"$gen_cast", :capabilities_changed}
+      after
+        Process.unregister(CrewAgent.Reporter)
+      end
+    end
+
+    test "the reporter sends box.capabilities when they've changed, and only then" do
+      import CrewAgent.TestEvents
+      base = Config.get()
+      Config.put(%{base | driver: "null"})
+      attach()
+      pid = start_supervised!(CrewAgent.Reporter)
+      CrewAgent.Reporter.capabilities_changed()
+      assert await("box.capabilities").payload.driver == "null"
+      CrewAgent.Reporter.capabilities_changed()
+      :sys.get_state(pid)
+      refute_receive {:outbox_deliver, %CrewProtocol.Event{type: "box.capabilities"}, _}, 100
+    end
+
+    test "with no reporter running it's a no-op" do
+      assert :ok = CrewAgent.Reporter.capabilities_changed()
+    end
+  end
+
   describe "the monitor" do
     test "verifies the ruleset at start and on each tick (§14.2)", ctx do
       verdict = :counters.new(1, [])

@@ -274,7 +274,11 @@ The other spikes are recorded here as they run.
   `pci=off` itself on arm64, which the kernel doesn't know there.
 - **Requirements** are reported as features (`kvm`, `tun`, `cgroup2`,
   `xfs_reflink`, `systemd` for 252 or newer, plus `rate_limits`);
-  `firewall_ok` is the last `nft-verify`, at start and every 60 s.
+  `firewall_ok` is the last `nft-verify`, at start and every 60 s. When
+  the verdict changes, either way, the reporter sends `box.capabilities`
+  at once rather than at its next minute: a box that joined while the
+  egress address was still being learned showed "Firewall not verified"
+  for up to a minute after it was.
   `driver_version` is Firecracker's and crew-vmctl's, from crew-vmctl's
   `info` verb, which also gives systemd's version.
 - **`box.restart`** goes through `crew-vmctl reboot` on Firecracker

@@ -21,6 +21,13 @@ defmodule CrewAgent.Reporter do
   def report_now, do: GenServer.cast(__MODULE__, :report_now)
   def report_inventory, do: GenServer.cast(__MODULE__, :inventory)
 
+  @doc """
+  Something the capabilities say may have changed (the packet filter's
+  verdict): look now rather than at the next minute, and send them if
+  they did. A no-op when the reporter isn't running.
+  """
+  def capabilities_changed, do: GenServer.cast(__MODULE__, :capabilities_changed)
+
   @impl true
   def init(_) do
     Process.send_after(self(), :metrics, @metrics_ms)
@@ -41,6 +48,8 @@ defmodule CrewAgent.Reporter do
     send_inventory()
     {:noreply, state}
   end
+
+  def handle_cast(:capabilities_changed, state), do: {:noreply, send_capabilities(state)}
 
   @impl true
   def handle_info(:metrics, state) do

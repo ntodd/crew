@@ -238,6 +238,8 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
     end
   end
 
+  # A new verdict is news for the control plane too (firewall_ok): the
+  # reporter sends the capabilities now, not at its next minute.
   defp log_change(previous, status) do
     case {previous && ok?(previous), ok?(status)} do
       {same, same} ->
@@ -245,9 +247,11 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
 
       {_, true} ->
         Logger.info("the packet filter and site4 are verified (crew-vmctl nft-verify)")
+        CrewAgent.Reporter.capabilities_changed()
 
       {_, false} ->
         Logger.error("the packet filter isn't verified, so this box takes no VMs: #{why(status)}")
+        CrewAgent.Reporter.capabilities_changed()
     end
   end
 
