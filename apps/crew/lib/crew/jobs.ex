@@ -663,6 +663,46 @@ defmodule Crew.Jobs do
     )
   end
 
+  @doc """
+  A person's Cancel run, Re-run failed jobs or Re-run all (§17.3): they
+  need `can_push` on the repo (§18.3), are made with the installation's
+  token, and are audited with the person.
+  """
+  def run_action(%Crew.Scope{} = scope, %RunAttempt{} = attempt, action)
+      when action in [:cancel, :rerun, :rerun_failed] do
+    if Repos.can_push?(scope, attempt.repo_id) do
+      repo = attempt.repo_id |> Repos.get!() |> Repos.with_installation()
+      inst = repo.installation.github_id
+
+      result =
+        case action do
+          :cancel ->
+            Crew.GitHub.Client.cancel_run(inst, repo.full_name, attempt.github_run_id)
+
+          :rerun ->
+            Crew.GitHub.Client.rerun(inst, repo.full_name, attempt.github_run_id)
+
+          :rerun_failed ->
+            Crew.GitHub.Client.rerun_failed(inst, repo.full_name, attempt.github_run_id)
+        end
+
+      case result do
+        :ok ->
+          Audit.log(scope, "run.#{action}", attempt, %{
+            "run_id" => attempt.github_run_id,
+            "attempt" => attempt.run_attempt
+          })
+
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      {:error, :unauthorized}
+    end
+  end
+
   @doc "Where the job page's log comes from: `github` once GitHub's is stored, else `live`."
   def set_log_source(%Job{} = job, source) when source in ["github", "live"] do
     job = job |> Ecto.Changeset.change(log_source: source) |> Repo.update!()

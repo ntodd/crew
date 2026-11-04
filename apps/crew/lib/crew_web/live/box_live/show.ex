@@ -25,8 +25,18 @@ defmodule CrewWeb.BoxLive.Show do
       allocation: VMs.allocation(box.id),
       capacity: Scheduler.capacity(box),
       readable: Repos.readable_ids(socket.assigns.current_scope),
-      ops: Operations.recent_for_box(box.id, 10)
+      ops: Operations.recent_for_box(box.id, 10),
+      images: box_images(box.id),
+      overrides: to_form(Boxes.change_overrides(box), as: :box)
     )
+  end
+
+  defp box_images(box_id) do
+    images = Map.new(Crew.Images.list(), &{&1.id, &1})
+
+    for bi <- Crew.Images.box_images(box_id), image = images[bi.image_id] do
+      %{image: image, state: bi.state, progress: bi.progress, error: bi.error}
+    end
   end
 
   # A repo the member can't read is named as such (§18.3).
@@ -59,6 +69,56 @@ defmodule CrewWeb.BoxLive.Show do
 
       {:error, :unauthorized} ->
         {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
+  def handle_event(event, _params, socket)
+      when event in ["drain", "undrain", "clear_quarantine"] do
+    scope = socket.assigns.current_scope
+    box = socket.assigns.box
+
+    result =
+      case event do
+        "drain" -> Boxes.set_draining(scope, box, true)
+        "undrain" -> Boxes.set_draining(scope, box, false)
+        "clear_quarantine" -> Boxes.clear_quarantine(scope, box)
+      end
+
+    case result do
+      {:ok, box} -> {:noreply, load(socket, box)}
+      {:error, :unauthorized} -> {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
+  def handle_event("overrides", %{"box" => attrs}, socket) do
+    case Boxes.update_overrides(socket.assigns.current_scope, socket.assigns.box, attrs) do
+      {:ok, box} ->
+        {:noreply, socket |> load(box) |> put_flash(:info, "Saved #{box.name}'s capacity.")}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {:noreply,
+         assign(socket, overrides: to_form(Map.put(changeset, :action, :validate), as: :box))}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
+  def handle_event("kill", %{"id" => id}, socket) do
+    with %VMs.VM{box_id: box_id} = vm <- VMs.get(id),
+         true <- box_id == socket.assigns.box.id,
+         :ok <- VMs.kill(socket.assigns.current_scope, vm) do
+      {:noreply, put_flash(socket, :info, "Stopping #{vm.name}.")}
+    else
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+
+      {:error, :offline} ->
+        {:noreply,
+         put_flash(socket, :error, "The box is offline: the stop goes when it rejoins.")}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 
@@ -98,7 +158,30 @@ defmodule CrewWeb.BoxLive.Show do
         {@box.name}
         <:subtitle>{@box.type} · agent {@box.agent_version || "not joined yet"}</:subtitle>
         <:actions>
-          <.box_status box={@box} online={@online} />
+          <span id="box-status"><.box_status box={@box} online={@online} /></span>
+          <%= if Scope.admin?(@current_scope) do %>
+            <.button
+              :if={
+                @box.quarantined_until &&
+                  DateTime.compare(@box.quarantined_until, DateTime.utc_now()) == :gt
+              }
+              id="clear-quarantine"
+              size="sm"
+              phx-click="clear_quarantine"
+            >
+              Clear quarantine
+            </.button>
+            <.button
+              :if={!@box.draining}
+              id="drain"
+              size="sm"
+              phx-click="drain"
+              data-confirm={"Drain #{@box.name}? It takes no new VMs, and its idle ones are stopped."}
+            >
+              Drain
+            </.button>
+            <.button :if={@box.draining} id="undrain" size="sm" phx-click="undrain">Undrain</.button>
+          <% end %>
         </:actions>
       </.header>
 
@@ -198,9 +281,62 @@ defmodule CrewWeb.BoxLive.Show do
               >
                 {vm.state}{if vm.fail_reason, do: " · #{vm.fail_reason}"}
               </.badge>
+              <button
+                :if={Scope.admin?(@current_scope) and vm.state != "destroyed"}
+                id={"kill-#{vm.id}"}
+                type="button"
+                phx-click="kill"
+                phx-value-id={vm.id}
+                data-confirm={"Kill #{vm.name}? Its job fails."}
+                class="text-xs text-danger underline-offset-2 hover:underline sm:col-start-auto"
+              >
+                Kill
+              </button>
             </li>
             <li :if={@vms == []} class="px-5 py-3 text-ink-3">No VMs.</li>
           </ul>
+        </.panel>
+
+        <.panel id="images" title="Images" padded={false}>
+          <ul class="divide-y divide-line text-sm">
+            <li :for={i <- @images} class="flex items-center justify-between gap-3 px-5 py-2.5">
+              <span class="truncate text-ink">{i.image.version}
+              <span class="text-ink-3">· {i.image.arch}</span></span>
+              <span class={["text-xs", (i.state == "failed" && "text-danger") || "text-ink-3"]}>
+                {i.state}{if i.state in ~w(downloading verifying converting), do: " · #{i.progress}%"}{if i.error,
+                  do: " · #{i.error}"}
+              </span>
+            </li>
+            <li :if={@images == []} class="px-5 py-3 text-ink-3">No images yet.</li>
+          </ul>
+        </.panel>
+
+        <.panel :if={Scope.admin?(@current_scope)} id="capacity" title="Capacity">
+          <:subtitle>
+            Overrides for what placement offers job VMs (§8.3). Empty means the default.
+          </:subtitle>
+          <.form for={@overrides} id="overrides" phx-submit="overrides" class="grid grid-cols-2 gap-3">
+            <.input field={@overrides[:allocatable_vcpus_override]} type="number" label="vCPUs" />
+            <.input
+              field={@overrides[:allocatable_memory_mib_override]}
+              type="number"
+              label="Memory (MiB)"
+            />
+            <.input field={@overrides[:reserve_vcpus]} type="number" label="Reserved vCPUs" />
+            <.input
+              field={@overrides[:reserve_memory_mib]}
+              type="number"
+              label="Reserved memory (MiB)"
+            />
+            <.input
+              field={@overrides[:cpu_overcommit]}
+              type="number"
+              step="0.1"
+              label="CPU overcommit"
+            />
+            <.input field={@overrides[:max_vms]} type="number" label="Most VMs" />
+            <div class="col-span-2"><.button type="submit" size="sm">Save</.button></div>
+          </.form>
         </.panel>
 
         <.panel id="inventory" title="Agent's inventory" padded={false}>
