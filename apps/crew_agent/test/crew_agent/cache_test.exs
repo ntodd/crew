@@ -175,4 +175,41 @@ defmodule CrewAgent.CacheTest do
 
     assert [%{hits: 2}] = report.hosts
   end
+
+  test "a cache that restarted between reports counts from 0, whatever its counters" do
+    before = %{"instance" => "a", "hosts" => [%{"host" => "ghcr.io", "hits" => 10}]}
+    after_restart = %{"instance" => "b", "hosts" => [%{"host" => "ghcr.io", "hits" => 15}]}
+    {report, _} = Cache.Stats.delta(before, after_restart)
+    assert [%{hits: 15}] = report.hosts
+  end
+
+  test "stats queued while the control plane is away add up, not replace each other" do
+    {:ok, outbox} = CrewAgent.Outbox.start_link(name: nil)
+
+    for {hits, stored} <- [{7, 100}, {9, 120}, {11, 90}] do
+      {:ok, e} =
+        CrewProtocol.Event.new("cache.stats", %{
+          "t" => System.os_time(:millisecond),
+          "hosts" => [
+            %{
+              "host" => "ghcr.io",
+              "hits" => hits,
+              "misses" => 1,
+              "bytes_served" => 10,
+              "bytes_stored" => stored
+            }
+          ],
+          "evictions" => 1,
+          "digest_mismatches" => 0
+        })
+
+      CrewAgent.Outbox.push(outbox, e)
+    end
+
+    CrewAgent.Outbox.attach(outbox, self())
+    assert_receive {:outbox_deliver, %{type: "cache.stats", payload: p}, nil}
+    assert [%{host: "ghcr.io", hits: 27, misses: 3, bytes_served: 30, bytes_stored: 90}] = p.hosts
+    assert p.evictions == 3
+    refute_receive {:outbox_deliver, %{type: "cache.stats"}, _}
+  end
 end

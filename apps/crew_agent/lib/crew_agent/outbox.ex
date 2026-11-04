@@ -7,8 +7,9 @@ defmodule CrewAgent.Outbox do
 
   - **Reliable** (`op.result`, `vm.state`, `vm.exited`) are kept until the
     control plane acknowledges them, and redelivered on every attach.
-  - **Snapshots** keep only the latest: per box (`box.*`, `cache.stats`),
+  - **Snapshots** keep only the latest: per box (`box.*`),
     per VM (`vm.metrics`, `vm.steps`) and per image (`image.state`).
+    `cache.stats` are differences, so queued ones are added up.
   - **Logs** (`vm.log`, `vm.log.gone`) aren't queued at all: each VM keeps
     its unacknowledged batches and resends them when a connection
     attaches (§16.2).
@@ -116,12 +117,47 @@ defmodule CrewAgent.Outbox do
 
   defp enqueue(state, _seq, %Event{type: type}) when type in @live_only, do: state
 
+  # cache.stats are differences since the last report: queued ones add
+  # up (bytes_stored, a level, and the top list are the latest's).
+  defp enqueue(state, seq, %Event{type: "cache.stats"} = event) do
+    {queued, rest} =
+      state.pending
+      |> :queue.to_list()
+      |> Enum.split_with(fn {_, e} -> e.type == "cache.stats" end)
+
+    event = Enum.reduce(queued, event, fn {_, older}, acc -> add_stats(older, acc) end)
+    %{state | pending: :queue.from_list(rest ++ [{seq, event}])}
+  end
+
   # Snapshots: only the latest for the same thing matters once the
   # connection is back.
   defp enqueue(state, seq, %Event{} = event) do
     key = snapshot_key(event)
     pending = :queue.filter(fn {_, e} -> snapshot_key(e) != key end, state.pending)
     %{state | pending: :queue.in({seq, event}, pending)}
+  end
+
+  defp add_stats(%Event{payload: older}, %Event{payload: newer} = event) do
+    by_host = Map.new(older.hosts, &{&1.host, &1})
+
+    hosts =
+      for h <- newer.hosts do
+        was = by_host[h.host] || %{}
+        sum = fn k -> Map.get(h, k, 0) + Map.get(was, k, 0) end
+        %{h | hits: sum.(:hits), misses: sum.(:misses), bytes_served: sum.(:bytes_served)}
+      end
+
+    gone = for h <- older.hosts, not Enum.any?(newer.hosts, &(&1.host == h.host)), do: h
+
+    %{
+      event
+      | payload: %{
+          newer
+          | hosts: hosts ++ gone,
+            evictions: newer.evictions + older.evictions,
+            digest_mismatches: newer.digest_mismatches + older.digest_mismatches
+        }
+    }
   end
 
   defp snapshot_key(%Event{type: type, payload: %{vm_id: id}}), do: {type, id}
