@@ -1,6 +1,6 @@
 module github.com/ntodd/crew/native
 
-go 1.24.5
+go 1.25.14
 
 require (
 	github.com/Code-Hex/vz/v3 v3.7.1
