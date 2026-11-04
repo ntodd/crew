@@ -56,7 +56,8 @@ defmodule CrewAgent.Ops do
 
   # Log acks and resends (§16.2) come every second per VM and change
   # nothing worth a result: they're handled at once, with no op.result.
-  def handle_call({:submit, %Command{type: type} = cmd}, _from, state) when type in @notifications do
+  def handle_call({:submit, %Command{type: type} = cmd}, _from, state)
+      when type in @notifications do
     try do
       state.handler.(cmd)
     rescue
