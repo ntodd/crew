@@ -179,9 +179,50 @@ defmodule CrewWeb.BoxLiveTest do
       assert has_element?(view, "#join-command", "arch=amd64")
       # The file holds the join token and the Tailscale key: made 0600,
       # and deleted once the box has enrolled.
-      assert has_element?(view, "#join-command", "(umask 077; curl ")
-      assert has_element?(view, "#join-command", "-o crew-rack1.ign)")
+      assert has_element?(view, "#join-command", "(umask 077; ")
       refute render(view) =~ "> crew-rack1.ign"
+
+      # Run it, against a stub curl, over a 0644 file a previous download
+      # left: the file it ends with is 0600 all the same.
+      [command] = Regex.run(~r/\(umask 077;[^<]*\)/, view |> element("#join-command") |> render())
+
+      command =
+        Enum.reduce(
+          [
+            {"&quot;", ~s(")},
+            {"&#34;", ~s(")},
+            {"&#39;", "'"},
+            {"&gt;", ">"},
+            {"&lt;", "<"},
+            {"&amp;", "&"}
+          ],
+          command,
+          fn {from, to}, acc -> String.replace(acc, from, to) end
+        )
+
+      dir = Path.join(System.tmp_dir!(), "crew-ign-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(Path.join(dir, "bin"))
+      on_exit(fn -> File.rm_rf!(dir) end)
+      curl = Path.join(dir, "bin/curl")
+
+      File.write!(curl, """
+      #!/bin/sh
+      while [ $# -gt 0 ]; do [ "$1" = -o ] && echo '{"ignition":{}}' > "$2"; shift; done
+      exit 0
+      """)
+
+      File.chmod!(curl, 0o755)
+      File.write!(Path.join(dir, "crew-rack1.ign"), "old")
+      File.chmod!(Path.join(dir, "crew-rack1.ign"), 0o644)
+
+      {_, 0} =
+        System.cmd("sh", ["-c", command],
+          cd: dir,
+          env: [{"PATH", Path.join(dir, "bin") <> ":/usr/bin:/bin"}]
+        )
+
+      assert File.read!(Path.join(dir, "crew-rack1.ign")) =~ "ignition"
+      assert File.stat!(Path.join(dir, "crew-rack1.ign")).mode |> Bitwise.band(0o777) == 0o600
       assert has_element?(view, "#join-instructions", "Delete it once the box has enrolled")
       assert has_element?(view, "#flatcar-install", "flatcar-install -d")
 
