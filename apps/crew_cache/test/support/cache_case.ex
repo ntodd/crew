@@ -24,8 +24,11 @@ defmodule CrewCache.CacheCase do
   def resolve_map, do: @resolve
 
   @doc "Start the fake and the cache. Returns ports and handy URLs."
-  def start_cache(dir, overrides \\ []) do
-    fake = FakeRegistry.start()
+  def start_cache(dir, overrides \\ []), do: start_cache_for(FakeRegistry.start(), dir, overrides)
+
+  @doc "Start (or restart) the cache against a fake that's already running."
+  def start_cache_for(fake, dir, overrides \\ []) do
+    fake = Map.take(fake, [:registry_port, :storage_port, :cacerts])
     origin = "registry.test:#{fake.registry_port}"
 
     origins =
