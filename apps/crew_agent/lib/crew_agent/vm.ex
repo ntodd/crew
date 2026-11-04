@@ -659,7 +659,7 @@ defmodule CrewAgent.VM do
     {code, driver_reason} =
       case state.driver.exit_status(state.vm_id) do
         {:ok, %{code: code, reason: reason}} -> {code, reason}
-        _ -> {0, nil}
+        _ -> {0, unknown_exit(state.meta, now_ms())}
       end
 
     reason = exit_reason(state, code, driver_reason)
@@ -697,6 +697,17 @@ defmodule CrewAgent.VM do
       {:noreply, %{state | exited: true}}
     end
   end
+
+  @doc """
+  How a VM ended when the driver can't say (its exit record out of
+  reach): one found gone past its deadline was killed at it, by systemd
+  or the helper, which may beat the agent's own timer by a moment.
+  """
+  def unknown_exit(%{"deadline" => deadline}, now_ms)
+      when is_integer(deadline) and now_ms >= deadline * 1000,
+      do: "killed_deadline"
+
+  def unknown_exit(_meta, _now_ms), do: nil
 
   defp exit_reason(%{forced_reason: forced}, _code, _driver) when is_binary(forced), do: forced
 

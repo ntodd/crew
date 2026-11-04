@@ -249,6 +249,16 @@ defmodule CrewAgent.VMTest do
     c
   end
 
+  test "a VM found gone past its deadline, with no word from the driver, was killed at it" do
+    deadline = System.os_time(:second) - 1
+
+    assert VM.unknown_exit(%{"deadline" => deadline}, System.os_time(:millisecond)) ==
+             "killed_deadline"
+
+    assert VM.unknown_exit(%{"deadline" => deadline + 60}, System.os_time(:millisecond)) == nil
+    assert VM.unknown_exit(%{}, System.os_time(:millisecond)) == nil
+  end
+
   # The null driver keeps its guest's token beside it (dev and test only).
   defp token_of(vm_id) do
     File.read!(Path.join(CrewAgent.Config.vm_dir(CrewAgent.Config.get(), vm_id), "null-token"))
