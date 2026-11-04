@@ -27,18 +27,24 @@ if [ ! -L "$agent/previous" ]; then
   exit 0
 fi
 
-target=$(readlink "$agent/previous")
-release_version "$target" || fail "previous points at '$target', which isn't a release"
+# `previous` is the agent's to write, so it's only a name to look up:
+# one line holding a version, never a path. Root's half goes back only to
+# a release root installed itself in root/.
+exact_link "$agent/previous" || true
+target=$link
+release_version "$target" || fail "agent/previous isn't a release; not rolling back"
 relink "$agent" current "$target"
 rm -f "$agent/previous" "$agent/crashes"
 if [ -f "$agent/update-pending" ]; then mv -f "$agent/update-pending" "$agent/rolled-back"; fi
 say "rolled the agent back to $target"
 
-if [ -d "$data/root/$target" ]; then
+if root_release "$data/root" "$target"; then
   relink "$data/root" current "$target"
   CREW_BOX_DATA="$data" sh "$etc/root-units.sh"
   # The ruleset that release's crew-vmctl verifies against.
   systemctl try-restart crew-net.service || true
+else
+  say "root has no $target of its own, so its half stays on $(readlink "$data/root/current" || echo nothing)"
 fi
 
 systemctl reset-failed crew-agent.service crew-cache.service || true

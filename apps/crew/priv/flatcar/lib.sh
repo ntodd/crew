@@ -18,9 +18,41 @@ console() {
 say() { console "crew-box: $*"; }
 fail() { say "$*"; exit 1; }
 
-# A release version, as CI tags them (CrewProtocol's): 1.2.3 or 1.2.3-rc.1.
+# one_line <value> <extended regex>: the whole value is one line the
+# pattern matches. grep matches line by line, so a value with a newline
+# could pass on one good line: anything but the characters a version, a
+# SHA-256, a nonce or base64 needs is refused before grep sees it (a
+# newline among them).
+one_line() {
+  case "$1" in "" | *[!0-9A-Za-z.+/=-]*) return 1 ;; esac
+  printf '%s\n' "$1" | grep -Eqx "$2"
+}
+
+# A release version, as CI tags them (CrewProtocol's): 1.2.3 or
+# 1.2.3-rc.1. Never a path: no slash, and not `.` or `..`.
 release_version() {
-  printf '%s\n' "$1" | grep -Eqx '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z.]{1,32})?'
+  case "$1" in */*) return 1 ;; esac
+  one_line "$1" '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z.]{1,32})?'
+}
+
+# exact_link <path>: sets $link to the link's target exactly. $(readlink)
+# would drop trailing newlines, and a target of "1.2.3\n" isn't 1.2.3.
+# shellcheck disable=SC2034 # $link is for the scripts that source this
+exact_link() {
+  link=""
+  [ -L "$1" ] || return 1
+  # -n: the target alone, without a newline of readlink's own.
+  _out=$(readlink -n "$1" && echo x) || return 1
+  link=${_out%x}
+}
+
+# root_release <root dir> <version>: <root dir>/<version> is a release
+# root installed: a version's name, a directory and not a link, owned by
+# whoever runs this (root on a box). Never anything the agent wrote.
+root_release() {
+  release_version "$2" || return 1
+  [ -d "$1/$2" ] && [ ! -L "$1/$2" ] || return 1
+  [ -n "$(find "$1/$2" -maxdepth 0 -type d -user "$(id -u)" 2>/dev/null)" ]
 }
 
 # check_release <name> <file> <version> <target> <sha256> <signature> <key.pem> <workdir>

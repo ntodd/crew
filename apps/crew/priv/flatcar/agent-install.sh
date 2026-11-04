@@ -45,11 +45,13 @@ if [ -f "$etc/provision.env" ]; then . "$etc/provision.env"; fi
 
 agent="$data/agent"
 if [ -e "$agent/current" ]; then
-  say "the agent is installed ($(readlink "$agent/current"))"
+  installed=$(readlink "$agent/current" || true)
+  release_version "$installed" || installed="not a release"
+  say "the agent is installed ($installed)"
   exit 0
 fi
 
-case "$CREW_VERSION" in "" | *[!0-9A-Za-z.-]*) fail "the release version '$CREW_VERSION' isn't one" ;; esac
+release_version "$CREW_VERSION" || fail "the release version in release.env isn't one"
 case "$CREW_TARGET" in linux-amd64 | linux-arm64) ;; *) fail "the target '$CREW_TARGET' isn't one" ;; esac
 [ -d "$agent" ] || fail "$agent isn't there (crew-quota.service makes it)"
 
@@ -105,12 +107,13 @@ done
 rm -rf "$dest" "${root_dir:?}/${CREW_VERSION:?}"
 mv "$priv" "$root_dir/$CREW_VERSION"
 mv "$new" "$dest"
-ln -sfn "$CREW_VERSION" "$root_dir/current"
-ln -s "$CREW_VERSION" "$agent/current"
+relink "$root_dir" current "$CREW_VERSION"
+relink "$agent" current "$CREW_VERSION"
 rm -f "$agent/previous" "$agent/update-pending"
 
 # The agent's settings (§21.2). systemd reads them as root; the agent
-# never needs to.
+# never needs to. Written in root's directory and renamed into agent/,
+# which is the agent's: nothing it put there is written through.
 if [ ! -s "$agent/env" ] || [ -n "$CREW_JOIN_TOKEN" ]; then
   umask 077
   {
@@ -122,10 +125,10 @@ if [ ! -s "$agent/env" ] || [ -n "$CREW_JOIN_TOKEN" ]; then
     echo "CREW_RELEASE_PUBLIC_KEY=$CREW_RELEASE_PUBLIC_KEY"
     if [ "${CREW_DEV:-}" = 1 ]; then echo "CREW_DEV=1"; fi
     if [ -n "$CREW_JOIN_TOKEN" ]; then echo "CREW_JOIN_TOKEN=$CREW_JOIN_TOKEN"; fi
-  } > "$agent/env.new"
-  if [ -n "$root" ]; then chown root:root "$agent/env.new"; fi
-  chmod 0600 "$agent/env.new"
-  mv "$agent/env.new" "$agent/env"
+  } > "$tmp/env"
+  if [ -n "$root" ]; then chown root:root "$tmp/env"; fi
+  chmod 0600 "$tmp/env"
+  mv -f "$tmp/env" "$agent/env"
 fi
 
 say "installed the agent $CREW_VERSION"

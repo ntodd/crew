@@ -43,24 +43,31 @@ rm -rf "$tmp"
 mkdir -m 0700 "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
+# take <name>: moves agent/update/<name> into root's directory before
+# anything looks at it, so the agent can't swap it for a link or a FIFO
+# between the check and the read (rename moves a link, never what it
+# points at). It counts only if what arrived is a plain file.
+take() {
+  mv -f "$stage/$1" "$tmp/$1.taken" 2>/dev/null || true
+  rm -f "$stage/$1"
+  [ -f "$tmp/$1.taken" ] && [ ! -L "$tmp/$1.taken" ]
+}
+
 # The request is the path unit's trigger, so it's taken whatever it
 # holds: it can't start this again. A link, or anything but a file, is
 # no request.
-request="$stage/request"
-if [ -f "$request" ] && [ ! -L "$request" ]; then
-  head -c 4096 "$request" > "$tmp/request"
-fi
-rm -f "$request"
+if take request; then head -c 4096 "$tmp/request.taken" > "$tmp/request"; fi
 if [ ! -s "$tmp/request" ]; then
   echo "no request to act on"
   exit 0
 fi
 
+# Each field is the first line naming it, and only one line: one_line
+# (lib.sh) refuses anything a value doesn't need before matching.
 field() { sed -n "s/^$1=//p" "$tmp/request" | head -n 1; }
-matches() { printf '%s\n' "$1" | grep -Eqx "$2"; }
 
 nonce=$(field NONCE)
-matches "$nonce" '[0-9a-f]{32}' || fail "the update request has no nonce, so there's no one to answer"
+one_line "$nonce" '[0-9a-f]{32}' || fail "the update request has no nonce, so there's no one to answer"
 
 # answer ok|error <text>: for the agent, which waits for its nonce.
 answer() {
@@ -90,21 +97,20 @@ case "$(uname -m)" in
 esac
 [ "$target" = "$mine" ] || refuse "the request's target isn't this box's ($mine)"
 for sha in "$agent_sha" "$cache_sha"; do
-  matches "$sha" '[0-9a-f]{64}' || refuse "the request has a SHA-256 that isn't one"
+  one_line "$sha" '[0-9a-f]{64}' || refuse "the request has a SHA-256 that isn't one"
 done
 for sig in "$agent_sig" "$cache_sig"; do
-  matches "$sig" '[A-Za-z0-9+/=]{1,128}' || refuse "the request has a signature that isn't base64"
+  one_line "$sig" '[A-Za-z0-9+/=]{1,128}' || refuse "the request has a signature that isn't base64"
 done
 [ -s "$etc/release-key.pem" ] ||
   refuse "this box has no release key ($etc/release-key.pem); reprovision it to update"
 
-# Root's copies of the staged tarballs, checked; crew_cache's too, so
-# root has seen the whole release it's installing (the cache runs as
-# crewcache, from the agent's copy).
+# The staged tarballs, taken into root's directory and checked there;
+# crew_cache's too, so root has seen the whole release it's installing
+# (the cache runs as crewcache, from the agent's copy).
 for c in agent cache; do
-  f="$stage/$c.tar.gz"
-  if [ ! -f "$f" ] || [ -L "$f" ]; then refuse "the $c tarball isn't staged"; fi
-  cp "$f" "$tmp/$c.tar.gz"
+  take "$c.tar.gz" || refuse "the $c tarball isn't staged"
+  mv -f "$tmp/$c.tar.gz.taken" "$tmp/$c.tar.gz"
 done
 check_release agent "$tmp/agent.tar.gz" "$version" "$target" "$agent_sha" "$agent_sig" \
   "$etc/release-key.pem" "$tmp" || refuse "$why"
@@ -160,7 +166,9 @@ fi
 
 # Kept: this release, the one before it, and the one the agent would roll
 # back to; the rest go.
-previous=$(readlink "$data/agent/previous" 2>/dev/null || true)
+exact_link "$data/agent/previous" || true
+previous=$link
+release_version "$previous" || previous=""
 for d in "$root_dir"/*; do
   name=$(basename "$d")
   case "$name" in "$version" | "$old" | "$previous" | current | update.result) continue ;; esac

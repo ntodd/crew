@@ -590,7 +590,7 @@ defmodule CrewAgent.Updater do
   def rollback(%Config{} = config, reason) do
     root = Config.agent_dir(config)
 
-    with prev when is_binary(prev) <- link(root, "previous") || {:error, :no_previous},
+    with prev when is_binary(prev) <- release_link(root, "previous") || {:error, :no_previous},
          :ok <- relink(root, "current", prev) do
       marker =
         case read_json(Path.join(root, @pending)) do
@@ -607,8 +607,11 @@ defmodule CrewAgent.Updater do
 
   @doc "The version `current` points at, if it's a release here."
   @spec current_version(Path.t()) :: String.t() | nil
-  def current_version(root) do
-    case link(root, "current") do
+  def current_version(root), do: release_link(root, "current")
+
+  # A link's target when it's a release's name: never a path.
+  defp release_link(root, name) do
+    case link(root, name) do
       version when is_binary(version) -> if Regex.match?(@version, version), do: version
       nil -> nil
     end
