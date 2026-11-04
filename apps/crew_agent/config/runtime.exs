@@ -52,7 +52,7 @@ if config_env() != :test do
     egress_echo_url: System.get_env("CREW_EGRESS_ECHO_URL", "https://checkip.amazonaws.com"),
     crew_vz_bin: System.get_env("CREW_VZ_BIN", "crew-vz"),
     # Development: image.prepare clones kernel and rootfs.ext4 from here
-    # instead of downloading (the download comes with the guest image).
+    # instead of downloading.
     dev_image_dir: if(dev, do: System.get_env("CREW_DEV_IMAGE_DIR")),
     cache_mgmt_url: System.get_env("CREW_CACHE_MGMT_URL"),
     cache_mgmt_token: System.get_env("CREW_CACHE_MGMT_TOKEN"),
