@@ -1,0 +1,6 @@
+# The guest image's Ubuntu base and snapshot, and every package installed
+# in it, per arch (docs/crew_spec.md §13.1). Written by
+# `make -C images/guest lock`; don't edit it by hand. The build installs
+# exactly these versions and fails if any package resolves to another.
+base ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
+snapshot 20261102T000000Z
