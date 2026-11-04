@@ -135,6 +135,48 @@ defmodule CrewAgent.VMs do
     :ok
   end
 
+  @doc """
+  Before the agent stops (an update, a service restart): every VM sends
+  the lines it holds for its next batch, and while a connection is
+  attached, this waits up to `timeout_ms` for the control plane to ack
+  every batch. Lines live only in the VMs' servers until then (§16.2),
+  and their guests, which had a 204 for them, won't send them again.
+  `:ok`, or `:timeout`. `vm_ids` limits it to those VMs (tests).
+  """
+  def drain_logs(timeout_ms, vm_ids \\ nil) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+
+    pids =
+      case vm_ids do
+        nil -> for {_, pid, _, _} <- DynamicSupervisor.which_children(@sup), is_pid(pid), do: pid
+        ids -> ids |> Enum.map(&VM.whereis/1) |> Enum.reject(&is_nil/1)
+      end
+
+    drain_logs(pids, deadline, CrewAgent.Outbox.attached?())
+  end
+
+  defp drain_logs(pids, deadline, attached?) do
+    unacked = Enum.reject(pids, &drained?/1)
+
+    cond do
+      unacked == [] or not attached? ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        :timeout
+
+      true ->
+        Process.sleep(50)
+        drain_logs(unacked, deadline, attached?)
+    end
+  end
+
+  defp drained?(pid) do
+    GenServer.call(pid, :drain_logs, 2_000)
+  catch
+    :exit, _ -> true
+  end
+
   @doc "A (re)connect: each VM sends its unacknowledged log batches again."
   def connected do
     for {_, pid, _, _} <- DynamicSupervisor.which_children(@sup),

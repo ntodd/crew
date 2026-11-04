@@ -35,6 +35,9 @@ defmodule CrewAgent.Outbox do
   def detach(server \\ __MODULE__), do: GenServer.call(server, :detach)
   def ack(server \\ __MODULE__, ack_id), do: GenServer.cast(server, {:ack, ack_id})
 
+  @doc "Whether a connection is attached, to deliver to and acknowledge."
+  def attached?(server \\ __MODULE__), do: GenServer.call(server, :attached?)
+
   @doc "True when every result has been delivered and acknowledged."
   def settled?(server \\ __MODULE__), do: GenServer.call(server, :settled?)
 
@@ -93,6 +96,8 @@ defmodule CrewAgent.Outbox do
 
   def handle_call(:detach, _from, state),
     do: {:reply, :ok, state |> demonitor() |> Map.put(:conn, nil)}
+
+  def handle_call(:attached?, _from, state), do: {:reply, state.conn != nil, state}
 
   @impl true
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{monitor: ref} = state) do

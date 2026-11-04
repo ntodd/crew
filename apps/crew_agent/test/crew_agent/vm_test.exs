@@ -184,6 +184,81 @@ defmodule CrewAgent.VMTest do
     VMs.stop(vm_id, true, 0)
   end
 
+  # §11.6 item 9: the guest had a 204 for these lines, so it won't send
+  # them again; the agent holds them (for its 250 ms batch, then until
+  # they're acked) only in memory. A restart (an update, systemctl)
+  # sends them and waits for the ack before the VMs' servers go.
+  test "an agent stop sends the lines the guest has posted, and waits for their ack" do
+    vm_id = start_vm(start_command(), [{"FAKE_JOB_SECONDS", "30"}])
+    await("vm.state", &(&1.vm_id == vm_id and &1.state == "job_started"))
+
+    line =
+      ~s({"t":#{System.os_time(:millisecond)},"step_ref":"s1","text":"just before the stop"}\n)
+
+    assert %{status: 204} =
+             Req.post!(api() <> "/v1/log",
+               body: line,
+               auth: {:bearer, token_of(vm_id)},
+               headers: [{"content-type", "application/x-ndjson"}],
+               retry: false
+             )
+
+    drain = Task.async(fn -> VMs.drain_logs(5_000, [vm_id]) end)
+
+    log =
+      await("vm.log", fn p ->
+        p.vm_id == vm_id and Enum.any?(p.lines, &(&1.text == "just before the stop"))
+      end)
+
+    # Sent, but not acked yet: the stop still waits.
+    refute Task.yield(drain, 300)
+
+    # Lines from now on are the next agent's: 503, which crew-guest retries.
+    assert %{status: 503} =
+             Req.post!(api() <> "/v1/log",
+               body: line,
+               auth: {:bearer, token_of(vm_id)},
+               headers: [{"content-type", "application/x-ndjson"}],
+               retry: false
+             )
+
+    assert :ok = VMs.log_ack(vm_id, log.payload.epoch, log.payload.seq)
+    assert Task.await(drain) == :ok
+    VMs.stop(vm_id, true, 0)
+  end
+
+  test "the application drains the VMs' logs before it stops" do
+    vm_id = start_vm(start_command(), [{"FAKE_JOB_SECONDS", "30"}])
+    log = await("vm.log", &(&1.vm_id == vm_id))
+    stopping = Task.async(fn -> CrewAgent.Application.prep_stop(:state) end)
+    refute Task.yield(stopping, 300)
+    _ = await_acking_logs(vm_id, log)
+    assert Task.await(stopping) == :state
+    VMs.stop(vm_id, true, 0)
+  end
+
+  # Acks every log batch of the VM until one has come for a while.
+  defp await_acking_logs(vm_id, log) do
+    VMs.log_ack(vm_id, log.payload.epoch, log.payload.seq)
+
+    receive do
+      {:outbox_deliver, %{type: "vm.log", payload: %{vm_id: ^vm_id}} = next, _ack} ->
+        await_acking_logs(vm_id, next)
+    after
+      500 -> :ok
+    end
+  end
+
+  test "an agent stop with no control plane attached doesn't wait for acks" do
+    vm_id = start_vm(start_command(), [{"FAKE_JOB_SECONDS", "30"}])
+    await("vm.log", &(&1.vm_id == vm_id))
+    :ok = CrewAgent.Outbox.detach()
+    {us, :ok} = :timer.tc(fn -> VMs.drain_logs(5_000, [vm_id]) end)
+    assert us < 1_000_000
+    attach()
+    VMs.stop(vm_id, true, 0)
+  end
+
   test "a VM past its deadline is killed" do
     vm_id =
       start_vm(start_command(%{"deadline" => System.os_time(:second) + 1}), [

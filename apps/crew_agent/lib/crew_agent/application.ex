@@ -67,6 +67,21 @@ defmodule CrewAgent.Application do
     )
   end
 
+  # Before anything stops (an update, a service restart): the VMs' log
+  # lines that only this agent holds go to the control plane, which acks
+  # them within a second or so (§16.2, §11.6 item 9).
+  @impl true
+  def prep_stop(state) do
+    case CrewAgent.VMs.drain_logs(3_000) do
+      :ok -> :ok
+      :timeout -> Logger.warning("stopping with VM log lines the control plane hasn't acked")
+    end
+
+    state
+  catch
+    :exit, _ -> state
+  end
+
   # An update that hasn't joined within 5 minutes of its first start on
   # this boot goes back now, however often it has restarted since
   # (§20.2): before anything starts, so there's nothing to stop.
