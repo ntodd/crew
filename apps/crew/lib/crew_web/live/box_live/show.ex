@@ -273,25 +273,27 @@ defmodule CrewWeb.BoxLive.Show do
               <span class="tabular-nums text-xs text-ink-3 max-sm:hidden">
                 {vm.vcpus} vCPU · {gib(vm.memory_mib)} GiB
               </span>
-              <.badge
-                color={vm_color(vm.state)}
-                dot
-                pulse={vm.state in ~w(requested starting booted busy)}
-                size="sm"
-              >
-                {vm.state}{if vm.fail_reason, do: " · #{vm.fail_reason}"}
-              </.badge>
-              <button
-                :if={Scope.admin?(@current_scope) and vm.state != "destroyed"}
-                id={"kill-#{vm.id}"}
-                type="button"
-                phx-click="kill"
-                phx-value-id={vm.id}
-                data-confirm={"Kill #{vm.name}? Its job fails."}
-                class="text-xs text-danger underline-offset-2 hover:underline sm:col-start-auto"
-              >
-                Kill
-              </button>
+              <span class="flex items-center justify-end gap-3">
+                <.badge
+                  color={vm_color(vm.state)}
+                  dot
+                  pulse={vm.state in ~w(requested starting booted busy)}
+                  size="sm"
+                >
+                  {vm.state}{if vm.fail_reason, do: " · #{vm.fail_reason}"}
+                </.badge>
+                <button
+                  :if={Scope.admin?(@current_scope) and vm.state != "destroyed"}
+                  id={"kill-#{vm.id}"}
+                  type="button"
+                  phx-click="kill"
+                  phx-value-id={vm.id}
+                  data-confirm={"Kill #{vm.name}? Its job fails."}
+                  class="text-xs text-danger underline-offset-2 hover:underline"
+                >
+                  Kill
+                </button>
+              </span>
             </li>
             <li :if={@vms == []} class="px-5 py-3 text-ink-3">No VMs.</li>
           </ul>
