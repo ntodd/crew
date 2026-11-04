@@ -1,0 +1,11 @@
+[Unit]
+Description=Crew network: refill site4 every 10 minutes (crew-net)
+Documentation=https://github.com/ntodd/crew/blob/main/native/crew-vmctl/README.md
+
+[Timer]
+OnActiveSec=10min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

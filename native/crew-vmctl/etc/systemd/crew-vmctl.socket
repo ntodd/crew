@@ -1,0 +1,21 @@
+# crew-vmctl's socket (spec §10.8): the agent (_crewagent) connects and
+# sends one JSON request; systemd starts a crew-vmctl@.service for each
+# connection. Installed by the box's Ignition from the agent tarball's
+# etc/systemd/.
+[Unit]
+Description=Crew root helper socket (crew-vmctl)
+Documentation=https://github.com/ntodd/crew/blob/main/native/crew-vmctl/README.md
+RequiresMountsFor=/srv/crew
+
+[Socket]
+ListenStream=/run/crew/vmctl.sock
+SocketUser=root
+SocketGroup=_crewagent
+SocketMode=0660
+DirectoryMode=0755
+RemoveOnStop=yes
+Accept=yes
+MaxConnections=64
+
+[Install]
+WantedBy=sockets.target
