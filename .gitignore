@@ -37,3 +37,7 @@
 /images/guest/tools/deps/
 /images/guest/tools/tmp/
 /native/hostvm-dev/hostvm-dev
+
+# The release files the control plane's image carries (docker/control-plane.Dockerfile)
+/docker/release/*/*
+!/docker/release/*/.keep
