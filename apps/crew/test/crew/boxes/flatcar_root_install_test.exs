@@ -59,6 +59,15 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
     log = Path.join(root, "systemctl.log")
     File.write!(Path.join(bin, "systemctl"), ~s(#!/bin/sh\necho "systemctl $*" >> "#{log}"\n))
     File.chmod!(Path.join(bin, "systemctl"), 0o755)
+    # The release here is arm64's, whatever runs the test.
+    uname = System.find_executable("uname")
+
+    File.write!(
+      Path.join(bin, "uname"),
+      ~s(#!/bin/sh\n[ "$*" = -m ] && echo aarch64 || exec #{uname} "$@"\n)
+    )
+
+    File.chmod!(Path.join(bin, "uname"), 0o755)
 
     data = Path.join(root, "srv-crew")
     File.mkdir_p!(Path.join(data, "agent"))
