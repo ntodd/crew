@@ -9,11 +9,11 @@
 #
 # From a checkout of this repo, it:
 #   1. checks the host: root, /dev/kvm, systemd, nft, iptables-nft, ip, and
-#      /srv/crew an XFS that isn't a real box's (no agent/ but this script's);
+#      /srv/crew an XFS that isn't a real box's (no agent/ or root/ but this script's);
 #   2. downloads the pinned Firecracker for this arch (../firecracker.env) and
 #      checks its SHA-256;
 #   3. builds crew-vmctl (vendored, with no network);
-#   4. lays out /srv/crew/agent/current/{bin,etc} as the agent tarball does,
+#   4. lays out /srv/crew/root/<version>/{bin,etc} and root/current as a box has them,
 #      puts the units in /run/systemd/system (runtime only, gone at reboot)
 #      and starts crew-net and crew-vmctl.socket;
 #   5. runs `mix test --only kvm` as root, on the host's network;
@@ -59,12 +59,14 @@ for t in systemctl systemd-run nft iptables-nft-restore iptables-nft ip curl sha
 done
 [ -d "$data" ] || die "$data doesn't exist (an XFS with reflink=1)"
 [ "$(stat -f -c %T "$data")" = xfs ] || die "$data must be an XFS (with reflink=1)"
-if [ -e "$data/agent" ] && [ ! -e "$marker" ]; then
-  die "$data/agent exists and this script didn't make it: is this a Crew box? Not here."
-fi
+for d in agent root; do
+  if [ -e "$data/$d" ] && [ ! -e "$marker" ]; then
+    die "$data/$d exists and this script didn't make it: is this a Crew box? Not here."
+  fi
+done
 case $image/ in
-  "$data"/agent/* | "$data"/vms/* | "$data"/images/* | "$data"/jail/*)
-    die "keep the image out of $data/{agent,vms,images,jail}"
+  "$data"/agent/* | "$data"/root/* | "$data"/vms/* | "$data"/images/* | "$data"/jail/*)
+    die "keep the image out of $data/{agent,root,vms,images,jail}"
     ;;
 esac
 touch "$marker"
@@ -92,7 +94,7 @@ teardown() {
     nft delete table inet crew 2>/dev/null || true
     nft delete table ip mangle 2>/dev/null || true
     ip link del crew0 2>/dev/null || true
-    rm -rf "$data/agent" "$data/vms" "$data/images" "$data/jail" "$marker" /run/crew
+    rm -rf "$data/agent" "$data/root" "$data/vms" "$data/images" "$data/jail" "$marker" /run/crew
   else
     say "--keep: leaving crew-net, crew-vmctl.socket and $data as they are"
   fi
@@ -141,18 +143,20 @@ fi
 
 # -- 4. the box ---------------------------------------------------------------------
 
-say "installing into $data/agent/current and /run/systemd/system"
-install -d -m 0755 "$data/agent/current/bin" "$data/agent/current/etc/systemd" "$data/vms" "$data/images"
-install -m 0755 "$work/firecracker/firecracker" "$work/firecracker/jailer" "$work/bin/crew-vmctl" \
-  "$data/agent/current/bin/"
-cp "$vmctl_src/etc/nft.conf" "$vmctl_src/etc/connlimit.rules" "$data/agent/current/etc/"
-cp "$vmctl_src/etc/systemd/"* "$data/agent/current/etc/systemd/"
+# What root runs goes in root/<version>, root's, with root/current its
+# link, as the box's Ignition installs a release; agent/ is the agent's.
+say "installing into $data/root/kvm-test and /run/systemd/system"
+release=$data/root/kvm-test
+install -d -m 0755 "$release/bin" "$release/etc/systemd" "$data/agent" "$data/vms" "$data/images"
+install -m 0755 "$work/firecracker/firecracker" "$work/firecracker/jailer" "$work/bin/crew-vmctl" "$release/bin/"
+cp "$vmctl_src/etc/nft.conf" "$vmctl_src/etc/connlimit.rules" "$release/etc/"
+cp "$vmctl_src/etc/systemd/"* "$release/etc/systemd/"
+ln -sfn kvm-test "$data/root/current"
 # The tests run as root, so the socket's group is root's here.
 for u in $units; do
   sed 's/^SocketGroup=_crewagent$/SocketGroup=root/' "$vmctl_src/etc/systemd/$u" >"/run/systemd/system/$u"
 done
-# shellcheck disable=SC2086 # $units is a list
-(cd /run/systemd/system && systemd-analyze verify $units 2>&1 | grep -v 'crew-agent.service\|crew-cache.service' || true)
+
 systemctl daemon-reload
 systemctl restart crew-net.service
 systemctl restart crew-vmctl.socket

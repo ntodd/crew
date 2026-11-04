@@ -10,4 +10,4 @@ RequiresMountsFor=/srv/crew
 
 [Service]
 Type=oneshot
-ExecStart=/srv/crew/agent/current/bin/crew-vmctl site4
+ExecStart=/srv/crew/root/current/bin/crew-vmctl site4

@@ -269,13 +269,15 @@ The other spikes are recorded here as they run.
 - **Measured** on the M3's Flatcar VM (arm64, nested): crew-guest fetches
   its payload about 1.9 s after `vm.start`; a forced stop's `vm.exited`
   comes about 1.2 s after `vm.stop`, mostly the agent's 1 s poll.
-- **A gap in the root boundary:** the units run
-  `/srv/crew/agent/current/bin/crew-vmctl` as root, and the agent can
-  write `/srv/crew/agent` (it updates itself, §20.2). §11.3 has `bin/`
-  owned by root, which an updater running as `_crewagent` can't produce.
-  Until a root-side step installs releases (crew-vmctl checking the
-  release signature itself, say), a compromised agent can replace the
-  binaries root runs.
+- **What root runs comes from `root/current/bin`,** not §11.3's
+  `agent/current/bin`: the agent can write `/srv/crew/agent` (it updates
+  itself there, §20.2), so a compromised agent could have replaced
+  crew-vmctl, jailer or Firecracker. The box's Ignition installs a
+  release's root-run files into a root-owned `/srv/crew/root/<version>`
+  with a `current` link, and refuses units that name `agent/`; the
+  units, crew-vmctl's paths (a constant, not a setting) and a test say
+  `root/current/bin`. How an agent update reaches `root/` is the
+  updater's (§20.2), still to build.
 - **Not yet tested on a real VM:** a graceful stop through the guest API
   (the guest image needs a JIT config it accepts, or a test mode like
   crew-vz's guest), the network matrix of conformance items 4 and 5

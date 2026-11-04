@@ -25,10 +25,10 @@ func TestSystemdRunArgvIsTheSpecsUnit(t *testing.T) {
 		"-p", "StandardOutput=append:" + jail + "/console.log",
 		"-p", "StandardError=append:" + jail + "/fc.stderr",
 		"-p", "LogRateLimitIntervalSec=10", "-p", "LogRateLimitBurst=1000",
-		"-p", "ExecStopPost=/srv/crew/agent/current/bin/crew-vmctl exited " + vmID,
+		"-p", "ExecStopPost=/srv/crew/root/current/bin/crew-vmctl exited " + vmID,
 		"--",
-		"/srv/crew/agent/current/bin/jailer",
-		"--id", vmID, "--exec-file", "/srv/crew/agent/current/bin/firecracker",
+		"/srv/crew/root/current/bin/jailer",
+		"--id", vmID, "--exec-file", "/srv/crew/root/current/bin/firecracker",
 		"--uid", "200003", "--gid", "200003", "--chroot-base-dir", "/srv/crew/jail",
 		"--", "--config-file", "/fc.json", "--no-api",
 	}

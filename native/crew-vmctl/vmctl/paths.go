@@ -11,12 +11,21 @@ type Paths struct {
 // DefaultData is the data directory on a Flatcar box.
 const DefaultData = "/srv/crew"
 
+// RootDir is where, under the data directory, the box keeps what root
+// runs: root/<version>/, installed by root from the release tarball, and
+// root/current, the link to the one in use. Root's all the way down, so
+// unlike agent/ (the agent updates itself there) nothing the agent can
+// write is run as root. A constant: crew-vmctl takes no path from the
+// agent, and this one not from its own flags either.
+const RootDir = "root"
+
 func (p Paths) bin(name string) string {
-	return filepath.Join(p.Data, "agent", "current", "bin", name)
+	return filepath.Join(p.Data, RootDir, "current", "bin", name)
 }
 
-// Jailer, Firecracker and Vmctl are the agent tarball's binaries,
-// through `current`, as §11.3's unit names them.
+// Jailer, Firecracker and Vmctl are the release's binaries, through
+// root/current. §11.3's unit names agent/current/bin; that's the agent's
+// to write, so they're not run from there.
 func (p Paths) Jailer() string      { return p.bin("jailer") }
 func (p Paths) Firecracker() string { return p.bin("firecracker") }
 func (p Paths) Vmctl() string       { return p.bin("crew-vmctl") }

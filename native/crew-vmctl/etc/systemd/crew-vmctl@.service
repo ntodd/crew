@@ -11,7 +11,7 @@ CollectMode=inactive-or-failed
 
 [Service]
 Type=simple
-ExecStart=/srv/crew/agent/current/bin/crew-vmctl serve
+ExecStart=/srv/crew/root/current/bin/crew-vmctl serve
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal

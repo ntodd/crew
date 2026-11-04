@@ -13,7 +13,7 @@ RequiresMountsFor=/srv/crew
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/srv/crew/agent/current/bin/crew-vmctl net-up
+ExecStart=/srv/crew/root/current/bin/crew-vmctl net-up
 
 [Install]
 WantedBy=multi-user.target

@@ -48,7 +48,12 @@ descriptors from the agent.
 
 They're in `etc/systemd/`, shipped in the agent tarball's `etc/systemd/`;
 the box's Ignition installs them into `/etc/systemd/system`. Every unit
-runs `/srv/crew/agent/current/bin/crew-vmctl`.
+runs `/srv/crew/root/current/bin/crew-vmctl`, and crew-vmctl runs jailer
+and Firecracker from the same `bin/`: `root/<version>/` is installed by
+root from the release, and `root/current` links to the one in use, all
+root's. Not `agent/current/bin` as §11.3 has it: the agent can write
+`agent/` (it updates itself there). The `root` prefix is a constant
+under the data directory, not a setting.
 
 crew-vmctl's settings come from its units, never from the agent:
 `--data-dir` (default `/srv/crew`) and `CREW_VM_NET` (default
@@ -165,9 +170,9 @@ systemd-run --unit=crew-vm-<vm_id> --collect \
   -p StandardOutput=append:/srv/crew/jail/firecracker/<vm_id>/console.log \
   -p StandardError=append:/srv/crew/jail/firecracker/<vm_id>/fc.stderr \
   -p LogRateLimitIntervalSec=10 -p LogRateLimitBurst=1000 \
-  -p "ExecStopPost=/srv/crew/agent/current/bin/crew-vmctl exited <vm_id>" \
-  -- /srv/crew/agent/current/bin/jailer \
-       --id <vm_id> --exec-file /srv/crew/agent/current/bin/firecracker \
+  -p "ExecStopPost=/srv/crew/root/current/bin/crew-vmctl exited <vm_id>" \
+  -- /srv/crew/root/current/bin/jailer \
+       --id <vm_id> --exec-file /srv/crew/root/current/bin/firecracker \
        --uid <200000 + lease> --gid <200000 + lease> --chroot-base-dir /srv/crew/jail \
        -- --config-file /fc.json --no-api
 ```
@@ -311,11 +316,13 @@ sudo CREW_REAL_IMAGE_DIR=/srv/crew/kvm-image native/crew-vmctl/kvm/run.sh   # --
 
 - `CREW_REAL_IMAGE_DIR` holds `Image` (arm64) or `kernel`, and
   `rootfs.ext4`. Put it on `/srv/crew`'s filesystem (not in `agent/`,
-  `vms/`, `images/` or `jail/`) and it's reflinked rather than copied.
+  `root/`, `vms/`, `images/` or `jail/`) and it's reflinked rather than
+  copied.
 - `/srv/crew` must be an XFS with reflink, and not a real box's: the
-  script refuses an `agent/` it didn't make.
+  script refuses an `agent/` or `root/` it didn't make.
 - It fetches and checks the pinned Firecracker, builds crew-vmctl,
-  installs both and the units (runtime units in `/run/systemd/system`,
+  installs both into `root/kvm-test` with `root/current` linking to it,
+  and the units (runtime units in `/run/systemd/system`,
   with the socket's group root, since the tests run as root), starts
   crew-net and the socket, runs the suite, checks the host for anything
   left (units, taps, `vm_pairs` elements, jails) and takes it all down.
@@ -338,7 +345,9 @@ about 1.9 s after `vm.start`.
   that collide.
 - **Directories:** `/srv/crew` root's 0755, `/srv/crew/jail` root's 0755
   (crew-vmctl makes it if it's missing, and refuses one anyone else can
-  write); `agent/`, `vms/`, `images/` the agent's.
+  write); `/srv/crew/root/<version>/{bin,etc}` and the `root/current`
+  link, root's, from the release; `agent/`, `vms/`, `images/` the
+  agent's.
 - **Units:** the four in `etc/systemd/`, enabled: `crew-net.service`,
   `crew-vmctl.socket`, `crew-net-site4.timer`.
 - **crew-agent.service:** `ReadWritePaths=` gets `/srv/crew/jail` as well
