@@ -848,3 +848,52 @@ The other spikes are recorded here as they run.
   pending or a run is under way. It's audited as `crew.update` with
   `from` and `to`. The page polls the updater's `status/` every 2 s
   while it works.
+- **The release key is held to a committed file,**
+  `packaging/release/release-key.pub`, not a key compiled into
+  `crew_protocol` (§20.1's check): no piece compiles a key in; the
+  control plane, the agent and the Ignition all take
+  `CREW_RELEASE_PUBLIC_KEY` at runtime. The check job requires the
+  `CREW_RELEASE_PUBLIC_KEY` repository variable (what the images are
+  built with) to be that file's key, and the sign job's `sign.sh
+  --public-key-file` refuses a secret whose public half isn't it. So
+  the secret, the variable and the images agree, and changing the key
+  is a reviewed commit.
+- **Versions come from the tag.** Every `mix.exs` reads `CREW_VERSION`
+  (the image tools' now too), and the check job reads each one with it
+  set and requires the tag's version, which is how "the tag equals
+  every `mix.exs` version" holds without a version bump commit. A
+  build has to pass `CREW_VERSION` through: the smoke test fails a
+  tarball whose `bin/crew_agent version` isn't the tag's.
+  `build-linux.sh` passes `VERSION` into its build container, not
+  `CREW_VERSION`, so today its releases report 0.1.0 (found by running
+  the smoke test on a real linux-arm64 build).
+- **One sign job for everything.** `guest-image.yml` signed and
+  verified its own manifests on tag pushes; it no longer runs on tags,
+  release.yml calls it, and the release's sign job signs its manifests
+  with the tarballs, so one job uses `release-signing`. `verify` then
+  checks both with the committed key.
+- **No separate cache job:** `build-linux.sh` makes a target's agent and
+  cache tarballs together, so the agents job's Linux legs are §20.1's
+  items 3 and 4. The native job is a gate (build, version, signature,
+  `govulncheck`); the tarball builds compile their own helpers.
+- **The supply-chain verdicts are enforced:** `docs/releases/<tag>.md`
+  is the release notes and holds the review (§20.4); the check job
+  fails on a missing review, an unknown verdict, or a suspicious one.
+- **`govulncheck` fails today:** Go 1.24.5's standard library has
+  reachable vulnerabilities fixed in later patches (GO-2025-3956,
+  GO-2025-4010 and eight more, through `crew-vz`), so a release stops
+  at the native job until Go is bumped (`mise.toml`, `native/go.mod`).
+  CI doesn't run `govulncheck` yet for the same reason.
+- **The images start once before they're pushed** (SQLite): `/healthz`,
+  and no "wasn't registered" in the log for the tarballs and manifests
+  baked in.
+- **Ordering:** the GitHub release is published after the images and
+  `:latest`, so a control plane that sees a release (its update check
+  reads the releases) can pull it. A host that follows `:latest` with
+  `docker compose pull` can get the image a few minutes before the
+  release exists; its mirror fails to download the guest files until
+  then and is retried at the next boot.
+- **Not built yet:** `e2e/release-check.sh` (the aarch64 conformance on
+  the M3, attached to the release); the x86_64 guest image and its
+  conformance run on a hosted runner (guest-image.yml is arm64 only);
+  Foreman's DinD run of the updater (`e2e/updater/run.sh` there).
