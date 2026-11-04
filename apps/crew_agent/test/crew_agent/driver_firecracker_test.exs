@@ -398,6 +398,14 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     end
   end
 
+  test "the guest's console is Firecracker's 8250 UART, ttyS0, on both arches", ctx do
+    args = CrewAgent.VM.boot_args(ctx.config, CrewAgent.Net.lease(3), "id", "tok")
+    assert args =~ ~r/^console=ttyS0 /
+    refute args =~ "ttyAMA0"
+    assert args =~ "quiet loglevel=4"
+    assert args =~ "crew.api=http://10.199.0.1:7777"
+  end
+
   describe "box.restart (§12.1)" do
     test "goes through crew-vmctl reboot, which checks the boot id", ctx do
       boot = CrewProtocol.uuid()

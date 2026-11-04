@@ -218,12 +218,16 @@ defmodule CrewAgent.VM do
     end
   end
 
-  @doc "The kernel command line (§13.3)."
+  @doc """
+  The kernel command line (§13.3). Firecracker's serial port is an 8250
+  UART on arm64 too, so it's ttyS0 there, not §13.3's ttyAMA0 (a PL011,
+  which Firecracker doesn't have: the guest found no console).
+  """
   def boot_args(config, lease, vm_id, token) do
     console =
       case {config.driver, guest_arch()} do
         {"vz", _} -> "console=hvc0 panic=1 quiet loglevel=4"
-        {_, "arm64"} -> "console=ttyAMA0 panic=1 quiet loglevel=4"
+        {_, "arm64"} -> "console=ttyS0 panic=1 quiet loglevel=4"
         _ -> "console=ttyS0 reboot=k panic=1 pci=off quiet loglevel=4"
       end
 
