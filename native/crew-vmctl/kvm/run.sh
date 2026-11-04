@@ -166,17 +166,20 @@ if [ "$native" = 1 ]; then
   (cd "$repo/apps/crew_agent" && export MIX_ENV=test CREW_REAL_IMAGE_DIR="$image" &&
     mix deps.get && mix test --only kvm) || status=$?
 else
-  # muontrap compiles a C port: the image plus make and a compiler.
-  if ! dock image inspect crew-kvm-elixir:local >/dev/null 2>&1; then
-    printf 'FROM %s\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends make gcc libc6-dev >/dev/null && rm -rf /var/lib/apt/lists/*\n' \
-      "$ELIXIR_IMAGE" | dock build --network host -q -t crew-kvm-elixir:local -
+  # The image, plus make and a compiler (muontrap compiles a C port) and
+  # nft (a test changes the ruleset, as root on the host's network, so the
+  # container has NET_ADMIN).
+  tag=crew-kvm-elixir:2
+  if ! dock image inspect "$tag" >/dev/null 2>&1; then
+    printf 'FROM %s\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends make gcc libc6-dev nftables >/dev/null && rm -rf /var/lib/apt/lists/*\n' \
+      "$ELIXIR_IMAGE" | dock build --network host -q -t "$tag" -
   fi
   mkdir -p "$work/mix" "$work/hex"
-  dock run --rm --network host --cgroupns host --device /dev/kvm --device /dev/net/tun \
+  dock run --rm --network host --cgroupns host --cap-add NET_ADMIN --device /dev/kvm --device /dev/net/tun \
     -v "$data:$data" -v /run/crew:/run/crew -v "$image:$image:ro" -v "$repo:/src" \
     -v "$work/mix:/root/.mix" -v "$work/hex:/root/.hex" \
     -e MIX_ENV=test -e CREW_REAL_IMAGE_DIR="$image" -w /src/apps/crew_agent \
-    crew-kvm-elixir:local sh -c 'mix local.hex --force --if-missing >/dev/null &&
+    "$tag" sh -c 'mix local.hex --force --if-missing >/dev/null &&
       mix local.rebar --force --if-missing >/dev/null && mix deps.get >/dev/null &&
       mix test --only kvm' || status=$?
 fi

@@ -74,7 +74,7 @@ range's capacity less one (16,383 for a /16). `force` is a boolean.
 
 | Verb | Arguments | Does |
 |---|---|---|
-| `start` | `vm_id` | Reads `vms/<vm_id>/vm.json` and `fc.json`, checks them (below), lays out the jail and runs the VM's unit. Refused (`already_launched`) if the unit is live or the jail directory exists: a VM is launched once. |
+| `start` | `vm_id` | Reads `vms/<vm_id>/vm.json` and `fc.json`, checks them (below), checks the packet filter itself (as `nft-verify`, refilling a short `site4` once), lays out the jail and runs the VM's unit. Refused (`already_launched`) if the unit is live or the jail directory exists: a VM is launched once. Refused (`nft_mismatch`, `site4_not_ready`) if the filter doesn't verify, whatever the agent last saw. |
 | `stop` | `vm_id`, `force` | `systemctl kill --kill-whom=main --signal=SIGKILL` (force) or `systemctl stop --no-block` the unit. `not_found` if it isn't running. Only the main process, the VMM: killing the whole cgroup (systemd uses `cgroup.kill`) also kills the `ExecStopPost` forked into it a moment later, and the exit record with it. |
 | `status` | `vm_id` | The unit's `ActiveState` (`gone` once systemd has dropped it), `SubState`, main PID, and the exit record once there is one. |
 | `list` | | Every `crew-vm-*` unit systemd knows. |
@@ -266,7 +266,24 @@ objects differently). Objects are matched by kind and name and rules by
 position in their chain; handles, counters and the elements of
 `vm_pairs` and `site4` are ignored. Anything else is a mismatch: a rule,
 an order, a policy, a priority, a `blocked4` range, an extra chain or
-set, the cap's limit.
+set, the cap's limit. `site4`'s elements are checked separately: it must
+hold everything crew-net puts there.
+
+**When it doesn't verify:**
+
+- `start` runs the same check itself, so no VM starts on a box whose
+  filter is off, whatever the agent last saw. That costs every start the
+  check: on the M3's Flatcar VM `nft-verify` takes 46 to 55 ms (most of
+  it the reference load in a fresh namespace), and the agent's whole
+  `vm.start` is answered in about 160 ms. Twenty starts at once load
+  twenty reference rulesets, in parallel, in their own namespaces.
+- The agent checks every 60 s (and when a start finds the last verdict
+  bad). A filter crew-vmctl says doesn't verify, twice in a row, gets
+  every VM on the box killed (`killed_stop`, detail
+  `firewall_not_verified`), and no VM starts until a check passes again.
+  A crew-vmctl the agent can't reach refuses starts but kills nothing
+  (stops go through it too), and nor does an egress address the agent
+  hasn't learned yet: neither says the filter is off.
 
 ## Real VMs: the `:kvm` suite
 

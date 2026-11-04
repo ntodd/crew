@@ -181,10 +181,10 @@ func showing(state string) func(argv []string) (string, error) {
 
 func TestStart(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
-	sys := newFake()
+	box := newBox(t)
+	sys := box.fakeSys
 	sys.agent[vmID+"/vm.json"] = vmJSON(now.Unix() + 3600)
 	sys.agent[vmID+"/fc.json"] = encode(t, agentFC())
-	sys.answer = showing("")
 	s := server(t, sys, now)
 
 	resp := handle(t, s, `{"verb":"start","vm_id":"`+vmID+`"}`)
@@ -202,6 +202,53 @@ func TestStart(t *testing.T) {
 	vm, _ := ParseVM(vmJSON(now.Unix()+3600), vmID, testNet(t), now)
 	if !sys.ran(SystemdRunArgv(vm, paths, now)...) {
 		t.Fatalf("commands: %q", sys.cmds)
+	}
+	// It checked the packet filter itself first.
+	if !sys.ran("nft", "-j", "list", "table", "inet", "crew") || !sys.ran("nft", "-j", "list", "set", "inet", "crew", "site4") {
+		t.Fatalf("commands: %q", sys.cmds)
+	}
+}
+
+// crew-vmctl doesn't count on the agent having noticed (§14.2): every
+// start checks the ruleset and site4 itself.
+func TestStartRefusesWithoutAVerifiedFilter(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	setup := func(b *testBox) *fakeSys {
+		b.agent[vmID+"/vm.json"] = vmJSON(now.Unix() + 3600)
+		b.agent[vmID+"/fc.json"] = encode(t, agentFC())
+		return b.fakeSys
+	}
+
+	flushed := newBox(t)
+	flushed.table = `{"nftables":[{"metainfo":{}}]}`
+	r := handle(t, server(t, setup(flushed), now), `{"verb":"start","vm_id":"`+vmID+`"}`)
+	if r.OK || r.Error != ErrNftMismatch || len(flushed.jails) != 0 || flushed.ran("systemd-run") {
+		t.Fatalf("a flushed ruleset: %+v", r)
+	}
+
+	// site4 that's short is refilled, and the start goes ahead.
+	short := newBox(t)
+	short.site4 = []string{"198.51.100.20/32"}
+	inner := short.answer
+	short.answer = func(argv []string) (string, error) {
+		if strings.Join(argv, " ") == "nft -f -" {
+			short.site4 = []string{"192.168.64.0/24", "198.51.100.20/32"}
+		}
+		return inner(argv)
+	}
+	if r := handle(t, server(t, setup(short), now), `{"verb":"start","vm_id":"`+vmID+`"}`); !r.OK {
+		t.Fatalf("a short site4, refilled: %+v", r)
+	}
+	if !short.ran("nft", "-f", "-") {
+		t.Fatal("site4 wasn't refilled")
+	}
+
+	// One that stays short is refused.
+	stuck := newBox(t)
+	stuck.site4 = nil
+	r = handle(t, server(t, setup(stuck), now), `{"verb":"start","vm_id":"`+vmID+`"}`)
+	if r.OK || r.Error != ErrSite4NotReady || len(stuck.jails) != 0 || stuck.ran("systemd-run") {
+		t.Fatalf("site4 that won't fill: %+v", r)
 	}
 }
 

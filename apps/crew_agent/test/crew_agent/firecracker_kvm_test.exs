@@ -131,6 +131,15 @@ defmodule CrewAgent.FirecrackerKVMTest do
     assert caps.firewall_ok
     assert caps.driver_version =~ ~r/^firecracker 1\.17\.0/
 
+    # What each start pays for crew-vmctl's own check (README).
+    ms =
+      for _ <- 1..5 do
+        {us, {:ok, _}} = :timer.tc(fn -> Firecracker.vmctl(%{"verb" => "nft-verify"}) end)
+        div(us, 1000)
+      end
+
+    IO.puts("  nft-verify took #{Enum.join(ms, ", ")} ms")
+
     for f <- ~w(kvm tun cgroup2 xfs_reflink systemd),
         do: assert(f in caps.features, "missing #{f}")
 
@@ -156,9 +165,69 @@ defmodule CrewAgent.FirecrackerKVMTest do
     Monitor.reset()
   end
 
+  @tamper "crew_kvm_test"
+
+  test "a ruleset that stops verifying cuts running VMs off, and nothing starts until it verifies again",
+       ctx do
+    nft =
+      System.find_executable("nft") || flunk("the :kvm suite needs nft, to change the ruleset")
+
+    vm_id = start(ctx)
+    lease = lease(ctx, vm_id)
+    # Without its pair it never gets its payload, so it stays up.
+    assert {:ok, _} = Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease})
+
+    # Someone adds a rule.
+    {_, 0} =
+      System.cmd(nft, [
+        "add",
+        "rule",
+        "inet",
+        "crew",
+        "input",
+        "accept",
+        "comment",
+        ~s("#{@tamper}")
+      ])
+
+    # crew-vmctl's start checks for itself, whatever the agent last saw.
+    assert {:error, "start_failed", why} = Handler.handle(command(ctx))
+    assert why =~ "nft_mismatch"
+
+    Monitor.tick()
+    exited = await("vm.exited", &(&1.vm_id == vm_id), 15_000)
+    assert exited.payload.reason == "killed_stop"
+    assert exited.payload.detail == "firewall_not_verified"
+    assert {:error, "start_failed", why} = Handler.handle(command(ctx))
+    assert why =~ "firewall_not_ready"
+
+    untamper(nft)
+    Monitor.tick()
+    assert Monitor.firewall_ok?()
+    assert_clean(ctx, vm_id, lease)
+  after
+    if nft = System.find_executable("nft"), do: untamper(nft)
+  end
+
+  defp untamper(nft) do
+    {out, 0} = System.cmd(nft, ["-j", "-a", "list", "chain", "inet", "crew", "input"])
+
+    for %{"rule" => %{"comment" => @tamper, "handle" => h}} <- Jason.decode!(out)["nftables"] do
+      {_, 0} =
+        System.cmd(nft, ["delete", "rule", "inet", "crew", "input", "handle", to_string(h)])
+    end
+
+    :ok
+  end
+
   test "a real VM boots and fetches its payload, then powers off by itself", ctx do
     started = System.monotonic_time(:millisecond)
     vm_id = start(ctx)
+
+    IO.puts(
+      "\n  vm.start was answered #{System.monotonic_time(:millisecond) - started} ms after it came"
+    )
+
     lease = lease(ctx, vm_id)
     assert Firecracker.alive?(vm_id)
     assert File.exists?("/sys/class/net/crewt#{lease}")

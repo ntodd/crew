@@ -180,6 +180,11 @@ func (s *Server) start(ctx context.Context, vmID string, peer Peer) (Response, e
 	if st.State != "gone" && st.State != "inactive" && st.State != "failed" {
 		return Response{}, fail(ErrAlreadyLaunch, "%s is %s", Unit(vmID), st.State)
 	}
+	// The packet filter, checked here rather than trusted to the agent's
+	// last look: no VM starts on a box whose rules don't verify.
+	if err := s.ensureFilter(ctx); err != nil {
+		return Response{}, err
+	}
 	if err := s.Sys.PrepareJail(Jail{VM: vm, Config: cfg, Owner: peer}); err != nil {
 		return Response{}, err
 	}
@@ -395,6 +400,23 @@ func (s *Server) nftVerify(ctx context.Context) (*Site4Status, error) {
 		return nil, err
 	}
 	return s.site4Ready(ctx)
+}
+
+// ensureFilter is start's check: the ruleset must verify, and site4 must
+// be loaded, refilled once if it's short (crew-net's to fill, so that's
+// no one else's say).
+func (s *Server) ensureFilter(ctx context.Context) error {
+	if err := s.verifyRuleset(ctx); err != nil {
+		return err
+	}
+	if _, err := s.site4Ready(ctx); err == nil {
+		return nil
+	}
+	if err := s.RefreshSite4(ctx); err != nil {
+		return fail(ErrSite4NotReady, "refilling site4: %v", err)
+	}
+	_, err := s.site4Ready(ctx)
+	return err
 }
 
 func (s *Server) verifyRuleset(ctx context.Context) error {

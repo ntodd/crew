@@ -360,7 +360,7 @@ defmodule CrewAgent.VM do
   @impl true
   def handle_call(msg, _from, %{exited: true} = state)
       when msg == :payload or msg == :control or
-             (is_tuple(msg) and elem(msg, 0) in [:state, :steps, :log, :metrics, :stop]),
+             (is_tuple(msg) and elem(msg, 0) in [:state, :steps, :log, :metrics, :stop, :kill]),
       do: {:reply, {:error, :no_vm}, state}
 
   def handle_call(:payload, _from, %{payload_fetched: false, payload: payload} = state)
@@ -480,6 +480,11 @@ defmodule CrewAgent.VM do
 
   def handle_call({:stop, force, grace_s}, _from, state) do
     {:reply, :ok, request_stop(state, force, grace_s)}
+  end
+
+  # The agent's own kill (an unverified packet filter): forced, with why.
+  def handle_call({:kill, detail}, _from, state) do
+    {:reply, :ok, request_stop(%{state | exit_detail: state.exit_detail || detail}, true, 0)}
   end
 
   def handle_call({:log_ack, epoch, seq}, _from, %{epoch: epoch} = state) do

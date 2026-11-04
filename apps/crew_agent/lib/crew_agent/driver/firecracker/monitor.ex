@@ -21,7 +21,7 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
 
   require Logger
 
-  alias CrewAgent.{Config, Site}
+  alias CrewAgent.{Config, Site, VMs}
   alias CrewAgent.Driver.Firecracker
   alias CrewAgent.Driver.Firecracker.Console
 
@@ -55,7 +55,13 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
           s
       end
 
-    if ok?(s), do: :ok, else: {:error, why(s)}
+    if ok?(s) do
+      :ok
+    else
+      # The monitor acts on a bad verdict (it may be news).
+      verify_soon()
+      {:error, why(s)}
+    end
   end
 
   @doc "The last verdict: `%{filter: ..., egress: ..., site4_egress: ...}`, or nil."
@@ -97,20 +103,20 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
 
   @impl true
   def handle_call(:tick, _from, state) do
-    verify()
+    enforce()
     cap_consoles()
     {:reply, :ok, state}
   end
 
   @impl true
   def handle_info(:verify, state) do
-    verify()
+    enforce()
     Process.send_after(self(), :verify, @verify_ms)
     {:noreply, state}
   end
 
   def handle_info(:verify_now, state) do
-    verify()
+    enforce()
     {:noreply, state}
   end
 
@@ -121,6 +127,46 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # A verdict, and if crew-vmctl says the filter doesn't verify (twice:
+  # one look may catch crew-net mid-load), every VM on the box is killed.
+  # Starts are refused until a verdict is good again. Not when crew-vmctl
+  # can't be reached (it's also how VMs are stopped), nor for an egress
+  # address the agent hasn't learned yet: neither says the filter is off.
+  defp enforce do
+    cond do
+      verify() -> :ok
+      not filter_failed?() -> :ok
+      verify() -> :ok
+      filter_failed?() -> cut_off(why(status()))
+      true -> :ok
+    end
+  end
+
+  defp filter_failed? do
+    case status() do
+      %{filter: {:error, "unreachable: " <> _}} -> false
+      %{filter: {:error, _}} -> true
+      _ -> false
+    end
+  end
+
+  defp cut_off(why) do
+    listed =
+      case Firecracker.list() do
+        {:ok, ids} -> ids
+        _ -> []
+      end
+
+    ids = Enum.uniq(VMs.running_ids() ++ listed)
+
+    Logger.error(
+      "the packet filter doesn't verify (#{why}): killing the box's #{length(ids)} VMs"
+    )
+
+    for id <- ids, do: VMs.kill(id, "firewall_not_verified")
+    :ok
+  end
 
   @doc "Takes a verdict now and keeps it; true when it's good."
   def verify do

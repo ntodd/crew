@@ -482,6 +482,84 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     end
   end
 
+  describe "a filter that stops verifying (§14.2)" do
+    defp filter(ctx, verdict) do
+      vmctl(ctx, fn
+        %{"verb" => "nft-verify"} ->
+          case :counters.get(verdict, 1) do
+            0 ->
+              %{"ok" => true, "site4" => %{"prefixes" => []}}
+
+            1 ->
+              %{
+                "ok" => false,
+                "error" => "nft_mismatch",
+                "detail" => "table inet crew isn't loaded"
+              }
+
+            2 ->
+              %{"ok" => false, "error" => "unreachable", "detail" => "enoent"}
+          end
+
+        %{"verb" => "list"} ->
+          %{"ok" => true, "vms" => ["vm-a", "vm-b"]}
+
+        _ ->
+          %{"ok" => true}
+      end)
+    end
+
+    test "cuts the box's VMs off, and nothing starts until it verifies again", ctx do
+      verdict = :counters.new(1, [])
+      filter(ctx, verdict)
+      pid = start_supervised!({Monitor, interval: :manual})
+      Monitor.tick(pid)
+      assert :ok = Firecracker.start(spec(ctx.config))
+      FakeVmctl.requests()
+
+      # Someone flushes the ruleset.
+      :counters.put(verdict, 1, 1)
+      Monitor.tick(pid)
+      verbs = FakeVmctl.requests()
+      stops = for %{"verb" => "stop", "force" => true, "vm_id" => id} <- verbs, do: id
+      assert Enum.sort(stops) == ["vm-a", "vm-b"]
+      # It looked twice before it acted.
+      assert Enum.count(verbs, &(&1["verb"] == "nft-verify")) == 2
+
+      assert {:error, "firewall_not_ready: nft_mismatch: " <> _} =
+               Firecracker.start(spec(ctx.config))
+
+      refute Enum.any?(FakeVmctl.requests(), &(&1["verb"] in ["tap-add", "start"]))
+
+      :counters.put(verdict, 1, 0)
+      Monitor.tick(pid)
+      assert :ok = Firecracker.start(spec(ctx.config))
+    end
+
+    test "a crew-vmctl that can't be reached refuses starts but kills nothing", ctx do
+      verdict = :counters.new(1, [])
+      :counters.put(verdict, 1, 2)
+      filter(ctx, verdict)
+      pid = start_supervised!({Monitor, interval: :manual})
+      Monitor.tick(pid)
+      refute Enum.any?(FakeVmctl.requests(), &(&1["verb"] in ["list", "stop"]))
+
+      assert {:error, "firewall_not_ready: unreachable: " <> _} =
+               Firecracker.start(spec(ctx.config))
+    end
+
+    test "an egress address not yet learned holds starts back but leaves running VMs alone",
+         ctx do
+      Application.put_env(:crew_agent, :egress_echo_url, "https://echo.invalid")
+      verdict = :counters.new(1, [])
+      filter(ctx, verdict)
+      pid = start_supervised!({Monitor, interval: :manual})
+      Monitor.tick(pid)
+      refute Enum.any?(FakeVmctl.requests(), &(&1["verb"] in ["list", "stop"]))
+      assert {:error, "firewall_not_ready: " <> _} = Firecracker.start(spec(ctx.config))
+    end
+  end
+
   describe "the monitor" do
     test "verifies the ruleset at start and on each tick (§14.2)", ctx do
       verdict = :counters.new(1, [])
