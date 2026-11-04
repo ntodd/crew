@@ -2,3 +2,4 @@ out
 work
 tools/_build
 tools/deps
+tools/tmp
