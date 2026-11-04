@@ -6,6 +6,7 @@ defmodule CrewAgent.Application do
   def start(_type, _args) do
     config = CrewAgent.Config.load()
     CrewAgent.Config.put(config)
+    rollback_if_due(config)
     File.mkdir_p!(CrewAgent.Config.vms_dir(config))
     File.mkdir_p!(CrewAgent.Config.images_dir(config))
 
@@ -55,6 +56,24 @@ defmodule CrewAgent.Application do
       max_seconds: 60,
       name: CrewAgent.Supervisor
     )
+  end
+
+  # An update that hasn't joined within 5 minutes of its first start on
+  # this boot goes back now, however often it has restarted since
+  # (§20.2): before anything starts, so there's nothing to stop.
+  defp rollback_if_due(config) do
+    case CrewAgent.Updater.on_start(config) do
+      :ok ->
+        :ok
+
+      {:stop, status} ->
+        IO.puts(
+          :stderr,
+          "crew_agent: rolling back an update that hasn't joined; exiting #{status}"
+        )
+
+        System.halt(status)
+    end
   end
 
   defp null_supervisor(%{driver: "null"}),

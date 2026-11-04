@@ -992,9 +992,17 @@ plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
     120 s) fails it into `crew-agent-rollback.service`, as Foreman's; on
     a Mac, `crew-launch` counts starts in `agent/crashes` while an update
     is pending and switches back at the third within 120 s.
-  - **No join within 5 minutes** (timed from the later of the install and
-    the start): on a Mac the agent switches back itself and exits 1. On a
-    Firecracker box root's half has to move too, so it exits 75, which
+  - **No join within 5 minutes of the release's first start on this
+    boot:** the first start is kept in the marker (`first_start_at`,
+    `boot_id`) by every start of the agent (`Updater.on_start/2`, before
+    anything else starts), and counts through any number of restarts. A
+    release that dies every minute or so never trips the crash-loop
+    limits above, and a timer per process (the first version: the later
+    of the install and the process's start) restarted with each one; now
+    the start after the 5 minutes, or the watchdog every 30 s, rolls it
+    back. A host reboot (another boot id) starts the 5 minutes again. On
+    a Mac the agent switches back itself and exits 1. On a Firecracker
+    box root's half has to move too, so it exits 75, which
     `crew-agent.service` doesn't restart (`RestartPreventExitStatus=75`):
     the unit fails, and the rollback unit runs.
 - **Root's half on Linux** never comes from the agent's directory. The

@@ -227,7 +227,7 @@ defmodule CrewAgent.Connection do
   # refused (§20.2). The service manager catches the crash loops.
   def handle_info(:update_watchdog, socket) do
     unless socket.assigns.joined do
-      case Updater.watchdog(socket.assigns.config, running_since(), System.os_time(:second)) do
+      case Updater.watchdog(socket.assigns.config, System.os_time(:second)) do
         {:stop, status} -> System.stop(status)
         :ok -> :ok
       end
@@ -296,12 +296,6 @@ defmodule CrewAgent.Connection do
   catch
     kind, reason ->
       {:error, {:push_failed, Exception.format_banner(kind, reason)}}
-  end
-
-  # When this agent (the BEAM) started, in Unix seconds.
-  defp running_since do
-    {uptime_ms, _} = :erlang.statistics(:wall_clock)
-    System.os_time(:second) - div(uptime_ms, 1000)
   end
 
   defp describe({:upgrade_failure, %{status_code: status}}), do: "refused with HTTP #{status}"
