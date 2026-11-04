@@ -199,9 +199,15 @@ defmodule Crew.Images.ReleaseTest do
       assert Repo.reload!(pinned).mirror_state == "ready"
       assert Enum.count(releases, fn {i, _} -> Repo.reload!(i).mirror_state == "ready" end) == 4
 
-      # Fetching an evicted image again is a mirror like any other.
-      assert {:ok, _} = Images.fetch_again(admin_scope(), Repo.reload!(oldest))
+      # Rolling back to an evicted image pins it, which fetches it again
+      # and keeps it once it's back.
+      assert {:ok, _} = Images.pin(admin_scope(), Repo.reload!(oldest))
       assert_enqueued(worker: Mirror, args: %{"image_id" => oldest.id})
+      {_, r} = hd(releases)
+      serve(r)
+      :ok = perform_job(Mirror, %{"image_id" => oldest.id})
+      assert Repo.reload!(oldest).mirror_state == "ready"
+      assert Images.defaults()["arm64"].default == oldest.id
     end
 
     test "a mirror without room fails before downloading", %{key: key} do

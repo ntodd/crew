@@ -77,20 +77,21 @@ defmodule CrewWeb.ImagesLiveTest do
     assert has_element?(view, "#runner-freshness", "22 days")
   end
 
-  test "an image whose files aren't mirrored yet says so, and can't be pinned", %{conn: conn} do
-    pending =
+  test "an image whose files couldn't be fetched says why, and can be tried again", %{conn: conn} do
+    failed =
       image("1.2.0", mirror_state: "failed", mirror_error: "downloading the rootfs got HTTP 404")
 
     {:ok, view, _} = live(conn, ~p"/admin/images")
-    assert has_element?(view, "#image-#{pending.id}", "HTTP 404")
-    refute has_element?(view, "#pin-#{pending.id}")
+    assert has_element?(view, "#image-#{failed.id}", "HTTP 404")
+    view |> element("#fetch-#{failed.id}") |> render_click()
+    assert Repo.reload!(failed).mirror_state == "pending"
   end
 
   test "members can't see it" do
     assert get(log_in(build_conn(), user_fixture()), ~p"/admin/images").status == 404
   end
 
-  test "an evicted image can be fetched again", %{conn: conn} do
+  test "pinning an image whose files were let go fetches them first", %{conn: conn} do
     old =
       image("0.9.0",
         mirror_state: "evicted",
@@ -99,9 +100,11 @@ defmodule CrewWeb.ImagesLiveTest do
 
     {:ok, view, _} = live(conn, ~p"/admin/images")
     assert has_element?(view, "#image-#{old.id}", "files let go")
+    refute has_element?(view, "#fetch-#{old.id}")
 
-    view |> element("#fetch-#{old.id}") |> render_click()
-    assert Repo.reload!(old).mirror_state == "pending"
+    view |> element("#pin-#{old.id}") |> render_click()
+    old = Repo.reload!(old)
+    assert old.pinned and old.mirror_state == "pending"
     assert has_element?(view, "#image-#{old.id}", "fetching")
   end
 end

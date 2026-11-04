@@ -121,34 +121,38 @@ defmodule Crew.Images do
 
   @doc """
   Pins an image as its arch's default (§20.4); rolling back is pinning
-  the previous one. Only a mirrored image can be pinned. Audited.
+  the previous one. An image whose files aren't on the control plane
+  (let go, or a fetch that failed) is fetched again first: the pin keeps
+  it from being let go, and it's the default once it's back. Audited.
   """
   def pin(%Crew.Scope{} = scope, %Image{} = image) do
-    cond do
-      not Crew.Scope.admin?(scope) ->
-        {:error, :unauthorized}
+    if Crew.Scope.admin?(scope) do
+      {:ok, image} =
+        Repo.transaction(fn ->
+          Repo.update_all(from(i in Image, where: i.arch == ^image.arch and i.pinned),
+            set: [pinned: false]
+          )
 
-      image.mirror_state != "ready" ->
-        {:error, :not_mirrored}
+          changes =
+            if image.mirror_state == "ready",
+              do: [pinned: true],
+              else: [pinned: true, mirror_state: "pending", mirror_error: nil]
 
-      true ->
-        {:ok, image} =
-          Repo.transaction(fn ->
-            Repo.update_all(from(i in Image, where: i.arch == ^image.arch and i.pinned),
-              set: [pinned: false]
-            )
+          Repo.update!(Ecto.Changeset.change(image, changes))
+        end)
 
-            Repo.update!(Ecto.Changeset.change(image, pinned: true))
-          end)
+      image = ensure_mirror(image)
 
-        Crew.Audit.log(scope, "image.pin", image, %{
-          "version" => image.version,
-          "arch" => image.arch
-        })
+      Crew.Audit.log(scope, "image.pin", image, %{
+        "version" => image.version,
+        "arch" => image.arch
+      })
 
-        changed()
-        Crew.Scheduler.poke()
-        {:ok, image}
+      changed()
+      Crew.Scheduler.poke()
+      {:ok, image}
+    else
+      {:error, :unauthorized}
     end
   end
 
@@ -227,7 +231,7 @@ defmodule Crew.Images do
     :ok
   end
 
-  @doc "Fetches an evicted (or failed) image's files again. Admins only; audited."
+  @doc "Fetches a failed image's files again. Admins only; audited."
   def fetch_again(%Crew.Scope{} = scope, %Image{} = image) do
     if Crew.Scope.admin?(scope) do
       image =
