@@ -441,9 +441,11 @@ The other spikes are recorded here as they run.
   offset). Touches are written in batches every 2 s. `CREW_CACHE_MAX_GIB`
   defaults to a quarter of the disk holding the cache directory, from
   `df` at start.
-- **Counters** (`GET /stats`) run from the cache's start. A hit is an
-  object served from the store, a miss one fetched; a tag request counts
-  as its manifest. `bytes_stored` is what the store holds now, per host;
+- **Counters** (`GET /stats`) run from the cache's start, and
+  `instance`, a random id made at each start and never saved, names the
+  run: the agent keeps its delta baseline across its own restarts and
+  resets it when `instance` changes. A hit is an object served from the
+  store, a miss one fetched; a tag request counts as its manifest. `bytes_stored` is what the store holds now, per host;
   `top` is the 10 repositories that served the most bytes. Per-host
   `mismatches` are there for `cache_stats`.
 - **Management** updates are partial (what isn't sent is unchanged) and

@@ -46,6 +46,17 @@ defmodule CrewCache.MgmtTest do
     end
   end
 
+  test "GET /stats names the cache's run, so a reader can tell the counters restarted",
+       %{ctx: ctx, tmp_dir: dir} do
+    %{"instance" => instance} = mgmt(ctx, :get, "/stats").body
+    assert instance =~ ~r/\A[0-9a-f]{32}\z/
+    assert mgmt(ctx, :get, "/stats").body["instance"] == instance
+
+    stop_supervised!(CrewCache)
+    ctx = start_cache_for(ctx, Path.join(dir, "cache"))
+    refute mgmt(ctx, :get, "/stats").body["instance"] == instance
+  end
+
   describe "POST /config" do
     test "applies and persists enabled hosts and the allowlist", %{ctx: ctx, tmp_dir: dir} do
       FakeRegistry.put_image("someone/tool", "1", layers())

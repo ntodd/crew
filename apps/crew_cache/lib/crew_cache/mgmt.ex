@@ -7,7 +7,7 @@ defmodule CrewCache.Mgmt do
 
   | Endpoint | Body | Answer |
   |---|---|---|
-  | `GET /stats` | | `{hosts: [{host, hits, misses, bytes_served, bytes_stored, mismatches}], evictions, digest_mismatches, top: [{host, repo, hits, bytes_served}], store: {bytes, max_bytes, objects}}` |
+  | `GET /stats` | | `{instance, hosts: [{host, hits, misses, bytes_served, bytes_stored, mismatches}], evictions, digest_mismatches, top: [{host, repo, hits, bytes_served}], store: {bytes, max_bytes, objects}}` |
   | `POST /config` | any of `enabled_hosts`, `allowlist`, `parent` ({url, token, ca_pem} or null), `rotate_ca`, `site4` | `{ok: true, ca_rotated}`, or 422 `{error}` |
   | `POST /purge` | `{scope}`: `all`, `host:<host>` or `repo:<host>/<repository>` | `{ok: true, removed, bytes}` |
   | `POST /evict` | `{target_bytes}` | `{ok: true, evicted, bytes, store_bytes}` |
@@ -15,8 +15,10 @@ defmodule CrewCache.Mgmt do
   | `GET /host` | | `{reboot_required, packages, boot_id}` |
 
   `hosts` lists every compiled host. Counters run from the cache's
-  start; `bytes_stored` is what the store holds now. `top` is the 10
-  repositories that served the most bytes since the start.
+  start, and `instance` (32 hex digits, random at each start, never
+  saved) names that run: a reader keeping deltas resets its baseline
+  when it changes. `bytes_stored` is what the store holds now. `top` is
+  the 10 repositories that served the most bytes since the start.
   """
   @behaviour Plug
 
@@ -97,6 +99,7 @@ defmodule CrewCache.Mgmt do
             "mismatches" => counters.mismatches
           }
         end,
+      "instance" => Stats.instance(),
       "evictions" => snapshot.evictions,
       "digest_mismatches" => snapshot.digest_mismatches,
       "top" => snapshot.top,

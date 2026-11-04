@@ -90,9 +90,21 @@ defmodule CrewCache.Stats do
     end)
   end
 
+  @doc """
+  A random id for this run of the counters, made when they start and
+  never saved: when it changes, they started again from zero.
+  """
+  def instance, do: :persistent_term.get({__MODULE__, :instance}, nil)
+
   @impl true
   def init(_) do
     :ets.new(@table, [:named_table, :public, :set, write_concurrency: true])
+
+    :persistent_term.put(
+      {__MODULE__, :instance},
+      Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    )
+
     {:ok, nil}
   end
 end
