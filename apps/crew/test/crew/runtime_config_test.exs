@@ -159,6 +159,35 @@ defmodule Crew.RuntimeConfigTest do
     assert_raise RuntimeError, ~r/CREW_ENCRYPTION_KEYS_RETIRED/, fn -> vault_keys() end
   end
 
+  # In the control plane's container (docker/compose.yml), loopback is
+  # the container's own: compose publishes both ports on the host's
+  # loopback, so both listeners have to be on the container's address.
+  describe "the webhook listener" do
+    setup do
+      saved = System.get_env("CREW_LISTEN_IP")
+
+      on_exit(fn ->
+        if saved,
+          do: System.put_env("CREW_LISTEN_IP", saved),
+          else: System.delete_env("CREW_LISTEN_IP")
+      end)
+
+      System.delete_env("CREW_LISTEN_IP")
+    end
+
+    test "is on loopback by default, as the UI is" do
+      c = config(%{})
+      assert c[:hook_ip] == {127, 0, 0, 1}
+      assert c[CrewWeb.Endpoint][:http][:ip] == {127, 0, 0, 1}
+    end
+
+    test "listens where CREW_LISTEN_IP says, with the UI" do
+      c = config(%{"CREW_LISTEN_IP" => "0.0.0.0"})
+      assert c[:hook_ip] == {0, 0, 0, 0}
+      assert c[CrewWeb.Endpoint][:http][:ip] == {0, 0, 0, 0}
+    end
+  end
+
   # A development Flatcar VM reaches the Mac's control plane on the
   # vmnet bridge (192.168.64.1), not loopback.
   describe "development" do
