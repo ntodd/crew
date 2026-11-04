@@ -88,7 +88,10 @@ defmodule CrewCache.CacheCase do
         decode_body: false,
         compressed: false,
         receive_timeout: 15_000,
-        connect_options: [transport_opts: [verify: :verify_none]]
+        connect_options: [
+          transport_opts: [verify: :verify_none],
+          protocols: Map.get(ctx, :protocols, [:http1])
+        ]
       ] ++ opts
     )
   end
