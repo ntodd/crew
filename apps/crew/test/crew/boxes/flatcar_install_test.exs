@@ -94,6 +94,8 @@ defmodule Crew.Boxes.FlatcarInstallTest do
     assert env =~ "CREW_BOX_NAME=m3max\n"
     assert env =~ "CREW_DATA_DIR=#{ctx.data}\n"
     assert env =~ "CREW_DRIVER=firecracker\n"
+    # The box cache (crew-cache.service) is managed on loopback (§15.8).
+    assert env =~ "CREW_CACHE_MGMT_URL=http://127.0.0.1:7780\n"
     assert env =~ "CREW_RELEASE_PUBLIC_KEY=#{Base.encode64(ctx.key.public)}\n"
     refute env =~ "CREW_DEV"
     assert File.stat!(Path.join(agent, "env")).mode |> Bitwise.band(0o777) == 0o600
