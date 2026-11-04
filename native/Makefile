@@ -2,6 +2,7 @@
 # builds never touch the network.
 #
 #   make            build and ad-hoc sign crew-vz (VZ refuses unsigned binaries)
+#   make hostvm-dev a Flatcar host VM with nested virtualization, for development
 #   make test vet   unit tests and vet
 #   make guest      build the integration-test guest (Docker) into ../tmp/crew-vz-guest
 #   make integration  boot real VMs (macOS, needs the guest)
@@ -15,13 +16,18 @@ GUEST := $(abspath ../tmp/crew-vz-guest)
 export GOFLAGS := -mod=vendor
 export GOPROXY := off
 
-.PHONY: all crew-vz test vet guest integration vendor clean
+.PHONY: all crew-vz hostvm-dev test vet guest integration vendor clean
 
 all: crew-vz
 
 crew-vz:
 	CGO_ENABLED=1 $(GO) build -trimpath -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./crew-vz/cmd/crew-vz
 	codesign --force -s - --entitlements entitlements.plist $(BIN)
+
+# Development only: a Linux host VM with nested virtualization (e2e/hostvm).
+hostvm-dev:
+	CGO_ENABLED=1 $(GO) build -trimpath -o hostvm-dev/hostvm-dev ./hostvm-dev
+	codesign --force -s - --entitlements entitlements.plist hostvm-dev/hostvm-dev
 
 test:
 	$(GO) test ./...
