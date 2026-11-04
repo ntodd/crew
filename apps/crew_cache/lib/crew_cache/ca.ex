@@ -99,8 +99,9 @@ defmodule CrewCache.CA do
     File.chmod!(ca_dir(dir), 0o700)
 
     state = %{dir: dir, ip: ip, chain: nil}
-    state = %{state | chain: ensure_chain(state)}
-    ensure_leaf(state, false)
+    {chain, new?} = ensure_chain(state)
+    state = %{state | chain: chain}
+    ensure_leaf(state, new?)
     Process.send_after(self(), :check, @check_ms)
     {:ok, state}
   end
@@ -120,14 +121,16 @@ defmodule CrewCache.CA do
   @impl true
   def handle_info(:check, state) do
     Process.send_after(self(), :check, @check_ms)
-    state = %{state | chain: ensure_chain(state)}
-    ensure_leaf(state, false)
+    {chain, new?} = ensure_chain(state)
+    state = %{state | chain: chain}
+    ensure_leaf(state, new?)
     {:noreply, state}
   end
 
+  # The chain, and whether it's new: a new chain always gets a new leaf.
   defp ensure_chain(%{dir: dir, ip: ip} = state) do
     chain = load_chain(dir)
-    if chain && usable?(chain, ip), do: chain, else: new_chain(state)
+    if chain && usable?(chain, ip), do: {chain, false}, else: {new_chain(state), true}
   end
 
   defp new_chain(%{dir: dir, ip: ip}) do
@@ -147,19 +150,30 @@ defmodule CrewCache.CA do
   end
 
   defp ensure_leaf(%{dir: dir, ip: ip, chain: chain}, force?) do
-    if force? or not fresh_leaf?(dir, chain) do
+    if force? or not fresh_leaf?(dir, chain, ip) do
       {leaf, key} = Certs.leaf(chain, ip)
       write_leaf(dir, chain, leaf, key)
       :ssl.clear_pem_cache()
     end
   end
 
-  defp fresh_leaf?(dir, chain) do
+  # The leaf on disk is kept only if the current intermediate signed it
+  # (not just a certificate with its name: every intermediate has the
+  # same one), it's for the listen IP, its key is the one beside it, and
+  # it's under a day old.
+  defp fresh_leaf?(dir, chain, {a, b, c, d}) do
     with {:ok, pem} <- File.read(file(dir, "leaf.pem")),
-         true <- File.exists?(file(dir, "leaf.key")),
+         {:ok, key_pem} <- File.read(file(dir, "leaf.key")),
          [{_, leaf, _} | _] <- :public_key.pem_decode(pem),
-         true <- :public_key.pkix_is_issuer(leaf, chain.intermediate) do
-      {not_before, _} = leaf |> Certs.decode() |> Certs.validity()
+         cert = Certs.decode(leaf),
+         true <-
+           :public_key.pkix_verify(
+             leaf,
+             chain.intermediate |> Certs.decode() |> Certs.public_key()
+           ),
+         {_, [{:iPAddress, <<^a, ^b, ^c, ^d>>}]} <- Certs.ext(cert, :subject_alt_name),
+         true <- Certs.public_of(Certs.key_from_pem(key_pem)) == Certs.public_key(cert) do
+      {not_before, _} = Certs.validity(cert)
       # Leaves start an hour back (Certs.leaf/3).
       DateTime.diff(DateTime.utc_now(), not_before, :second) < @leaf_max_age_s + 3600
     else
