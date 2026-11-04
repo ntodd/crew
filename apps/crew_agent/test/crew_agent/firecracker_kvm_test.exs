@@ -19,6 +19,7 @@ defmodule CrewAgent.FirecrackerKVMTest do
   alias CrewAgent.{Config, Handler, Images, VM, VMs}
   alias CrewAgent.Driver.Firecracker
   alias CrewAgent.Driver.Firecracker.Monitor
+  alias CrewAgent.VMs.Cleanup
 
   @moduletag :kvm
   @moduletag timeout: 300_000
@@ -163,6 +164,44 @@ defmodule CrewAgent.FirecrackerKVMTest do
     Application.delete_env(:crew_agent, :egress_echo_url)
     :persistent_term.erase({CrewAgent.Site, :egress})
     Monitor.reset()
+  end
+
+  test "a cleanup crew-vmctl can't do keeps the VM's record, lease and jail until a retry works",
+       ctx do
+    vm_id = start(ctx, %{"deadline" => System.os_time(:second) + 15})
+    lease = lease(ctx, vm_id)
+    jail = Path.join([ctx.config.data_dir, "jail", "firecracker", vm_id])
+    # Without its pair it never gets its payload, so it stays up.
+    assert {:ok, _} = Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease})
+
+    # crew-vmctl is out of reach when systemd kills it at its deadline.
+    Config.put(%{ctx.config | vmctl_socket: "/run/crew/nowhere.sock"})
+    exited = await("vm.exited", &(&1.vm_id == vm_id), 60_000)
+    assert exited.payload.reason == "killed_deadline"
+    assert exited.payload.cleanup == "error"
+    assert Cleanup.pending?(vm_id)
+    assert File.dir?(jail)
+    assert {:error, :taken} = CrewAgent.Net.claim(CrewProtocol.uuid7(), lease)
+
+    Config.put(ctx.config)
+    Cleanup.retry_all()
+    refute Cleanup.pending?(vm_id)
+    assert_clean(ctx, vm_id, lease)
+    assert {:ok, _} = CrewAgent.Net.claim(other = CrewProtocol.uuid7(), lease)
+    CrewAgent.Net.release(other)
+  after
+    Config.put(ctx.config)
+    Monitor.verify()
+  end
+
+  test "a jail the agent has no record of is cleaned up", ctx do
+    orphan = CrewProtocol.uuid7()
+    jail = Path.join([ctx.config.data_dir, "jail", "firecracker", orphan])
+    File.mkdir_p!(Path.join(jail, "root"))
+    assert {:ok, ids} = Firecracker.leftovers()
+    assert orphan in ids
+    Cleanup.reconcile()
+    refute File.exists?(jail)
   end
 
   @tamper "crew_kvm_test"

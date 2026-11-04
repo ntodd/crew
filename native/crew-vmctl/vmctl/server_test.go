@@ -338,6 +338,15 @@ func TestList(t *testing.T) {
 	if !sys.ran("systemctl", "list-units", "--all", "--plain", "--no-legend", "--no-pager", "--type=service", "crew-vm-*") {
 		t.Fatalf("%q", sys.cmds)
 	}
+
+	// And the jails it holds, unit or not, so the agent can find any it
+	// has no record of.
+	dir := paths.JailDir("x")[:len(paths.JailDir("x"))-1]
+	sys.globs[dir+"*"] = []string{dir + vmID, dir + "0195f3a2-0000-7000-8000-00000000dead", dir + "not-a-uuid"}
+	r = handle(t, server(t, sys, time.Now()), `{"verb":"list"}`)
+	if !reflect.DeepEqual(r.Jails, []string{vmID, "0195f3a2-0000-7000-8000-00000000dead"}) {
+		t.Fatalf("%+v", r)
+	}
 }
 
 func TestTaps(t *testing.T) {

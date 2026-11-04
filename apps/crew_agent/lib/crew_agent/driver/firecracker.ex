@@ -362,25 +362,52 @@ defmodule CrewAgent.Driver.Firecracker do
   end
 
   @impl true
+  # The unit, the jail (and with it the clone's other link), the pair and
+  # the tap. Any of them failing is an error: the agent keeps the VM's
+  # lease and retries (CrewAgent.VMs.Cleanup).
   def cleanup(vm_id) do
     config = Config.get()
     dir = Config.vm_dir(config, vm_id)
-    _ = vmctl(%{"verb" => "cleanup", "vm_id" => vm_id})
 
-    # The lease's pair and tap, in case the start failed before
-    # crew-vmctl recorded it (cleanup does those it recorded).
-    with {:ok, body} <- File.read(Path.join(dir, "vm.json")),
-         {:ok, %{"lease_index" => index}} when is_integer(index) <- Jason.decode(body) do
-      _ = vmctl(%{"verb" => "pair-del", "lease_index" => index})
-      _ = vmctl(%{"verb" => "tap-del", "lease_index" => index})
-    end
+    # fc.json has the guest's token in its boot args: it goes regardless.
+    File.rm(Path.join(dir, "fc.json"))
 
     if :ets.whereis(Monitor.stats_table()) != :undefined,
       do: :ets.delete(Monitor.stats_table(), vm_id)
 
-    # fc.json has the guest's token in its boot args.
-    File.rm(Path.join(dir, "fc.json"))
-    :ok
+    with {:ok, _} <- vmctl_ok(%{"verb" => "cleanup", "vm_id" => vm_id}) do
+      # The lease's pair and tap too, in case the start failed before
+      # crew-vmctl recorded the lease (cleanup does the one it recorded).
+      case lease_index(dir) do
+        nil -> :ok
+        index -> drop_lease(index)
+      end
+    end
+  end
+
+  defp drop_lease(index) do
+    with {:ok, _} <- vmctl_ok(%{"verb" => "pair-del", "lease_index" => index}),
+         {:ok, _} <- vmctl_ok(%{"verb" => "tap-del", "lease_index" => index}),
+         do: :ok
+  end
+
+  defp lease_index(dir) do
+    with {:ok, body} <- File.read(Path.join(dir, "vm.json")),
+         {:ok, %{"lease_index" => index}} when is_integer(index) <- Jason.decode(body),
+         do: index,
+         else: (_ -> nil)
+  end
+
+  @doc """
+  Every VM crew-vmctl holds something for, a unit or a jail, for the
+  agent to hold against its own records at start.
+  """
+  @impl true
+  def leftovers do
+    case vmctl(%{"verb" => "list"}) do
+      {:ok, resp} -> {:ok, Enum.uniq(Map.get(resp, "vms", []) ++ Map.get(resp, "jails", []))}
+      {:error, code, detail} -> {:error, "#{code}: #{detail}"}
+    end
   end
 
   # crew-vmctl's exit record (written by the unit's ExecStopPost), in the

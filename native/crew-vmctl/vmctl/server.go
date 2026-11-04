@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -70,6 +71,7 @@ type Response struct {
 	Detail  string       `json:"detail,omitempty"`
 	VM      *VMStatus    `json:"vm,omitempty"`
 	VMs     []string     `json:"vms,omitempty"`
+	Jails   []string     `json:"jails,omitempty"`
 	Already bool         `json:"already,omitempty"`
 	Info    *Info        `json:"info,omitempty"`
 	Site4   *Site4Status `json:"site4,omitempty"`
@@ -123,7 +125,7 @@ func (s *Server) handle(ctx context.Context, r Request, peer Peer) (Response, er
 		return Response{VM: st}, err
 	case "list":
 		ids, err := s.list(ctx, false)
-		return Response{VMs: ids}, err
+		return Response{VMs: ids, Jails: s.jails()}, err
 	case "tap-add":
 		return Response{}, s.tapAdd(ctx, r.Lease)
 	case "tap-del":
@@ -307,6 +309,18 @@ func (s *Server) cleanup(ctx context.Context, vmID string, peer Peer) error {
 }
 
 func leaseFile(p Paths, vmID string) string { return p.JailDir(vmID) + "/lease" }
+
+// jails is the VMs with a jail directory, live or not: what cleanup
+// still has to remove.
+func (s *Server) jails() []string {
+	ids := []string{}
+	for _, dir := range s.Sys.Glob(s.Paths.JailDir("*")) {
+		if id := filepath.Base(dir); IsUUID(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
 
 func (s *Server) waitGone(ctx context.Context, vmID string, max time.Duration) error {
 	deadline := time.Now().Add(max)
