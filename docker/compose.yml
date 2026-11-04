@@ -1,0 +1,59 @@
+# The control plane on its host (spec §5.2), from the images the release
+# workflow publishes; Foreman's compose project for Crew. Settings go in
+# /etc/crew/crew.env (0600, root's), so run compose as root:
+#
+#   sudo docker compose -f compose.yml up -d
+#
+# To upgrade by hand, pull the new image and recreate the container.
+# Migrations run on boot, and the image registers the agents, caches and
+# guest images it carries:
+#
+#   sudo docker compose -f compose.yml pull
+#   sudo docker compose -f compose.yml up -d
+#
+# CREW_IMAGE (in a .env beside this file) picks the image, e.g.
+# ghcr.io/ntodd/crew:0.3.0, or ghcr.io/ntodd/crew:0.3.0-pg for Postgres.
+# Pin a version to choose when you upgrade; without one it follows the
+# newest release.
+#
+# Both ports are published on the host's loopback only. People reach the
+# UI through `tailscale serve` on 443, and GitHub reaches the webhook
+# endpoint through Tailscale Funnel on 8443 (§5.3, §6.2):
+#
+#   tailscale serve --bg http://127.0.0.1:4000
+#   tailscale funnel --bg --https=8443 http://127.0.0.1:4001
+name: crew
+
+services:
+  crew:
+    image: ${CREW_IMAGE:-ghcr.io/ntodd/crew:latest}
+    container_name: crew
+    restart: unless-stopped
+    # raw: values reach the app as written, the way docker run --env-file
+    # passes them, so a $ in a password isn't expanded (Compose 2.30+).
+    env_file:
+      - path: /etc/crew/crew.env
+        format: raw
+    environment:
+      # The container's own loopback isn't reachable through the published
+      # ports, so the app listens on the container's address. The host
+      # side stays on loopback (ports, below).
+      CREW_LISTEN_IP: 0.0.0.0
+    ports:
+      - "127.0.0.1:4000:4000"
+      - "127.0.0.1:4001:4001"
+    # No Docker socket, no capabilities, and a read-only root: the app
+    # writes only to its volume and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      # The database (SQLite), logs and mirrored guest images.
+      - crew-data:/var/lib/crew
+
+volumes:
+  crew-data:
+    name: crew-data

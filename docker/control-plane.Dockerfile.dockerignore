@@ -1,0 +1,18 @@
+# docker/control-plane.Dockerfile's build context is the repo; it gets only
+# what the Dockerfile copies, without build output.
+*
+!apps/crew
+!apps/crew_protocol
+!images/flatcar/VERSION
+!docker/release
+!docker/crew-update
+**/_build
+**/deps
+**/tmp
+**/cover
+**/node_modules
+**/*.db
+**/*.db-*
+**/erl_crash.dump
+apps/crew/priv/static/assets
+apps/crew/priv/static/cache_manifest.json

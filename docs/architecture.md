@@ -773,3 +773,37 @@ The other spikes are recorded here as they run.
 - **`crew-box reimage`** wraps the given Ignition in one that merges it
   (`ignition.config.merge`, a `data:` URL) and adds the launcher's own
   SSH key for `crew-box ssh`.
+
+## Release and update notes
+
+- **The control plane's image** is `docker/control-plane.Dockerfile`,
+  Foreman's with Crew's names, built once per database (`CREW_DB`; the
+  release is compiled for one). Both base images are pinned by digest.
+  The app runs as `crew` (uid and gid 9000, fixed so the data volume
+  stays the app's whatever a newer base image does with system users);
+  the release under `/app` is root's, so the app can't change what it
+  runs, and its scratch files go to `/tmp` (`RELEASE_TMP`). The
+  compose file adds a read-only root, a tmpfs `/tmp`, no capabilities
+  and `no-new-privileges`, and no Docker socket.
+- **What the image carries:** the signed tarballs in
+  `/app/release/agents` and the signed guest manifests in
+  `/app/release/images`, from `docker/release/` at build time
+  (`CREW_AGENT_RELEASE_DIR`, `CREW_IMAGE_RELEASE_DIR`). The kernel and
+  rootfs aren't in it; the mirror downloads them from the release. The
+  release key's public half is baked in as `CREW_RELEASE_PUBLIC_KEY`'s
+  default, so a fresh deployment trusts the key its image's files were
+  signed with; the env file can still override it.
+- **Both listeners follow `CREW_LISTEN_IP`.** The webhook listener was
+  fixed on 127.0.0.1 (§6.2), which in a container is the container's
+  own loopback and can't be published. compose sets `CREW_LISTEN_IP` to
+  `0.0.0.0` and publishes 4000 and 4001 on the host's loopback only, so
+  §6.2's `127.0.0.1:4001` holds on the host.
+- **Client addresses in the container:** Docker's proxy hands the app
+  connections from the bridge's gateway, not loopback, so
+  `CrewWeb.ClientIP` doesn't trust `X-Forwarded-For` there and rate
+  limits key on the gateway: every client shares one budget each for
+  unsigned webhooks (60 a minute), sign-ins (20 a minute) and failed
+  enrollments. That's stricter, not looser, but someone on the tailnet
+  sending bad join tokens could hold up a real enrollment for the
+  window. Foreman's image has the same property. Trusting the gateway
+  would need a configured proxy list; not done.
