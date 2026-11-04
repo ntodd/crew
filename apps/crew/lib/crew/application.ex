@@ -25,6 +25,7 @@ defmodule Crew.Application do
         Crew.GitHub.InstallationTokens,
         {Oban, Application.fetch_env!(:crew, Oban)},
         Crew.VMs,
+        Crew.Logs,
         Crew.Setup,
         CrewWeb.Endpoint
       ] ++ background()

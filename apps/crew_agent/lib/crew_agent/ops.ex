@@ -19,6 +19,7 @@ defmodule CrewAgent.Ops do
   require Logger
 
   @max_done 500
+  @notifications ~w(vm.log.ack vm.log.resend)
 
   def start_link(opts) do
     {name, opts} = Keyword.pop(opts, :name, __MODULE__)
@@ -50,6 +51,18 @@ defmodule CrewAgent.Ops do
   def handle_call({:submit, %Command{type: "op.cancel"} = cmd}, _from, state) do
     state = cancel(state, cmd.payload.target_op_id)
     state.sink.(result_event(cmd.op_id, :ok))
+    {:reply, :accepted, state}
+  end
+
+  # Log acks and resends (§16.2) come every second per VM and change
+  # nothing worth a result: they're handled at once, with no op.result.
+  def handle_call({:submit, %Command{type: type} = cmd}, _from, state) when type in @notifications do
+    try do
+      state.handler.(cmd)
+    rescue
+      e -> Logger.warning("#{type} failed: #{Exception.message(e)}")
+    end
+
     {:reply, :accepted, state}
   end
 

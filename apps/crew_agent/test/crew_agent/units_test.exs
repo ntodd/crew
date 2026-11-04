@@ -115,6 +115,29 @@ defmodule CrewAgent.UnitsTest do
       refute_received :ran
     end
 
+    test "log acks and resends are notifications: handled at once, with no op.result" do
+      test = self()
+
+      {:ok, ops} =
+        Ops.start_link(
+          name: nil,
+          handler: fn cmd -> send(test, {:ran, cmd.type}) && :ok end,
+          sink: &send(test, {:sink, &1})
+        )
+
+      vm = CrewProtocol.uuid7()
+
+      for {type, payload} <- [
+            {"vm.log.ack", %{"vm_id" => vm, "epoch" => "0123456789abcdef", "seq" => 3}},
+            {"vm.log.resend", %{"vm_id" => vm, "epoch" => "0123456789abcdef", "from_seq" => 2}}
+          ] do
+        {:ok, cmd} = CrewProtocol.Command.new(type, payload)
+        assert :accepted = Ops.submit(ops, cmd)
+        assert_receive {:ran, ^type}
+        refute_receive {:sink, _}, 50
+      end
+    end
+
     test "errors carry a code and a message" do
       assert %{payload: %{status: "error", error: %{code: "image_not_ready", message: "x"}}} =
                Ops.result_event(CrewProtocol.uuid(), {:error, "image_not_ready", "x"})
