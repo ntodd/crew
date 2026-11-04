@@ -170,7 +170,19 @@ Error codes: `bad_request`, `unknown_op`, `not_found`, `invalid_config`,
 `already_running`, `already_exited` (vz-exited.json exists, so the disk has
 been used), `already_launched` (vz.pid exists), `start_failed` (the detail
 carries the helper's exit record), `not_running`, `cannot_request_stop`,
+`busy` (`restart` while VMs run, or `start` once a restart is under way),
 `internal`.
+
+**Updates** (spec §20.2). launchd runs crew-vzd as
+`<data>/agent/current/bin/crew-vz`, the agent's release, which the agent
+updates. crew-vzd resolves that path (and `--sandbox`'s) when it starts,
+so it keeps launching helpers from the release it started from after the
+agent moves `current`. The agent then asks it to restart once no VM runs:
+
+| Op | Request | OK response |
+|---|---|---|
+| `version` | none | `version`: this build's (`-X main.version`) |
+| `restart` | none | Refused (`busy`) while any VM is running or starting. Otherwise it answers, refuses any `start` after, and exits; launchd (`KeepAlive`) starts the new release's. |
 
 ## The helper: `crew-vz run`
 

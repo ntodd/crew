@@ -51,6 +51,8 @@ type Options struct {
 	StartTimeout time.Duration // wait for a new helper's ctl.sock; default 30s
 	ForceWait    time.Duration // after stop force, wait this long before SIGKILL; default 5s
 	Logger       *slog.Logger
+	// Version is this build's, answered to `version`.
+	Version string
 }
 
 type entry struct {
@@ -73,6 +75,9 @@ type Daemon struct {
 	vms map[string]*entry
 	// starting guards against two concurrent starts of one VM.
 	starting map[string]bool
+	// restarting, once `restart` is accepted: no VM starts after it.
+	restarting bool
+	cancel     context.CancelFunc
 }
 
 // Run serves the control socket until ctx is done. Helpers keep running
@@ -101,12 +106,16 @@ func Run(ctx context.Context, o Options) error {
 		if err != nil {
 			return err
 		}
-		o.HelperPath = exe
+		if o.HelperPath, err = resolve(exe); err != nil {
+			return err
+		}
 	}
 	if !filepath.IsAbs(o.DataDir) || filepath.Clean(o.DataDir) != o.DataDir {
 		return fmt.Errorf("data dir %q must be absolute and clean", o.DataDir)
 	}
-	d := &Daemon{o: o, log: o.Logger, vms: map[string]*entry{}, starting: map[string]bool{}}
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	d := &Daemon{o: o, log: o.Logger, vms: map[string]*entry{}, starting: map[string]bool{}, cancel: stop}
 	d.adoptAll()
 
 	ln, err := ctlproto.Listen(o.SocketPath, 0o660)
@@ -237,6 +246,10 @@ func (d *Daemon) handle(ctx context.Context, r ctlproto.Request) ctlproto.Respon
 	switch r.Op {
 	case "list":
 		return d.list(ctx)
+	case "version":
+		return ctlproto.Response{OK: true, Version: d.o.Version}
+	case "restart":
+		return d.restart()
 	case "start", "stop", "status":
 	default:
 		return ctlproto.Fail(ctlproto.ErrUnknownOp, "unknown op %q", r.Op)
@@ -252,6 +265,31 @@ func (d *Daemon) handle(ctx context.Context, r ctlproto.Request) ctlproto.Respon
 	default:
 		return d.status(ctx, r.VMID)
 	}
+}
+
+// restart exits crew-vzd, for launchd (KeepAlive) to start it again
+// from the release the agent switched to (spec §20.2). Only while no VM
+// runs or is starting: helpers outlive the daemon, but a running VM
+// keeps the release it started with until it ends. Refused (busy)
+// otherwise, and the old crew-vzd keeps serving.
+func (d *Daemon) restart() ctlproto.Response {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if n := len(d.vms) + len(d.starting); n > 0 {
+		return ctlproto.Fail(ctlproto.ErrBusy, "%d VMs are running or starting", n)
+	}
+	d.restarting = true
+	d.log.Info("restarting for an update", "version", d.o.Version)
+	// After this answer is written.
+	time.AfterFunc(100*time.Millisecond, d.cancel)
+	return ctlproto.Response{OK: true}
+}
+
+// resolve follows the links in the daemon's own path (launchd runs
+// agent/current/bin/crew-vz), so helpers keep coming from the release
+// this daemon started from after an update moves current.
+func resolve(exe string) (string, error) {
+	return filepath.EvalSymlinks(exe)
 }
 
 func (d *Daemon) lookup(id string) *entry {
@@ -280,6 +318,10 @@ func (d *Daemon) start(ctx context.Context, r ctlproto.Request) ctlproto.Respons
 	}
 
 	d.mu.Lock()
+	if d.restarting {
+		d.mu.Unlock()
+		return ctlproto.Fail(ctlproto.ErrBusy, "crew-vzd is restarting for an update")
+	}
 	if d.starting[id] {
 		d.mu.Unlock()
 		return ctlproto.Fail(ctlproto.ErrAlreadyRunning, "%s is being started", id)
