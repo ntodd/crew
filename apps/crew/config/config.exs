@@ -64,7 +64,9 @@ config :crew, Oban,
        # §13.1: actions/runner's releases, for the runner's freshness.
        {"23 4 * * *", Crew.Images.Runner},
        # §20.4: the control plane's image files, checked and kept in bounds.
-       {"37 4 * * *", Crew.Images.Upkeep}
+       {"37 4 * * *", Crew.Images.Upkeep},
+       # §20.3: a newer Crew release, for the Deployment page.
+       {"11 5 * * *", Crew.Updates.Check}
      ]}
   ]
 

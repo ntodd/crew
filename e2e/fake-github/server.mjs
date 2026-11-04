@@ -35,6 +35,15 @@ const fresh = () => ({
   cancelled: [],       // run ids
   runners: [],         // {id, name, labels, repo_id, busy, job_id, listening}
   requests: [],        // every API call, for assertions
+  // Crew's own releases (§20.3), for the Deployment page's update check:
+  // one newer than the dev control plane's 0.1.0, and the kinds it
+  // passes over. POST /__fake/releases replaces them.
+  crewReleases: [
+    {tag_name: "v0.3.0-rc.1", draft: false, prerelease: true},
+    {tag_name: "v9.9.9", draft: true, prerelease: false},
+    {tag_name: "v0.2.0", draft: false, prerelease: false},
+    {tag_name: "v0.1.0", draft: false, prerelease: false},
+  ].map(r => ({...r, html_url: `${self}/ntodd/crew/releases/tag/${r.tag_name}`})),
 })
 
 let state = fresh()
@@ -289,6 +298,8 @@ route("GET", /^\/repos\/actions\/runner\/releases$/, (req, res) => {
     {tag_name: "v2.338.2", published_at: ago(40), draft: false, prerelease: false},
   ])
 })
+// Any other repo's releases are Crew's own (CREW_UPDATE_REPO).
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/releases$/, (req, res) => send(res, 200, state.crewReleases))
 route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs$/, (req, res, url, [, o, r]) => {
   const repo = repoByName(o, r)
   const status = url.searchParams.get("status")
@@ -551,6 +562,10 @@ route("POST", /^\/__fake\/ping$/, async (req, res) => {
 })
 
 
+route("POST", /^\/__fake\/releases$/, async (req, res) => {
+  state.crewReleases = await readBody(req)
+  send(res, 200, {ok: true})
+})
 route("GET", /^\/__fake\/state$/, (req, res) => send(res, 200, state))
 route("POST", /^\/__fake\/reset$/, (req, res) => { state = fresh(); send(res, 200, { ok: true }) })
 route("POST", /^\/__fake\/user$/, async (req, res) => {
