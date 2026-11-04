@@ -3,7 +3,6 @@ defmodule Crew.LogsTest do
   use Crew.VMCase
 
   alias Crew.Logs
-  alias Crew.VMs.VM
 
   @epoch "0123456789abcdef"
 
@@ -53,10 +52,12 @@ defmodule Crew.LogsTest do
   defp stored(vm_id),
     do: eventually(fn -> Logs.last_n(:vm, vm_id) end) && Logs.lines(:vm, vm_id, 1, 100_000)
 
-  defp texts(vm_id), do: Enum.map(stored(vm_id), & &1.text)
-
+  # The file is written before the row is updated, so a test can see the
+  # lines while the stream is still in that query. Killing it then takes
+  # the shared sandbox connection with it; let it finish first.
   defp stop_stream(vm_id) do
     [{pid, _}] = Registry.lookup(Crew.Registry, {:log_stream, vm_id})
+    :sys.get_state(pid)
     DynamicSupervisor.terminate_child(Crew.Logs.Supervisor, pid)
   end
 
