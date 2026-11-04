@@ -171,6 +171,13 @@ defmodule CrewAgent.FirecrackerKVMTest do
     assert {:ok, %{rss_mib: rss}} = Firecracker.stats(vm_id)
     assert rss > 0
 
+    # jailer gives the chroot to the VM's uid and gid; the directory it's
+    # in stays root's (native/crew-vmctl/README.md).
+    jail = Path.join([ctx.config.data_dir, "jail", "firecracker", vm_id])
+    assert %File.Stat{uid: 0, gid: 0} = File.stat!(jail)
+    assert %File.Stat{uid: uid, gid: gid} = File.stat!(Path.join(jail, "root"))
+    assert {uid, gid} == {200_000 + lease, 200_000 + lease}
+
     stopped = System.monotonic_time(:millisecond)
     VMs.stop(vm_id, true, 0)
     exited = await("vm.exited", &(&1.vm_id == vm_id), 15_000)

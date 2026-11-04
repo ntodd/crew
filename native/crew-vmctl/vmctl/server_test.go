@@ -30,8 +30,62 @@ type fakeSys struct {
 }
 
 func newFake() *fakeSys {
-	return &fakeSys{agent: map[string][]byte{}, root: map[string][]byte{}, wrote: map[string]string{},
-		created: map[string]string{}, exists: map[string]bool{}, globs: map[string][]string{}}
+	return &fakeSys{agent: map[string][]byte{}, wrote: map[string]string{},
+		created: map[string]string{}, exists: map[string]bool{}, globs: map[string][]string{},
+		// A Flatcar box's accounts, none in the VM range.
+		root: map[string][]byte{
+			"/etc/passwd":                  []byte("root:x:0:0:root:/root:/bin/bash\ncore:x:500:500::/home/core:/bin/bash\n"),
+			"/etc/group":                   []byte("root:x:0:\ncore:x:500:\n_crewagent:x:900:\n"),
+			"/usr/share/baselayout/passwd": []byte("nobody:x:65534:65534::/:/sbin/nologin\n"),
+			"/usr/share/baselayout/group":  []byte("nobody:x:65534:\n"),
+			"/etc/subuid":                  []byte(""),
+			"/etc/subgid":                  []byte(""),
+		}}
+}
+
+func TestVMIDsMustBeNobodys(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	// Lease 3: uid and gid 200003.
+	for name, f := range map[string]func(root map[string][]byte){
+		"a user has the uid": func(r map[string][]byte) {
+			r["/etc/passwd"] = append(r["/etc/passwd"], "build:x:200003:500::/:/bin/sh\n"...)
+		},
+		"a user's primary group is the gid": func(r map[string][]byte) {
+			r["/etc/passwd"] = append(r["/etc/passwd"], "build:x:1000:200003::/:/bin/sh\n"...)
+		},
+		"a group has the gid": func(r map[string][]byte) {
+			r["/etc/group"] = append(r["/etc/group"], "docker2:x:200003:\n"...)
+		},
+		"Flatcar's own users":  func(r map[string][]byte) { r["/usr/share/baselayout/passwd"] = []byte("x:x:200003:1::/:/bin/sh\n") },
+		"Flatcar's own groups": func(r map[string][]byte) { r["/usr/share/baselayout/group"] = []byte("x:x:200003:\n") },
+		"a subuid range":       func(r map[string][]byte) { r["/etc/subuid"] = []byte("core:200000:65536\n") },
+		"a subgid range":       func(r map[string][]byte) { r["/etc/subgid"] = []byte("core:199999:5\n") },
+		"no passwd to check":   func(r map[string][]byte) { delete(r, "/etc/passwd") },
+		"no group to check":    func(r map[string][]byte) { delete(r, "/etc/group") },
+	} {
+		for _, verb := range []string{`{"verb":"start","vm_id":"` + vmID + `"}`, `{"verb":"tap-add","lease_index":3}`} {
+			sys := newFake()
+			sys.agent[vmID+"/vm.json"] = vmJSON(now.Unix() + 3600)
+			sys.agent[vmID+"/fc.json"] = encode(t, agentFC())
+			sys.answer = showing("")
+			f(sys.root)
+			r := handle(t, server(t, sys, now), verb)
+			if r.OK || r.Error != ErrIDInUse {
+				t.Errorf("%s, %s: %+v", name, verb, r)
+			}
+			if len(sys.jails) != 0 || sys.ran("ip") || sys.ran("systemd-run") {
+				t.Errorf("%s, %s: went ahead: %q", name, verb, sys.cmds)
+			}
+		}
+	}
+
+	// Ranges that end before the uid, and lines that aren't entries, are fine.
+	sys := newFake()
+	sys.root["/etc/subuid"] = []byte("core:100000:65536\n# a comment\n\nbad line\n")
+	sys.root["/etc/subgid"] = []byte("core:100000:100003\n")
+	if r := handle(t, server(t, sys, now), `{"verb":"tap-add","lease_index":3}`); !r.OK {
+		t.Fatalf("%+v", r)
+	}
 }
 
 func (f *fakeSys) Run(_ context.Context, stdin []byte, argv ...string) ([]byte, error) {
