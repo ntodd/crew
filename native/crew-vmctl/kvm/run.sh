@@ -1,0 +1,205 @@
+#!/bin/sh
+# Runs the agent's :kvm suite (apps/crew_agent/test/crew_agent/firecracker_kvm_test.exs)
+# on this Linux host: real Firecracker VMs through crew-vmctl, as a box runs them.
+#
+#   sudo CREW_REAL_IMAGE_DIR=<dir> native/crew-vmctl/kvm/run.sh [--keep]
+#
+# CREW_REAL_IMAGE_DIR holds the guest image: `Image` (arm64) or `kernel`, and
+# `rootfs.ext4`. On /srv/crew's filesystem it's reflinked, not copied.
+#
+# From a checkout of this repo, it:
+#   1. checks the host: root, /dev/kvm, systemd, nft, iptables-nft, ip, and
+#      /srv/crew an XFS that isn't a real box's (no agent/ but this script's);
+#   2. downloads the pinned Firecracker for this arch (../firecracker.env) and
+#      checks its SHA-256;
+#   3. builds crew-vmctl (vendored, with no network);
+#   4. lays out /srv/crew/agent/current/{bin,etc} as the agent tarball does,
+#      puts the units in /run/systemd/system (runtime only, gone at reboot)
+#      and starts crew-net and crew-vmctl.socket;
+#   5. runs `mix test --only kvm` as root, on the host's network;
+#   6. checks nothing is left: crew-vm units, taps, vm_pairs elements, jails;
+#   7. takes it all down again, unless --keep.
+#
+# Go and Elixir are the ones on PATH (`go`, `mix`) if both are there. If not
+# (Flatcar has neither) it uses the pinned images below, through a dockerd of
+# its own, started for the run as a transient unit with no iptables rules and
+# no bridge, and stopped at the end. Its caches are in /var/lib/crew-kvm.
+set -eu
+
+GO_IMAGE=golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40
+ELIXIR_IMAGE=hexpm/elixir:1.20.4-erlang-29.1.1-ubuntu-noble-20260917@sha256:d6bafec523f681f19d430ac1e19884022576b19d93e57e0db013633c73385bd2
+
+here=$(cd "$(dirname "$0")" && pwd)
+vmctl_src=$(cd "$here/.." && pwd)
+repo=$(cd "$here/../../.." && pwd)
+data=/srv/crew
+work=/var/lib/crew-kvm
+marker=$data/.crew-kvm-test
+units="crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.service crew-net-site4.timer"
+docker_sock=/run/crew-kvm-docker.sock
+keep=0
+[ "${1:-}" = "--keep" ] && keep=1
+
+say() { echo "kvm: $*"; }
+die() {
+  echo "kvm: $*" >&2
+  exit 1
+}
+
+# -- 1. the host --------------------------------------------------------------
+
+[ "$(id -u)" = 0 ] || die "run as root (sudo)"
+[ -c /dev/kvm ] || die "there's no /dev/kvm"
+[ -n "${CREW_REAL_IMAGE_DIR:-}" ] || die "set CREW_REAL_IMAGE_DIR to the guest image's directory"
+image=$(cd "$CREW_REAL_IMAGE_DIR" && pwd)
+[ -f "$image/rootfs.ext4" ] || die "$image has no rootfs.ext4"
+[ -f "$image/Image" ] || [ -f "$image/kernel" ] || die "$image has no Image or kernel"
+for t in systemctl systemd-run nft iptables-nft-restore iptables-nft ip curl sha256sum tar; do
+  command -v "$t" >/dev/null || die "this host has no $t"
+done
+[ -d "$data" ] || die "$data doesn't exist (an XFS with reflink=1)"
+[ "$(stat -f -c %T "$data")" = xfs ] || die "$data must be an XFS (with reflink=1)"
+if [ -e "$data/agent" ] && [ ! -e "$marker" ]; then
+  die "$data/agent exists and this script didn't make it: is this a Crew box? Not here."
+fi
+case $image/ in
+  "$data"/agent/* | "$data"/vms/* | "$data"/images/* | "$data"/jail/*)
+    die "keep the image out of $data/{agent,vms,images,jail}"
+    ;;
+esac
+touch "$marker"
+mkdir -p "$work"
+
+case $(uname -m) in
+  x86_64) goarch=amd64 ;;
+  aarch64) goarch=arm64 ;;
+  *) die "Firecracker runs on x86_64 and aarch64, not $(uname -m)" ;;
+esac
+
+native=0
+command -v go >/dev/null && command -v mix >/dev/null && native=1
+
+dock() { DOCKER_HOST=unix://$docker_sock docker "$@"; }
+
+# shellcheck disable=SC2329 # the EXIT trap's
+teardown() {
+  status=$?
+  if [ "$keep" = 0 ]; then
+    say "taking it down"
+    systemctl stop crew-vmctl.socket crew-net-site4.timer crew-net.service 2>/dev/null || true
+    for u in $units; do rm -f "/run/systemd/system/$u"; done
+    systemctl daemon-reload
+    nft delete table inet crew 2>/dev/null || true
+    nft delete table ip mangle 2>/dev/null || true
+    ip link del crew0 2>/dev/null || true
+    rm -rf "$data/agent" "$data/vms" "$data/images" "$data/jail" "$marker" /run/crew
+  else
+    say "--keep: leaving crew-net, crew-vmctl.socket and $data as they are"
+  fi
+  if [ "$native" = 0 ]; then
+    systemctl stop crew-kvm-dockerd.service 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap teardown EXIT INT TERM
+
+if [ "$native" = 0 ]; then
+  command -v dockerd >/dev/null || die "needs go and mix on PATH, or dockerd for the pinned images"
+  if ! systemctl is-active -q crew-kvm-dockerd.service; then
+    say "starting a dockerd for the toolchains (no iptables, no bridge)"
+    systemd-run --quiet --unit=crew-kvm-dockerd --collect -p KillMode=mixed \
+      /usr/bin/env dockerd --iptables=false --ip6tables=false --bridge=none \
+      --data-root="$work/docker" --exec-root=/run/crew-kvm-docker \
+      --pidfile=/run/crew-kvm-docker.pid -H "unix://$docker_sock"
+  fi
+  i=0
+  until dock info >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ "$i" -lt 60 ] || die "the private dockerd didn't come up"
+    sleep 0.5
+  done
+fi
+
+# -- 2. Firecracker ---------------------------------------------------------------
+
+"$vmctl_src/fetch-firecracker.sh" "$work/firecracker" "$(uname -m)"
+
+# -- 3. crew-vmctl ------------------------------------------------------------------
+
+say "building crew-vmctl ($goarch)"
+mkdir -p "$work/bin"
+if [ "$native" = 1 ]; then
+  (cd "$repo/native" && CGO_ENABLED=0 GOFLAGS=-mod=vendor GOPROXY=off \
+    go build -trimpath -buildvcs=false -ldflags "-X main.version=kvm-test" \
+    -o "$work/bin/crew-vmctl" ./crew-vmctl/cmd/crew-vmctl)
+else
+  dock run --rm --network none -v "$repo/native:/src:ro" -v "$work/bin:/out" -w /src \
+    -e CGO_ENABLED=0 -e GOFLAGS=-mod=vendor -e GOPROXY=off -e GOCACHE=/tmp/go-cache \
+    "$GO_IMAGE" go build -trimpath -buildvcs=false -ldflags "-X main.version=kvm-test" \
+    -o /out/crew-vmctl ./crew-vmctl/cmd/crew-vmctl
+fi
+
+# -- 4. the box ---------------------------------------------------------------------
+
+say "installing into $data/agent/current and /run/systemd/system"
+install -d -m 0755 "$data/agent/current/bin" "$data/agent/current/etc/systemd" "$data/vms" "$data/images"
+install -m 0755 "$work/firecracker/firecracker" "$work/firecracker/jailer" "$work/bin/crew-vmctl" \
+  "$data/agent/current/bin/"
+cp "$vmctl_src/etc/nft.conf" "$vmctl_src/etc/connlimit.rules" "$data/agent/current/etc/"
+cp "$vmctl_src/etc/systemd/"* "$data/agent/current/etc/systemd/"
+# The tests run as root, so the socket's group is root's here.
+for u in $units; do
+  sed 's/^SocketGroup=_crewagent$/SocketGroup=root/' "$vmctl_src/etc/systemd/$u" >"/run/systemd/system/$u"
+done
+# shellcheck disable=SC2086 # $units is a list
+(cd /run/systemd/system && systemd-analyze verify $units 2>&1 | grep -v 'crew-agent.service\|crew-cache.service' || true)
+systemctl daemon-reload
+systemctl restart crew-net.service
+systemctl restart crew-vmctl.socket
+ip -br addr show crew0
+
+# -- 5. the tests ---------------------------------------------------------------------
+
+say "mix test --only kvm"
+status=0
+if [ "$native" = 1 ]; then
+  (cd "$repo/apps/crew_agent" && export MIX_ENV=test CREW_REAL_IMAGE_DIR="$image" &&
+    mix deps.get && mix test --only kvm) || status=$?
+else
+  # muontrap compiles a C port: the image plus make and a compiler.
+  if ! dock image inspect crew-kvm-elixir:local >/dev/null 2>&1; then
+    printf 'FROM %s\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends make gcc libc6-dev >/dev/null && rm -rf /var/lib/apt/lists/*\n' \
+      "$ELIXIR_IMAGE" | dock build --network host -q -t crew-kvm-elixir:local -
+  fi
+  mkdir -p "$work/mix" "$work/hex"
+  dock run --rm --network host --cgroupns host --device /dev/kvm --device /dev/net/tun \
+    -v "$data:$data" -v /run/crew:/run/crew -v "$image:$image:ro" -v "$repo:/src" \
+    -v "$work/mix:/root/.mix" -v "$work/hex:/root/.hex" \
+    -e MIX_ENV=test -e CREW_REAL_IMAGE_DIR="$image" -w /src/apps/crew_agent \
+    crew-kvm-elixir:local sh -c 'mix local.hex --force --if-missing >/dev/null &&
+      mix local.rebar --force --if-missing >/dev/null && mix deps.get >/dev/null &&
+      mix test --only kvm' || status=$?
+fi
+
+# -- 6. nothing left ---------------------------------------------------------------------
+
+left=$(systemctl list-units --all --plain --no-legend 'crew-vm-*' || true)
+[ -z "$left" ] || { echo "$left"; status=1; say "crew-vm units are left"; }
+if ip -br link | grep -q '^crewt'; then
+  ip -br link | grep '^crewt'
+  status=1
+  say "taps are left"
+fi
+if nft -j list set inet crew vm_pairs | grep -q '"elem"'; then
+  nft list set inet crew vm_pairs
+  status=1
+  say "vm_pairs isn't empty"
+fi
+if [ -n "$(ls -A "$data/jail/firecracker" 2>/dev/null)" ]; then
+  ls -la "$data/jail/firecracker"
+  status=1
+  say "jails are left"
+fi
+
+if [ "$status" = 0 ]; then say "passed"; else say "FAILED"; fi
+exit "$status"

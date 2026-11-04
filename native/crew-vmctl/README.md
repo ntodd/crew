@@ -239,6 +239,50 @@ position in their chain; handles, counters and the elements of
 an order, a policy, a priority, a `blocked4` range, an extra chain or
 set, the cap's limit.
 
+## Real VMs: the `:kvm` suite
+
+`apps/crew_agent/test/crew_agent/firecracker_kvm_test.exs` (tag `:kvm`,
+excluded by default) boots the guest image through the agent's own start
+path, crew-vmctl's socket, a systemd unit and jailer:
+
+- the host meets §11.3's requirements and the packet filter verifies;
+- a VM boots and crew-guest fetches its payload from `10.199.0.1:7777`;
+  with the example JIT config crew-guest then refuses to start the runner
+  and powers off, a clean exit (status 0);
+- a forced stop's `vm.exited` is `killed_stop`, status 137, within a
+  couple of seconds;
+- with its pair deleted the VM never reaches the guest API (`vm_pairs`
+  fails closed), and with its server gone (the agent away) systemd's
+  `RuntimeMaxSec` kills it at the deadline; adoption reports
+  `killed_deadline`;
+- after each, nothing is left: no unit, tap, jail or clone.
+
+`kvm/run.sh` runs it on a Linux host with KVM, from a checkout:
+
+```sh
+sudo CREW_REAL_IMAGE_DIR=/srv/crew/kvm-image native/crew-vmctl/kvm/run.sh   # --keep to leave it set up
+```
+
+- `CREW_REAL_IMAGE_DIR` holds `Image` (arm64) or `kernel`, and
+  `rootfs.ext4`. Put it on `/srv/crew`'s filesystem (not in `agent/`,
+  `vms/`, `images/` or `jail/`) and it's reflinked rather than copied.
+- `/srv/crew` must be an XFS with reflink, and not a real box's: the
+  script refuses an `agent/` it didn't make.
+- It fetches and checks the pinned Firecracker, builds crew-vmctl,
+  installs both and the units (runtime units in `/run/systemd/system`,
+  with the socket's group root, since the tests run as root), starts
+  crew-net and the socket, runs the suite, checks the host for anything
+  left (units, taps, `vm_pairs` elements, jails) and takes it all down.
+- With `go` and `mix` on PATH it uses them. Otherwise (Flatcar) it runs
+  the pinned `golang` and `hexpm/elixir` images through a dockerd of its
+  own (a transient unit, no iptables rules, no bridge), stopped at the
+  end; the agent's container has the host's network, cgroups, `/srv/crew`
+  and `/run/crew`. Caches are in `/var/lib/crew-kvm`.
+
+On the M3's Flatcar VM (arm64, nested virtualization, Flatcar 4757.2.3,
+systemd 260, nft 1.1.6) all four pass; crew-guest fetches its payload
+about 1.9 s after `vm.start`.
+
 ## What a box needs (the Ignition)
 
 - **Users:** `_crewagent` (the agent; its group owns the socket), and
