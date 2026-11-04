@@ -151,6 +151,17 @@ defmodule CrewWeb.AgentControllerTest do
     end
   end
 
+  test "serves the launchers, filled in", %{conn: conn} do
+    for type <- ["linux-vm", "mac-vm"] do
+      conn = get(conn, "/agent/#{type}.sh")
+      assert conn.status == 200
+      assert [content_type] = get_resp_header(conn, "content-type")
+      assert content_type =~ "text/x-shellscript"
+      assert conn.resp_body =~ ~s(CREW_URL="#{Crew.Config.base_url()}")
+      refute conn.resp_body =~ "__FLATCAR_VERSION__"
+    end
+  end
+
   describe "agent release tarballs" do
     setup do
       key = Crew.ImageFixtures.keypair()

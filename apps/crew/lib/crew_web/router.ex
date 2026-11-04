@@ -73,6 +73,8 @@ defmodule CrewWeb.Router do
   scope "/agent", CrewWeb do
     get "/releases/:version/:target/:file", AgentController, :release
     post "/flatcar/ignition", AgentController, :flatcar_ignition
+    get "/linux-vm.sh", AgentController, :linux_vm_script
+    get "/mac-vm.sh", AgentController, :mac_vm_script
   end
 
   # Admin pages outside /admin. Before the signed-in scope, so
