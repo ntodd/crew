@@ -258,7 +258,8 @@ defmodule Crew.Scheduler do
       state: vm.state,
       job_id: vm.job_id,
       requested_at: ms(vm.requested_at),
-      idle_at: vm.idle_at && ms(vm.idle_at)
+      idle_at: vm.idle_at && ms(vm.idle_at),
+      image_id: vm.image_id
     }
   end
 
@@ -306,6 +307,7 @@ defmodule Crew.Scheduler do
     for {:reap, vm_id, why} <- actions, do: VMs.reap(vm_id, why)
     for {:excess_since, class, at} <- actions, do: put_excess_since(class, at)
     for {:prepare_image, box_id, image_id} <- actions, do: prepare_image(box_id, image_id)
+    for {:remove_image, box_id, image_id} <- actions, do: remove_image(box_id, image_id)
     :ok
   end
 
@@ -361,6 +363,15 @@ defmodule Crew.Scheduler do
          {:ok, %{status: "dispatched"}} <-
            Operations.dispatch(box_id, "image.prepare", Images.prepare_payload(image)) do
       Images.put_box_state(box_id, image_id, "downloading")
+    end
+  end
+
+  # Marked removing so it isn't sent again each pass; the agent's next
+  # inventory drops the row once the image is gone (or puts it back).
+  defp remove_image(box_id, image_id) do
+    with {:ok, %{status: "dispatched"}} <-
+           Operations.dispatch(box_id, "image.remove", %{image_id: image_id}) do
+      Images.put_box_state(box_id, image_id, "removing")
     end
   end
 

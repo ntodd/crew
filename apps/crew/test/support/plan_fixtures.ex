@@ -83,7 +83,8 @@ defmodule Crew.PlanFixtures do
       state: Map.get(attrs, :state, "idle"),
       job_id: Map.get(attrs, :job_id),
       requested_at: Map.get(attrs, :requested_at, @now - 120_000 + n),
-      idle_at: Map.get(attrs, :idle_at)
+      idle_at: Map.get(attrs, :idle_at),
+      image_id: Map.get(attrs, :image_id, "img-1")
     }
   end
 

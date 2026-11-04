@@ -19,6 +19,8 @@ end
 
 config :crew, Oban, testing: :manual
 
+config :crew, image_req_options: [plug: {Req.Test, Crew.Images.Mirror}, retry: false]
+
 # Tests read the charts right after writing their rows.
 config :crew, chart_cache_ms: 0
 
@@ -58,3 +60,4 @@ config :phoenix_live_view,
 config :phoenix, sort_verified_routes_query_params: true
 config :crew, sync_dispatch: true
 config :crew, log_dir: Path.expand("../tmp/test-logs", __DIR__)
+config :crew, image_dir: Path.expand("../tmp/test-images", __DIR__)
