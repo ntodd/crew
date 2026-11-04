@@ -30,7 +30,7 @@ defmodule CrewAgent.Driver.Null do
      %{
        driver: "null",
        driver_version: "0.1.0",
-       guest_arch: if(arm?(), do: "arm64", else: "x64"),
+       guest_arch: guest_arch(),
        vcpus: Application.get_env(:crew_agent, :null_vcpus, 16),
        memory_mib: Application.get_env(:crew_agent, :null_memory_mib, 65_536),
        vm_area_mib: @vm_area_mib,
@@ -46,6 +46,14 @@ defmodule CrewAgent.Driver.Null do
 
   @impl CrewAgent.Driver
   def vm_area_free_mib, do: @vm_area_mib
+
+  # CREW_NULL_GUEST_ARCH pins it, so the e2e suite runs the same on any host.
+  defp guest_arch do
+    case System.get_env("CREW_NULL_GUEST_ARCH") do
+      arch when arch in ["arm64", "x64"] -> arch
+      _ -> if arm?(), do: "arm64", else: "x64"
+    end
+  end
 
   defp arm?, do: :erlang.system_info(:system_architecture) |> to_string() |> String.contains?(["aarch64", "arm"])
 
