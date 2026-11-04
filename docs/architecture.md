@@ -9,6 +9,7 @@ the build.
 | # | Result |
 |---|---|
 | S2 | Resolved before the build, by ntodd/foreman#132 (spec §24). |
+| S8 | **Mirrors (Design A).** dockerd 29.9.2 with the containerd image store (`driver-type=io.containerd.snapshotter.v1`, the default for a fresh daemon) reads `/etc/docker/certs.d/<registry>/hosts.toml` for any registry, not `/etc/containerd/certs.d` (moby#47380, since 28.0). `e2e/s8/run.sh` pulls `ghcr.io/actions/actions-runner`, `docker.io/library/alpine` and `public.ecr.aws/docker/library/busybox` through crew_cache at 10.199.0.1 from a dind daemon with crew-guest's files: the first pulls are misses, the second all hits, and a repo off the allowlist (a 404 from the cache) falls back to the registry. Mirrors get `capabilities = ["pull", "resolve"]` explicitly, since without them containerd sends pushes to the first host too. |
 
 The other spikes are recorded here as they run.
 
