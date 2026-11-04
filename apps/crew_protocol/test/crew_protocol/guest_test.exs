@@ -212,9 +212,25 @@ defmodule CrewProtocol.GuestTest do
         })
 
       assert Map.keys(payload) |> Enum.sort() ==
-               ~w(ca_pem jit_config labels policy size)
+               ~w(ca_pem jit_config labels mirrors policy size)
 
       assert payload["policy"] == %{"fork_prs" => "refuse", "repo_full_name" => "o/r"}
+      # No cache, no mirrors.
+      assert payload["mirrors"] == []
+    end
+
+    test "the registries the box's cache mirrors (§15.1, Design A), known hosts only" do
+      payload =
+        Guest.payload(%{
+          jit_config: "abc",
+          ca_pem: "pem",
+          policy: %{fork_prs: "refuse", repo_full_name: "o/r"},
+          size: %{vcpus: 4, memory_mib: 8192, disk_gib: 60},
+          labels: ["crew-m"],
+          mirrors: ["ghcr.io", "evil.example", "registry-1.docker.io"]
+        })
+
+      assert payload["mirrors"] == ["ghcr.io", "registry-1.docker.io"]
     end
   end
 end
