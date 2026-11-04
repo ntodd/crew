@@ -116,6 +116,9 @@ defmodule CrewAgent.VM do
 
       epoch = new_epoch()
 
+      # Without the cache's CA, guests pull straight from the registries.
+      ca = ca_pem(config)
+
       state = %{
         vm_id: p.vm_id,
         dir: dir,
@@ -125,7 +128,8 @@ defmodule CrewAgent.VM do
         token_hash: :crypto.hash(:sha256, token),
         payload: %{
           jit_config: p.jit_config,
-          ca_pem: ca_pem(config),
+          ca_pem: ca,
+          mirrors: if(ca == "", do: [], else: CrewAgent.Cache.mirrors(config)),
           policy: p.policy,
           size: Map.take(p.size, [:vcpus, :memory_mib, :disk_gib]),
           labels: p.labels
