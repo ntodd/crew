@@ -96,6 +96,7 @@ type env struct {
 	cancel  context.CancelFunc
 	done    chan error
 	extra   []string
+	version string
 }
 
 func newEnv(t *testing.T) *env {
@@ -162,7 +163,7 @@ func (e *env) startDaemon() {
 	env := append([]string{"CREW_VZD_FAKE_HELPER=1"}, e.extra...)
 	go func() {
 		e.done <- Run(ctx, Options{
-			SocketPath: e.sock, DataDir: e.dataDir, HelperPath: os.Args[0],
+			SocketPath: e.sock, DataDir: e.dataDir, HelperPath: os.Args[0], Version: e.version,
 			HelperEnv: env, Limits: limits, StartTimeout: 10 * time.Second, ForceWait: time.Second,
 		})
 	}()
@@ -471,6 +472,60 @@ func TestHelperLogDoesntWriteThroughAHardLink(t *testing.T) {
 	e.call(ctlproto.Request{Op: "stop", VMID: "vm1", Force: true})
 	if b, _ := os.ReadFile(outside); string(b) != "precious" {
 		t.Fatalf("the linked file was written: %q", b)
+	}
+}
+
+// The agent's update path for crew-vzd (spec §20.2): crew-vzd says its
+// version, and restarts (exits, for launchd to start the release the
+// agent switched to) only while no VM runs. Until then it keeps serving.
+func TestVersionAndRestartWhenIdle(t *testing.T) {
+	e := newEnv(t)
+	e.version = "0.2.0"
+	e.addVM("vm1")
+	e.startDaemon()
+
+	if r := e.call(ctlproto.Request{Op: "version"}); !r.OK || r.Version != "0.2.0" {
+		t.Fatalf("version: %+v", r)
+	}
+	if r := e.start("vm1"); !r.OK {
+		t.Fatalf("start: %+v", r)
+	}
+	if r := e.call(ctlproto.Request{Op: "restart"}); r.OK || r.Error != ctlproto.ErrBusy {
+		t.Fatalf("restart with a VM running: %+v", r)
+	}
+	if r := e.call(ctlproto.Request{Op: "status", VMID: "vm1"}); !r.OK || r.VM.State != "running" {
+		t.Fatalf("still serving: %+v", r)
+	}
+
+	e.call(ctlproto.Request{Op: "stop", VMID: "vm1", Force: true})
+	e.waitExited("vm1")
+	if r := e.call(ctlproto.Request{Op: "restart"}); !r.OK {
+		t.Fatalf("restart when idle: %+v", r)
+	}
+	select {
+	case err := <-e.done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("exited with %v", err)
+		}
+		e.cancel = nil
+	case <-time.After(5 * time.Second):
+		t.Fatal("crew-vzd didn't exit to restart")
+	}
+}
+
+// A daemon run through a link (launchd's agent/current/bin/crew-vz)
+// launches helpers from the release it started from, not whatever the
+// link points at after an update.
+func TestHelperPathIsTheResolvedExecutable(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "0.1.0", "crew-vz")
+	os.MkdirAll(filepath.Dir(real), 0o755)
+	os.WriteFile(real, []byte("x"), 0o755)
+	os.Symlink("0.1.0", filepath.Join(dir, "current"))
+	got, err := resolve(filepath.Join(dir, "current", "crew-vz"))
+	want, _ := filepath.EvalSymlinks(real)
+	if err != nil || got != want {
+		t.Fatalf("resolve: %q, %v; want %q", got, err, want)
 	}
 }
 

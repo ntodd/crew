@@ -155,8 +155,14 @@ func daemonCmd(args []string) int {
 		gid = g
 	}
 	if *sandbox != "" {
+		// Resolved, like the daemon's own path: launchd names the
+		// profile through agent/current, which an update moves.
 		p, err := filepath.Abs(*sandbox)
+		if err == nil {
+			p, err = filepath.EvalSymlinks(p)
+		}
 		if err != nil {
+			fmt.Fprintln(os.Stderr, "--sandbox:", err)
 			return 64
 		}
 		*sandbox = p
@@ -170,6 +176,7 @@ func daemonCmd(args []string) int {
 		SandboxProfile: *sandbox,
 		SocketGID:      gid,
 		Logger:         logger(*verbose),
+		Version:        version,
 	})
 	if err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintln(os.Stderr, "crew-vz daemon:", err)

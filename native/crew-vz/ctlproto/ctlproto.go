@@ -38,6 +38,7 @@ const (
 	ErrStartFailed     = "start_failed"
 	ErrNotRunning      = "not_running"
 	ErrCannotStop      = "cannot_request_stop"
+	ErrBusy            = "busy"
 	ErrInternal        = "internal"
 )
 
@@ -56,6 +57,8 @@ type Response struct {
 	Detail string     `json:"detail,omitempty"` // human-readable
 	VM     *VMStatus  `json:"vm,omitempty"`
 	VMs    []VMStatus `json:"vms,omitempty"`
+	// Version is crew-vzd's own, for `version` (the agent's updates).
+	Version string `json:"version,omitempty"`
 }
 
 // VMStatus describes one VM.
