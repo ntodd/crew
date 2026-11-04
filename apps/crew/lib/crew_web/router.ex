@@ -66,6 +66,14 @@ defmodule CrewWeb.Router do
     get "/images/:id/:file", ImageController, :show
   end
 
+  # What boxes fetch before they have an identity (§12.2, §12.3, §20.1):
+  # agent release tarballs (signed), and for Flatcar boxes the
+  # launchers and the Ignition, which takes a join token. Not the api
+  # pipeline: tarballs and scripts aren't JSON, and curl asks for */*.
+  scope "/agent", CrewWeb do
+    get "/releases/:version/:target/:file", AgentController, :release
+  end
+
   # Admin pages outside /admin. Before the signed-in scope, so
   # /boxes/new isn't taken for a box id.
   scope "/", CrewWeb do

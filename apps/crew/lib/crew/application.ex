@@ -62,10 +62,15 @@ defmodule Crew.Application do
   end
 
   # A server for every VM that isn't destroyed (§8.6); the guest images
-  # this release carries (§20.1); and in development the null driver's
-  # placeholder images.
+  # and agent tarballs this release carries (§20.1); and in development
+  # the null driver's placeholder images.
   defp boot_vms do
-    if dir = Application.get_env(:crew, :image_release_dir), do: Crew.Images.register_bundle(dir)
+    if dir = present(Application.get_env(:crew, :image_release_dir)),
+      do: Crew.Images.register_bundle(dir)
+
+    if dir = present(Application.get_env(:crew, :agent_release_dir)),
+      do: Crew.Agents.Releases.register_bundle(dir)
+
     Crew.Images.check_mirrors()
     # The runner's freshness (§13.1) is checked daily; a new deployment
     # checks at once rather than show nothing for a day.
@@ -76,6 +81,10 @@ defmodule Crew.Application do
 
     Crew.VMs.boot_servers()
   end
+
+  # An env file can set a directory to "".
+  defp present(dir) when is_binary(dir) and dir != "", do: dir
+  defp present(_), do: nil
 
   # Releases migrate on boot; in dev and test, mix does it.
   defp skip_migrations?, do: System.get_env("RELEASE_NAME") == nil

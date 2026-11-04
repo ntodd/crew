@@ -46,4 +46,47 @@ defmodule CrewWeb.AgentControllerTest do
     assert req.(ip).status == 429
     assert req.("100.64.0.9").status == 401
   end
+
+  describe "agent release tarballs" do
+    setup do
+      key = Crew.ImageFixtures.keypair()
+      Crew.ImageFixtures.trust(key)
+      dir = Crew.AgentReleaseFixtures.tmp_dir("served-releases")
+      files = Crew.AgentReleaseFixtures.write_release(dir, key, "0.3.0", "linux-amd64")
+      Crew.Agents.Releases.register_bundle(dir)
+      %{files: files}
+    end
+
+    test "are served with their digest and signature", %{conn: conn, files: files} do
+      conn = get(conn, "/agent/releases/0.3.0/linux-amd64/crew-agent-0.3.0-linux-amd64.tar.gz")
+
+      assert conn.status == 200
+      assert conn.resp_body == files["agent"].bytes
+      assert get_resp_header(conn, "x-crew-sha256") == [files["agent"].sha256]
+      assert get_resp_header(conn, "x-crew-signature") == [files["agent"].signature]
+      assert [type] = get_resp_header(conn, "content-type")
+      assert type =~ "application/gzip"
+    end
+
+    test "with their .sha256 and .sig beside them", %{conn: conn, files: files} do
+      base = "/agent/releases/0.3.0/linux-amd64/crew-cache-0.3.0-linux-amd64.tar.gz"
+
+      assert get(conn, base <> ".sha256").resp_body ==
+               "#{files["cache"].sha256}  crew-cache-0.3.0-linux-amd64.tar.gz\n"
+
+      assert get(build_conn(), base <> ".sig").resp_body == files["cache"].signature
+    end
+
+    test "anything else is a 404", %{conn: conn} do
+      for path <- [
+            "/agent/releases/0.3.0/linux-amd64/crew-agent-0.3.0-linux-arm64.tar.gz",
+            "/agent/releases/0.3.0/linux-arm64/crew-agent-0.3.0-linux-arm64.tar.gz",
+            "/agent/releases/0.4.0/linux-amd64/crew-agent-0.4.0-linux-amd64.tar.gz",
+            "/agent/releases/0.3.0/linux-amd64/crew-guest-0.3.0-linux-amd64.tar.gz",
+            "/agent/releases/0.3.0/linux-amd64/..%2F..%2Fetc%2Fpasswd"
+          ] do
+        assert get(conn, path).status == 404, path
+      end
+    end
+  end
 end
