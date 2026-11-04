@@ -37,6 +37,12 @@ defmodule CrewCache.CA do
   @doc "The files a TLS listener serves (`certfile` holds the leaf and the intermediate)."
   def tls_files(server \\ __MODULE__), do: GenServer.call(server, :tls_files)
 
+  @doc "The same, from the cache directory (they exist once the CA has started)."
+  def files(dir), do: %{certfile: file(dir, "leaf.pem"), keyfile: file(dir, "leaf.key")}
+
+  @doc "Where the root certificate is kept."
+  def root_file(dir), do: file(dir, "root.pem")
+
   # -- files ------------------------------------------------------------------
 
   defp ca_dir(dir), do: Path.join(dir, "ca")
@@ -102,9 +108,7 @@ defmodule CrewCache.CA do
   @impl true
   def handle_call(:root_pem, _from, state), do: {:reply, Certs.pem(state.chain.root), state}
 
-  def handle_call(:tls_files, _from, %{dir: dir} = state) do
-    {:reply, %{certfile: file(dir, "leaf.pem"), keyfile: file(dir, "leaf.key")}, state}
-  end
+  def handle_call(:tls_files, _from, %{dir: dir} = state), do: {:reply, files(dir), state}
 
   def handle_call(:rotate, _from, state) do
     state = %{state | chain: new_chain(state)}
