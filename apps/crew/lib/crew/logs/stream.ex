@@ -65,8 +65,15 @@ defmodule Crew.Logs.Stream do
     vm = Repo.get!(VM, vm_id)
     path = Logs.path(:vm, vm_id)
     File.mkdir_p!(Path.dirname(path))
-    {:ok, io} = :file.open(path, [:append, :raw, :binary])
+    {:ok, io} = :file.open(path, [:read, :write, :raw, :binary])
+    # Anything past what the row committed (a write whose update failed,
+    # a torn record) goes: the agent sends those batches again.
     {:ok, size} = :file.position(io, :eof)
+    # (A row from before log_bytes existed has none recorded: its file
+    # is taken as it is.)
+    size = if vm.log_bytes == 0 and vm.last_log_n > 0, do: size, else: min(size, vm.log_bytes)
+    {:ok, _} = :file.position(io, size)
+    :ok = :file.truncate(io)
     {seg_first, seg_offset} = Logs.open_segment(:vm, vm_id)
 
     {:ok,
@@ -81,7 +88,9 @@ defmodule Crew.Logs.Stream do
        agent_n: nil,
        pending: %{},
        gap: nil,
-       acked: vm.last_log_seq,
+       # What's stored isn't proof the agent heard the ack.
+       acked: 0,
+       reack: false,
        ack_timer: nil,
        seg_first: seg_first,
        seg_offset: seg_offset,
@@ -96,7 +105,8 @@ defmodule Crew.Logs.Stream do
 
     state =
       cond do
-        seq < state.next_seq -> state
+        # Sent again (a reconnect, or a lost ack): dropped, and acked again.
+        seq < state.next_seq -> %{state | reack: true}
         seq == state.next_seq -> state |> store(seq, lines) |> drain()
         true -> await_gap(%{state | pending: Map.put(state.pending, seq, lines)})
       end
@@ -105,8 +115,7 @@ defmodule Crew.Logs.Stream do
   end
 
   def handle_cast({:gone, %{epoch: epoch, up_to_seq: up_to}}, %{epoch: epoch} = state) do
-    state = if up_to >= state.next_seq, do: state |> skip_to(up_to + 1) |> drain(), else: state
-    {:noreply, schedule_ack(state), @idle_ms}
+    {:noreply, state |> gone_through(up_to) |> drain() |> schedule_ack(), @idle_ms}
   end
 
   def handle_cast({:gone, _}, state), do: {:noreply, state, @idle_ms}
@@ -115,8 +124,10 @@ defmodule Crew.Logs.Stream do
   def handle_info({:gap_timeout, seq}, %{gap: seq} = state) do
     # The resend didn't fill it: mark what's lost and carry on from the
     # oldest batch that's here.
-    next = state.pending |> Map.keys() |> Enum.min()
-    {:noreply, state |> skip_to(next) |> drain() |> schedule_ack(), @idle_ms}
+    case state.pending |> Map.keys() |> Enum.filter(&(&1 > state.next_seq)) do
+      [] -> {:noreply, %{state | gap: nil}, @idle_ms}
+      keys -> {:noreply, state |> skip_to(Enum.min(keys)) |> drain() |> schedule_ack(), @idle_ms}
+    end
   end
 
   def handle_info({:gap_timeout, _}, state), do: {:noreply, state, @idle_ms}
@@ -125,14 +136,14 @@ defmodule Crew.Logs.Stream do
     state = %{state | ack_timer: nil} |> save_index()
     acked = state.next_seq - 1
 
-    if acked > state.acked and state.epoch do
+    if ((acked > state.acked or state.reack) and state.epoch) && acked > 0 do
       notify(state, "vm.log.ack", %{
         "vm_id" => state.vm_id,
         "epoch" => state.epoch,
         "seq" => acked
       })
 
-      {:noreply, %{state | acked: acked}, @idle_ms}
+      {:noreply, %{state | acked: acked, reack: false}, @idle_ms}
     else
       {:noreply, state, @idle_ms}
     end
@@ -159,7 +170,16 @@ defmodule Crew.Logs.Stream do
   # -- epochs, gaps -----------------------------------------------------------------
 
   defp new_epoch(state, epoch) do
-    %{state | epoch: epoch, next_seq: 1, acked: 0, pending: %{}, gap: nil, agent_n: nil}
+    %{
+      state
+      | epoch: epoch,
+        next_seq: 1,
+        acked: 0,
+        reack: false,
+        pending: %{},
+        gap: nil,
+        agent_n: nil
+    }
   end
 
   defp await_gap(%{gap: nil} = state) do
@@ -174,6 +194,21 @@ defmodule Crew.Logs.Stream do
   end
 
   defp await_gap(state), do: state
+
+  # `vm.log.gone` through `up_to`: batches that are here go in, and each
+  # run of missing ones gets one marker. The cursor never moves back.
+  defp gone_through(%{next_seq: next} = state, up_to) when next > up_to, do: state
+
+  defp gone_through(state, up_to) do
+    case Map.pop(state.pending, state.next_seq) do
+      {nil, _} ->
+        here = state.pending |> Map.keys() |> Enum.filter(&(&1 > state.next_seq and &1 <= up_to))
+        state |> skip_to(Enum.min(here, fn -> up_to + 1 end)) |> gone_through(up_to)
+
+      {lines, pending} ->
+        %{state | pending: pending} |> store(state.next_seq, lines) |> gone_through(up_to)
+    end
+  end
 
   # Lines up to `seq` won't come: one marker for them, counted by the
   # agent's own line numbers where it can be.
@@ -191,7 +226,8 @@ defmodule Crew.Logs.Stream do
 
     marker = %{n: nil, t: System.os_time(:millisecond), step_ref: nil, text: "[#{lost} lost]"}
     state = append(state, [marker], seq - 1)
-    %{state | next_seq: seq, gap: nil, agent_n: first_after && first_after - 1}
+    pending = Map.reject(state.pending, fn {k, _} -> k < seq end)
+    %{state | next_seq: seq, gap: nil, pending: pending, agent_n: first_after && first_after - 1}
   end
 
   defp drain(state) do
@@ -231,7 +267,12 @@ defmodule Crew.Logs.Stream do
 
     Repo.update_all(
       from(v in VM, where: v.id == ^state.vm_id),
-      set: [log_epoch: state.epoch, last_log_seq: max(seq, 0), last_log_n: state.n]
+      set: [
+        log_epoch: state.epoch,
+        last_log_seq: max(seq, 0),
+        last_log_n: state.n,
+        log_bytes: state.size
+      ]
     )
 
     stored = Enum.reverse(stored)
@@ -259,7 +300,7 @@ defmodule Crew.Logs.Stream do
   end
 
   defp schedule_ack(%{ack_timer: nil} = state) do
-    if state.next_seq - 1 > state.acked,
+    if state.next_seq - 1 > state.acked or state.reack,
       do: %{state | ack_timer: Process.send_after(self(), :ack, timer(:ack))},
       else: state
   end

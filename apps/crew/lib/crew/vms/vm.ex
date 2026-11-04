@@ -26,6 +26,7 @@ defmodule Crew.VMs.VM do
     field :log_epoch, :string
     field :last_log_seq, :integer, default: 0
     field :last_log_n, :integer, default: 0
+    field :log_bytes, :integer, default: 0
     field :alive, :boolean, default: false
     field :requested_at, :utc_datetime_usec
     field :started_at, :utc_datetime_usec

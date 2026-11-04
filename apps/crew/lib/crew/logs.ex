@@ -177,6 +177,7 @@ defmodule Crew.Logs do
 
     lines =
       body
+      |> utf8()
       |> String.replace_prefix("\uFEFF", "")
       |> String.split(~r/\r?\n/)
       |> drop_trailing_empty()
@@ -215,6 +216,21 @@ defmodule Crew.Logs do
     :ok
   end
 
+  # A cut at the size cap can split a character, and logs aren't always
+  # valid UTF-8: what's stored is.
+  defp utf8(body) do
+    trimmed = trim_partial(body)
+    if String.valid?(trimmed), do: trimmed, else: String.replace_invalid(trimmed)
+  end
+
+  # Drops a trailing incomplete UTF-8 sequence (at most 3 bytes).
+  defp trim_partial(body) do
+    Enum.find_value(0..min(3, byte_size(body)), body, fn k ->
+      candidate = binary_part(body, 0, byte_size(body) - k)
+      if String.valid?(candidate), do: candidate
+    end)
+  end
+
   defp drop_trailing_empty(lines),
     do: lines |> Enum.reverse() |> Enum.drop_while(&(&1 == "")) |> Enum.reverse()
 
@@ -248,16 +264,17 @@ defmodule Crew.Logs do
   # -- reads ----------------------------------------------------------------------------
 
   @doc "The last line number stored, or nil when there's none."
+  # A log retention deleted has no lines, whatever the row says.
   def last_n(:vm, vm_id) do
     case Repo.one(from v in VM, where: v.id == ^vm_id, select: v.last_log_n) do
-      n when is_integer(n) and n > 0 -> n
+      n when is_integer(n) and n > 0 -> if File.exists?(path(:vm, vm_id)), do: n
       _ -> nil
     end
   end
 
   def last_n(:job, job_id) do
     case last_segment(:job, job_id) do
-      {_, last, _, _} -> last
+      {_, last, _, _} -> if File.exists?(path(:job, job_id)), do: last
       nil -> nil
     end
   end

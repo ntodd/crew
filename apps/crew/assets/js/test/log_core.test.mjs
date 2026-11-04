@@ -99,3 +99,22 @@ test("an index from the server merges into what the viewer learned live", () => 
   const stale = mergeIndex({steps: {}, groups: [[5, 8, "A"]], annotations: []}, {steps: {}, groups: [[5, null, "A"]], annotations: []})
   assert.deepEqual(stale.index.groups, [[5, 8, "A"]])
 })
+
+test("a folded group that was open gets its end when it closes", () => {
+  const rows = new Rows(100)
+  rows.collapse([[10, null]])
+  assert.equal(rows.count(), 10)
+  rows.syncEnds([[10, 20, "x"]])
+  assert.equal(rows.count(), 100 - 10)
+  assert.equal(rows.lineAt(11), 21)
+})
+
+test("revealing a line opens the folds that hide it", () => {
+  const rows = new Rows(100)
+  rows.collapse([[10, 20], [30, 40]])
+  assert.equal(rows.rowOf(15), 10)
+  rows.reveal(15)
+  assert.equal(rows.isCollapsed(10), false)
+  assert.equal(rows.isCollapsed(30), true)
+  assert.equal(rows.lineAt(rows.rowOf(15)), 15)
+})

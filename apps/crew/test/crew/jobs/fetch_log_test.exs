@@ -129,6 +129,39 @@ defmodule Crew.Jobs.FetchLogTest do
     refute File.exists?(Logs.path(:job, job.id))
   end
 
+  test "a budget hold snoozes the fetch instead of dropping it", %{job: job, repo: repo} do
+    GitHubStub.stub(routes(repo, {404, %{}}))
+    inst = repo.installation.github_id
+    reset = System.os_time(:second) + 120
+    {:ok, ref} = Crew.GitHub.Budget.acquire(inst, :essential, :read)
+
+    Crew.GitHub.Budget.release(inst, ref, 200, %{
+      "x-ratelimit-remaining" => ["0"],
+      "x-ratelimit-limit" => ["5000"],
+      "x-ratelimit-reset" => [to_string(reset)]
+    })
+
+    _ = Crew.GitHub.Budget.info(inst)
+    assert {:snooze, s} = perform_job(FetchLog, %{job_id: job.id, attempt: 0})
+    assert s in 100..121
+  end
+
+  test "a cut through a multibyte character still stores", %{job: job, repo: repo} do
+    Application.put_env(:crew, :log_limit_bytes, 29)
+    on_exit(fn -> Application.delete_env(:crew, :log_limit_bytes) end)
+    # 29 bytes ends inside "é".
+    GitHubStub.stub(
+      routes(repo, fn conn ->
+        Plug.Conn.send_resp(conn, 200, "2026-11-03T10:00:07.000Z caf\u00e9 au lait\n")
+      end)
+    )
+
+    assert :ok = perform_job(FetchLog, %{job_id: job.id, attempt: 0})
+    assert [%{text: text} | _] = Logs.lines(:job, job.id, 1, 10)
+    assert String.valid?(text)
+    assert Jobs.get_job!(job.id).log_source == "github"
+  end
+
   test "a log over the size limit is cut, with a marker", %{job: job, repo: repo} do
     Application.put_env(:crew, :log_limit_bytes, 200)
     on_exit(fn -> Application.delete_env(:crew, :log_limit_bytes) end)

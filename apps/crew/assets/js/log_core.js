@@ -133,6 +133,31 @@ export class Rows {
     return this.hidden.has(start)
   }
 
+  // A folded group that was still open takes its end once the index has it.
+  syncEnds(groups) {
+    let changed = false
+    for (const [start, end] of groups) {
+      if (end !== null && this.hidden.has(start) && this.hidden.get(start) === null) {
+        this.hidden.set(start, end)
+        changed = true
+      }
+    }
+    if (changed) this.rebuild()
+  }
+
+  // Opens every fold that hides line n, so a jump to it lands on it.
+  reveal(n) {
+    let changed = false
+    for (const [start, end] of [...this.hidden]) {
+      if (n > start && n <= (end ?? this.total)) {
+        this.hidden.delete(start)
+        changed = true
+      }
+    }
+    if (changed) this.rebuild()
+    return changed
+  }
+
   // Sorted, merged [from, to] hidden line ranges with cumulative counts.
   rebuild() {
     const raw = [...this.hidden]

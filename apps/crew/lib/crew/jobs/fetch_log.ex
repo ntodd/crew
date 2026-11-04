@@ -24,12 +24,14 @@ defmodule Crew.Jobs.FetchLog do
 
   @impl true
   def perform(%{args: %{"job_id" => job_id, "attempt" => attempt}}) do
-    with %{} = job <- Jobs.get_job(job_id) do
-      repo = job.repo_id |> Repos.get!() |> Repos.with_installation()
-      fetch(job, repo, attempt)
-    end
+    case Jobs.get_job(job_id) do
+      nil ->
+        :ok
 
-    :ok
+      job ->
+        repo = job.repo_id |> Repos.get!() |> Repos.with_installation()
+        fetch(job, repo, attempt)
+    end
   end
 
   defp fetch(job, repo, attempt) do
@@ -52,18 +54,19 @@ defmodule Crew.Jobs.FetchLog do
       {:ok, body, cut?} ->
         Logs.store_github(job, body, cut?)
         Jobs.set_log_source(job, "github")
+        :ok
 
       {:error, :not_found} when attempt < length(@at) - 1 ->
         fetch_later(job, attempt)
 
       {:error, :not_found} ->
         Jobs.set_log_source(job, "live")
+        :ok
 
       {:error, {:delayed, until_ms}} ->
-        # The budget holds normal calls until the reset: try again then.
-        %{job_id: job.id, attempt: attempt}
-        |> new(schedule_in: max(1, div(until_ms - System.os_time(:millisecond), 1000)))
-        |> Oban.insert()
+        # The budget holds normal calls until the reset: this same job
+        # runs again then (a copy would collide with it).
+        {:snooze, max(1, div(until_ms - System.os_time(:millisecond), 1000))}
 
       {:error, reason} ->
         Logger.warning(
@@ -73,11 +76,20 @@ defmodule Crew.Jobs.FetchLog do
         if attempt >= length(@at) - 1,
           do: Jobs.set_log_source(job, "live"),
           else: fetch_later(job, attempt)
+
+        :ok
     end
+  rescue
+    # A log that can't be stored (it shouldn't happen) leaves the live one.
+    e ->
+      Logger.error("storing job #{job.github_id}'s log: #{Exception.message(e)}")
+      Jobs.set_log_source(job, "live")
+      :ok
   end
 
   defp fetch_later(job, attempt) do
     wait = Enum.at(@at, attempt + 1) - Enum.at(@at, attempt)
     %{job_id: job.id, attempt: attempt + 1} |> new(schedule_in: wait) |> Oban.insert()
+    :ok
   end
 end

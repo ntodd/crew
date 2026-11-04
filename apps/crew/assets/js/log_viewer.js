@@ -392,6 +392,12 @@ export const LogViewer = {
         for (let n = from; n <= to; n++) this.inFlight.delete(n)
         if (source !== this.source || !reply.lines) return
         for (const line of reply.lines) this.lines.set(line.n, line)
+        // A log retention deleted (or that's shorter than thought): the
+        // viewer shrinks to what's there rather than asking again.
+        if (typeof reply.total === "number" && reply.total < this.rows.total) {
+          this.rows.setTotal(reply.total)
+          this.blocks = null
+        }
         this.evict()
         this.render()
       })
@@ -413,6 +419,7 @@ export const LogViewer = {
     for (const line of lines) this.lines.set(line.n, line)
     indexAdd(this.index, lines)
     this.rows.setTotal(Math.max(total, before))
+    this.rows.syncEnds(this.index.groups)
     this.blocks = null
     if (lines.some(l => annotationOf(l.text))) this.renderAnnotations()
     if (!this.follow) this.fresh += Math.max(0, total - before)
@@ -422,7 +429,7 @@ export const LogViewer = {
   },
 
   // GitHub's log arrived: switch, keeping the place by step and line.
-  onSource({source, total, index, steps}) {
+  onSource({source, total, index, steps, running}) {
     const top = this.rows.lineAt(this.rowAt(this.scroller.scrollTop))
     const line = this.lines.get(top)
     const oldStep = line && this.steps.find(s => s.ref === line.step_ref)
@@ -431,14 +438,20 @@ export const LogViewer = {
     this.source = source
     this.index = index
     this.steps = steps
+    // Search hits were line numbers of the other log.
+    this.hits = []
+    this.hitSet = new Set()
+    this.hit = -1
+    this.lastQuery = null
+    this.counter.textContent = ""
     this.lines = new Map()
     this.inFlight = new Set()
     this.heights = new Map()
     this.blocks = null
     this.rows = new Rows(total)
-    this.rows.collapse(groupsToCollapse(index, steps, false))
-    this.running = false
-    this.follow = false
+    this.running = !!running
+    this.rows.collapse(groupsToCollapse(index, steps, this.running))
+    this.follow = this.running
     this.renderAnnotations()
     this.updateButtons()
 
@@ -454,6 +467,7 @@ export const LogViewer = {
     // Groups it didn't know start folded as they would have at load.
     const fold = groupsToCollapse({...merged, groups: added}, this.steps, this.running)
     if (fold.length) this.rows.collapse(fold)
+    this.rows.syncEnds(merged.groups)
     this.blocks = null
     this.renderAnnotations()
     this.render()
@@ -469,6 +483,7 @@ export const LogViewer = {
   // -- moving around ----------------------------------------------------------------
 
   scrollToLine(n, where = "start") {
+    if (this.rows.reveal(n)) this.blocks = null
     const row = this.rows.rowOf(Math.max(1, Math.min(n, this.rows.total)))
     const top = this.rowTop(row)
     const offset = where === "center" ? this.scroller.clientHeight / 2 - LINE_H : 0
@@ -553,6 +568,7 @@ export const LogViewer = {
     this.counter.textContent = "Searching…"
     const params = {source: this.source, q, regex: this.regexBox.getAttribute("aria-pressed") === "true", case: this.caseBox.getAttribute("aria-pressed") === "true"}
     this.pushEvent("search", params, reply => {
+      if (params.source !== this.source) return
       if (reply.error) {
         this.hits = []
         this.hitSet = new Set()
@@ -575,12 +591,6 @@ export const LogViewer = {
     this.hit = (this.hit + dir + this.hits.length) % this.hits.length
     const n = this.hits[this.hit]
     this.counter.textContent = `${this.hit + 1} / ${this.hits.length}${this.hits.length >= 10000 ? "+" : ""}`
-    // A hit inside a collapsed group opens it.
-    const group = this.index.groups.find(([s, e]) => n > s && (e === null || n <= e) && this.rows.isCollapsed(s))
-    if (group) {
-      this.rows.expand(group[0])
-      this.blocks = null
-    }
     this.scrollToLine(n, "center")
   },
 
