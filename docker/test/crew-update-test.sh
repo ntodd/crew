@@ -145,68 +145,7 @@ equals "no request, no version" "" "$(take)"
 
 # -- a run, against a fake docker ------------------------------------------------
 #
-# $T/fake/container  the control plane's container id (empty: none)
-# $T/fake/image      the image it runs; compose up recreates it from .env
-# $T/fake/published  refs a pull finds
-# $T/fake/healthy    refs whose /healthz answers
-# $T/fake/crashing   refs whose container keeps restarting
-# $T/fake/labels     "<ref> <version>" for an image labelled other than its tag
-# $T/fake/calls      what was asked of docker and the fakes
-
-use_fakes() {
-  DIR=$T/update
-  CONF=$T/update.conf
-  BIN=$T/bin/crew-update
-  HEALTH_TIMEOUT=6
-  sleep() { :; }
-  backup() {
-    echo "backup $data" >> "$T/fake/calls"
-    echo "crew-data-$from-T.tgz"
-  }
-  restore() { echo "restore $1" >> "$T/fake/calls"; }
-  refresh_self() { echo "refresh_self $1" >> "$T/fake/calls"; }
-  docker() {
-    echo "docker $*" >> "$T/fake/calls"
-    case $1 in
-      compose)
-        shift 3
-        case $1 in
-          ps) cat "$T/fake/container" ;;
-          stop | start | logs) : ;;
-          up)
-            sed -n 's/^CREW_IMAGE=//p' "$T/opt/.env" | tail -n 1 > "$T/fake/image"
-            echo c1 > "$T/fake/container"
-            ;;
-        esac
-        ;;
-      inspect)
-        case $3 in
-          '{{.Config.Image}}') cat "$T/fake/image" ;;
-          '{{.RestartCount}}') if grep -qxF "$(cat "$T/fake/image")" "$T/fake/crashing"; then echo 3; else echo 0; fi ;;
-          '{{.State.Status}}'*) echo "running unless-stopped" ;;
-          *Mounts*) echo crew-data ;;
-        esac
-        ;;
-      image)
-        ref=$5
-        tag=${ref##*:}
-        case $4 in
-          *Labels*)
-            label=$(sed -n "s|^$ref ||p" "$T/fake/labels")
-            echo "${label:-${tag%-pg}}"
-            ;;
-          *Env*)
-            echo PATH=/usr/bin
-            case $tag in *-pg) echo CREW_DB=postgres ;; *) echo CREW_DB=sqlite ;; esac
-            ;;
-        esac
-        ;;
-      pull) grep -qxF "$3" "$T/fake/published" ;;
-      exec) grep -qxF "$(cat "$T/fake/image")" "$T/fake/healthy" ;;
-      *) return 1 ;;
-    esac
-  }
-}
+# docker/test/crew-update-fakes.sh says what the fakes read and record.
 
 # A host running ghcr.io/ntodd/crew:0.2.0 (SQLite) from /opt/compose.yml.
 host() {
@@ -216,14 +155,17 @@ host() {
   printf 'OTHER=kept\nCREW_IMAGE=%s\n' "${1:-ghcr.io/ntodd/crew:0.2.0}" > "$T/opt/.env"
   echo c1 > "$T/fake/container"
   echo "${1:-ghcr.io/ntodd/crew:0.2.0}" > "$T/fake/image"
+  echo running > "$T/fake/running"
   for f in published healthy crashing labels calls; do : > "$T/fake/$f"; done
 }
 publish() { echo "$1" >> "$T/fake/published"; }
 works() { echo "$1" >> "$T/fake/healthy"; }
 ask() { printf '%s\n' "$1" > "$T/update/request/version"; }
 
+# Each run is its own sh, so an injected fault can signal it.
 run_update() {
-  (. "$updater" && use_fakes && run) > "$T/out" 2>&1
+  T=$T sh -c '. "$1" && . "$2" && use_fakes && run' crew-update "$updater" "$here/crew-update-fakes.sh" \
+    > "$T/out" 2>&1
   echo $? > "$T/status"
 }
 
@@ -307,7 +249,7 @@ run_update
 equals "no /healthz: rolls back" rolled_back "$(field state)"
 equals "no /healthz: the previous image is pinned again" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
 equals "no /healthz: and runs" ghcr.io/ntodd/crew:0.2.0 "$(cat "$T/fake/image")"
-check "no /healthz: restores the backup" asked "restore crew-data-0.2.0-T.tgz"
+check "no /healthz: restores the backup" asked "restore crew-data-0.2.0-"
 check_not "no /healthz: keeps this updater" asked "refresh_self"
 equals "no /healthz: exits 1" 1 "$(cat "$T/status")"
 
@@ -325,7 +267,7 @@ ask 0.3.0
 publish ghcr.io/ntodd/crew:0.3.0
 run_update
 equals "neither version comes up: fails" failed "$(field state)"
-check "neither version comes up: says so" grep -q "neither did 0.2.0" "$T/update/status/state.json"
+check "neither version comes up: says so" grep -q "0.2.0 didn.t come back up healthy either" "$T/update/status/state.json"
 
 host ghcr.io/ntodd/crew:0.2.0-pg
 ask 0.3.0
@@ -355,6 +297,98 @@ echo "" > "$T/fake/container"
 ask 0.3.0
 run_update
 equals "no container: fails" failed "$(field state)"
+
+# -- failures once the control plane is stopped ----------------------------------
+#
+# From stopping the control plane until the new version answers, any
+# failure or signal starts the previous version again, with its .env and,
+# once the new version has started, its data. A run killed outright is
+# put right by the next.
+
+running() { echo "$(cat "$T/fake/running") $(cat "$T/fake/image")"; }
+run_state_left() { test -e "$T/update/run.state"; }
+partial_backups() { find "$T/update/backups" -name 'crew-data-*' | wc -l | tr -d ' '; }
+strays() { find "$T/opt" -name '.env.*' | wc -l | tr -d ' '; }
+an_update() {
+  host
+  ask 0.3.0
+  publish ghcr.io/ntodd/crew:0.3.0
+  works ghcr.io/ntodd/crew:0.2.0
+  works ghcr.io/ntodd/crew:0.3.0
+  if [ -n "${1:-}" ]; then echo "$1" > "$T/fake/inject"; fi
+}
+
+an_update backup-fails
+run_update
+equals "the backup fails: fails" failed "$(field state)"
+equals "the backup fails: says so" "The backup failed; 0.2.0 is running again and nothing changed." "$(field message)"
+equals "the backup fails: the previous version runs" "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+equals "the backup fails: .env as it was" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
+equals "the backup fails: the partial backup is gone" 0 "$(partial_backups)"
+check_not "the backup fails: nothing left to recover" run_state_left
+
+an_update backup-signal
+run_update
+equals "a signal during the backup: fails" failed "$(field state)"
+check "a signal during the backup: says it was interrupted" grep -q "interrupted" "$T/update/status/state.json"
+equals "a signal during the backup: the previous version runs" "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+equals "a signal during the backup: the partial backup is gone" 0 "$(partial_backups)"
+check_not "a signal during the backup: nothing left to recover" run_state_left
+check_not "a signal during the backup: exits non-zero" test "$(cat "$T/status")" = 0
+
+if [ "$(id -u)" != 0 ]; then
+  # The new .env can't be written at all (as with a full disk); root
+  # ignores the mode, so this one only runs as a user.
+  an_update
+  chmod 0555 "$T/opt"
+  run_update
+  chmod 0755 "$T/opt"
+  equals "the new .env can't be written: fails" failed "$(field state)"
+  equals "the new .env can't be written: the previous version runs" \
+    "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+  equals "the new .env can't be written: .env as it was" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
+  check "the new .env can't be written: the backup is kept" test "$(partial_backups)" = 1
+  check_not "the new .env can't be written: nothing left to recover" run_state_left
+fi
+
+an_update env-rename-fails
+run_update
+equals "the new .env can't be renamed into place: fails" failed "$(field state)"
+equals "the new .env can't be renamed into place: the previous version runs" \
+  "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+equals "the new .env can't be renamed into place: .env as it was" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
+check "the new .env can't be renamed into place: with its other lines" grep -qx OTHER=kept "$T/opt/.env"
+equals "the new .env can't be renamed into place: no stray files" 0 "$(strays)"
+check_not "the new .env can't be renamed into place: no restore (0.3.0 never ran)" asked "restore"
+
+an_update up-signal
+run_update
+equals "a signal while 0.3.0 starts: rolls back" rolled_back "$(field state)"
+equals "a signal while 0.3.0 starts: the previous version runs" \
+  "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+equals "a signal while 0.3.0 starts: .env as it was" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
+check "a signal while 0.3.0 starts: restores the backup" asked "restore crew-data-0.2.0-"
+check_not "a signal while 0.3.0 starts: nothing left to recover" run_state_left
+
+an_update up-kill
+run_update
+equals "killed while 0.3.0 starts: 0.3.0 is left running" "running ghcr.io/ntodd/crew:0.3.0" "$(running)"
+check "killed while 0.3.0 starts: the run's state is left" run_state_left
+run_update
+equals "killed while 0.3.0 starts: the next run rolls back" rolled_back "$(field state)"
+check "killed while 0.3.0 starts: and says the last one was interrupted" \
+  grep -q "interrupted" "$T/update/status/state.json"
+equals "killed while 0.3.0 starts: the previous version runs" \
+  "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+equals "killed while 0.3.0 starts: .env as it was" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
+check "killed while 0.3.0 starts: restores the backup" asked "restore crew-data-0.2.0-"
+check_not "killed while 0.3.0 starts: nothing left to recover" run_state_left
+
+an_update
+run_update
+equals "a clean update leaves nothing to recover: succeeds" succeeded "$(field state)"
+check_not "a clean update leaves nothing to recover: no run state" run_state_left
+equals "a clean update leaves nothing to recover: no stray files" 0 "$(strays)"
 
 # -- backups ---------------------------------------------------------------------
 

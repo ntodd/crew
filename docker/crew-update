@@ -16,6 +16,13 @@
 #      the previous version back
 #   6. replaces itself with the copy the new image carries
 #
+# Once it has stopped the control plane, any failure or signal before the
+# new version answers (a full disk, a failed backup, systemd's timeout)
+# starts the previous version again: with its .env, and with its data if
+# the new version had started. A run killed outright leaves run.state,
+# and the next run, which the path unit starts at boot if need be,
+# finishes putting things back.
+#
 # A version is all the control plane can send: the image repository is
 # the one already running, and nothing else in the request is read.
 # Progress goes to /var/lib/crew-update/status/state.json, which the
@@ -128,9 +135,13 @@ take_request() {
 }
 
 env_file() { echo "$(dirname "$COMPOSE_FILE")/.env"; }
+# The .env as it was, set aside while an update is under way.
+previous_env() { echo "$(dirname "$COMPOSE_FILE")/.env.crew-update-previous"; }
 
 # Pins CREW_IMAGE in compose's .env, keeping every other line and the
-# file's mode.
+# file's mode. The new file is written in full first, and the old one is
+# renamed aside rather than copied, so putting it back (restore_env)
+# needs no space even when the disk is full.
 set_image() {
   envfile=$(env_file)
   tmp=$envfile.crew-update.$$
@@ -139,7 +150,105 @@ set_image() {
     if [ -f "$envfile" ]; then grep -v '^CREW_IMAGE=' "$envfile" || true; fi
     echo "CREW_IMAGE=$1"
   } > "$tmp"
+  if [ -f "$envfile" ]; then mv -f "$envfile" "$(previous_env)"; fi
   mv -f "$tmp" "$envfile"
+}
+
+# Puts back the .env set_image set aside, or removes the one it made.
+restore_env() {
+  envfile=$(env_file)
+  if [ -f "$(previous_env)" ]; then
+    mv -f "$(previous_env)" "$envfile"
+  elif [ "${had_env:-1}" = 0 ]; then
+    rm -f "$envfile"
+  fi
+  rm -f "$envfile".crew-update.*
+}
+
+# -- a run's progress --------------------------------------------------------------
+#
+# From stopping the control plane until the new version answers, run.state
+# (root's, outside anything the container can reach) records the step
+# under way, written before it starts:
+#
+#   stopping       stopping the control plane
+#   backing_up     backing up its volume to backups/<backup_name>
+#   setting_image  pinning the new image in .env
+#   starting       starting the new image, which may migrate the database
+#
+# Any failure or signal from there runs recover, which undoes what that
+# step and the ones before it may have done and starts the previous
+# version again. A run killed outright leaves run.state for the next run
+# (the path unit starts one when run.state exists, as at boot) to finish.
+
+run_state() { echo "$DIR/run.state"; }
+
+# phase STEP: records STEP, and what recover needs, atomically.
+phase() {
+  tmp=$(run_state).$$
+  printf 'phase=%s\nfrom=%s\nto=%s\nold_image=%s\nnew_image=%s\ndata=%s\nbackup_name=%s\nsaved=%s\nhad_env=%s\n' \
+    "$1" "$from" "$to" "$old_image" "$new_image" "$data" "$backup_name" "$saved" "$had_env" > "$tmp"
+  mv -f "$tmp" "$(run_state)"
+}
+
+# recorded KEY: a value from run.state.
+recorded() { sed -n "s/^$1=//p" "$(run_state)" | head -n 1; }
+
+doing() {
+  case $1 in
+    stopping) echo "stopping ${from:-the control plane}" ;;
+    backing_up) echo "backing up ${from:-the control plane}" ;;
+    setting_image) echo "pinning ${to:-the new version}" ;;
+    starting) echo "starting ${to:-the new version}" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+on_exit() {
+  code=$?
+  [ -f "$(run_state)" ] || exit "$code"
+  recover "${reason:-The update to ${to:-a new version} failed while $(doing "$(recorded phase)")}"
+}
+
+on_signal() {
+  reason="The update to ${to:-a new version} was interrupted while $(doing "$(recorded phase)")"
+  exit 143
+}
+
+# recover REASON: puts the previous version back as run.state says the
+# run left it, reports REASON and how that went, and exits 1.
+recover() {
+  set +e
+  trap - EXIT INT TERM HUP
+  step=$(recorded phase)
+  from=$(recorded from) to=$(recorded to) old_image=$(recorded old_image)
+  data=$(recorded data) backup_name=$(recorded backup_name) saved=$(recorded saved)
+  had_env=$(recorded had_env)
+  log "recovering: $1"
+
+  if [ "$step" = starting ]; then
+    dc logs --no-color --tail 50 "$SERVICE" 2>&1 | sed 's/^/  /'
+    dc stop "$SERVICE"
+  fi
+  restore_env
+  if [ "$step" = backing_up ] && [ -n "$backup_name" ]; then rm -f "$DIR/backups/$backup_name"; fi
+  if [ "$step" = starting ] && [ -n "$saved" ] && ! restore "$saved"; then
+    rm -f "$(run_state)"
+    state failed "$1, and restoring $saved failed. Restore it by hand (docs/setup/upgrading.md)."
+    exit 1
+  fi
+
+  if dc up -d --no-deps "$SERVICE" && healthy "$old_image"; then
+    if [ "$step" = starting ]; then
+      state rolled_back "$1, so $from is back${saved:+ with its data as it was}. journalctl -u crew-update has its logs."
+    else
+      state failed "$1; $from is running again and nothing changed."
+    fi
+  else
+    state failed "$1, and $from didn't come back up healthy either. journalctl -u crew-update has the logs."
+  fi
+  rm -f "$(run_state)"
+  exit 1
 }
 
 # Where the data volume is, as docker run -v wants it.
@@ -216,6 +325,9 @@ load_conf() {
 run() {
   load_conf
   echo "$UPDATER_VERSION" > "$DIR/status/updater"
+  if [ -f "$(run_state)" ]; then resume_interrupted; fi
+  # No run is under way, so a .env set aside is a finished run's.
+  rm -f "$(previous_env)"
   [ -e "$DIR/request/version" ] || [ -L "$DIR/request/version" ] || exit 0
 
   from="" to=""
@@ -258,54 +370,63 @@ run() {
   fi
 
   data=$(data_mount "$ctr")
-  state running "Stopping $from to back it up."
-  dc stop "$SERVICE" || {
-    dc start "$SERVICE" || true
-    state failed "Couldn't stop $from to back it up; nothing changed."
-    exit 1
-  }
-  saved=""
-  if [ "$db" = postgres ]; then
-    log "Postgres: back up the database at your provider; this only keeps the previous version"
-  elif [ -z "$data" ]; then
-    dc start "$SERVICE"
+  if [ "$db" != postgres ] && [ -z "$data" ]; then
     state failed "The container has no $DATA volume to back up; nothing changed."
     exit 1
-  elif ! saved=$(backup); then
-    dc start "$SERVICE"
-    state failed "The backup failed; $from is running again and nothing changed."
+  fi
+  saved="" backup_name="" reason=""
+  [ "$db" = postgres ] || backup_name=crew-data-$from-$(date -u +%Y%m%dT%H%M%SZ).tgz
+  had_env=0
+  if [ -f "$(env_file)" ]; then had_env=1; fi
+
+  # From here until the new version answers, any failure or signal puts
+  # the previous version back (recover).
+  phase stopping || {
+    state failed "Couldn't record the update's progress in $DIR (is the disk full?); nothing changed."
     exit 1
+  }
+  trap on_exit EXIT
+  trap on_signal INT TERM HUP
+
+  state running "Stopping $from to back it up."
+  dc stop "$SERVICE" || fail_run "Couldn't stop $from to back it up"
+  if [ "$db" = postgres ]; then
+    log "Postgres: back up the database at your provider; this only keeps the previous version"
+  else
+    phase backing_up
+    backup || fail_run "The backup failed"
+    saved=$backup_name
   fi
 
-  cp -p "$(env_file)" "$DIR/backups/env.previous" 2> /dev/null || rm -f "$DIR/backups/env.previous"
+  phase setting_image
   set_image "$new_image"
+  phase starting
   state running "Starting $to."
-  if dc up -d --no-deps "$SERVICE" && healthy "$new_image"; then
-    refresh_self "$new_image"
-    echo "$UPDATER_VERSION" > "$DIR/status/updater"
-    prune_backups
-    state succeeded "Updated from $from to $to."
-    exit 0
-  fi
+  dc up -d --no-deps "$SERVICE" || fail_run "$to didn't start"
+  healthy "$new_image" || fail_run "$to didn't come up healthy"
 
-  state running "$to didn't come up healthy; going back to $from."
-  dc logs --no-color --tail 50 "$SERVICE" 2>&1 | sed 's/^/  /' || true
-  dc stop "$SERVICE" || true
-  if [ -f "$DIR/backups/env.previous" ]; then
-    cp -p "$DIR/backups/env.previous" "$(env_file)"
-  else
-    set_image "$old_image"
-  fi
-  if [ -n "$saved" ] && ! restore "$saved"; then
-    state failed "$to didn't come up healthy, and restoring $saved failed. Restore it by hand (docs/setup/upgrading.md)."
-    exit 1
-  fi
-  if dc up -d --no-deps "$SERVICE" && healthy "$old_image"; then
-    state rolled_back "$to didn't come up healthy, so $from is back${saved:+ with its data as it was}. journalctl -u crew-update has its logs."
-  else
-    state failed "$to didn't come up healthy, and neither did $from after going back. journalctl -u crew-update has the logs."
-  fi
+  # The new version answers: nothing to go back to from here.
+  rm -f "$(run_state)"
+  trap - EXIT INT TERM HUP
+  rm -f "$(previous_env)"
+  refresh_self "$new_image"
+  echo "$UPDATER_VERSION" > "$DIR/status/updater"
+  prune_backups
+  state succeeded "Updated from $from to $to."
+  exit 0
+}
+
+# fail_run REASON: the run can't go on; on_exit recovers, with REASON.
+fail_run() {
+  reason=$1
   exit 1
+}
+
+# A run killed outright (SIGKILL, a power cut) left run.state: put the
+# previous version back before anything else.
+resume_interrupted() {
+  to=$(recorded to)
+  recover "The update to ${to:-a new version} was interrupted while $(doing "$(recorded phase)")"
 }
 
 install_updater() {
@@ -348,6 +469,9 @@ Description=Watch for Crew update requests
 
 [Path]
 PathExists=$DIR/request/version
+# A run killed outright (a reboot, SIGKILL) leaves this; the next run,
+# at boot if need be, puts the previous version back.
+PathExists=$DIR/run.state
 Unit=crew-update.service
 
 [Install]
@@ -366,6 +490,9 @@ Type=oneshot
 Environment=HOME=/root
 ExecStart=$BIN run
 TimeoutStartSec=30min
+# A timeout sends SIGTERM, and the run then puts the previous version
+# back, which can take a health check's five minutes.
+TimeoutStopSec=10min
 EOF
 
   systemctl daemon-reload
