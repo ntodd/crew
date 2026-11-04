@@ -23,6 +23,9 @@ defmodule CrewProtocol.Command do
   @stop_reasons ~w(reaped timeout finished deadline admin refused revoked drain
                    cancelled lost duplicate)
 
+  # An agent or cache release tarball is tens of MiB; this only bounds it.
+  @max_tarball 2_147_483_648
+
   @file_ref {:object,
              url: {:url, required: true, max: 2048},
              sha256: {:sha256, required: true},
@@ -100,11 +103,23 @@ defmodule CrewProtocol.Command do
     "box.inventory" => [],
     "box.restart" => [boot_id: {:uuid, required: true}, force: {:boolean, default: false}],
     "cachevm.restart" => [boot_id: {:uuid, required: true}],
+    # §20.2: the agent's tarball for the box's target, and on Linux
+    # crew_cache's at the same version. Each signature is
+    # `CrewProtocol.Auth.sign_release/4`'s, over the version, the agent's
+    # own target and the tarball's SHA-256; the agent checks it before it
+    # downloads anything.
     "agent.update" => [
       version: {:version, required: true},
       url: {:url, required: true, max: 2048},
       sha256: {:sha256, required: true},
-      signature: {:base64, required: true, max: 128}
+      size: {:integer, required: true, min: 1, max: @max_tarball},
+      signature: {:base64, required: true, max: 128},
+      cache:
+        {{:object,
+          url: {:url, required: true, max: 2048},
+          sha256: {:sha256, required: true},
+          size: {:integer, required: true, min: 1, max: @max_tarball},
+          signature: {:base64, required: true, max: 128}}, []}
     ],
     "op.cancel" => [target_op_id: {:uuid, required: true}]
   }

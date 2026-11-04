@@ -85,9 +85,18 @@ defmodule CrewProtocol.Examples do
       "cachevm.restart" => %{"boot_id" => @boot_id},
       "agent.update" => %{
         "version" => "0.2.0",
-        "url" => "https://crew.example.ts.net/agent/releases/0.2.0/darwin-arm64",
+        "url" =>
+          "https://crew.example.ts.net/agent/releases/0.2.0/linux-arm64/crew-agent-0.2.0-linux-arm64.tar.gz",
         "sha256" => @sha,
-        "signature" => @sig
+        "size" => 48_000_000,
+        "signature" => @sig,
+        "cache" => %{
+          "url" =>
+            "https://crew.example.ts.net/agent/releases/0.2.0/linux-arm64/crew-cache-0.2.0-linux-arm64.tar.gz",
+          "sha256" => @sha,
+          "size" => 24_000_000,
+          "signature" => @sig
+        }
       },
       "op.cancel" => %{"target_op_id" => @op_id}
     }
