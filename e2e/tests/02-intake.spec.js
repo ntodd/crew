@@ -36,7 +36,9 @@ test("repos, runs and jobs come in over webhooks", async ({ page, request }) => 
   const row = page.locator(`#run-${run.id}`)
   await expect(row).toBeVisible()
   await expect(row).toContainText("CI")
-  await expect(row.locator("[data-job-state]")).toHaveCount(4)
+  // Jobs arrive over separate webhooks, processed by Oban: give a busy
+  // machine time.
+  await expect(row.locator("[data-job-state]")).toHaveCount(4, {timeout: 30_000})
   await shot(page, layer, "runs")
 
   await row.getByRole("link", { name: /CI/ }).click()
