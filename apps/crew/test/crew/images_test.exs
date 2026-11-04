@@ -40,4 +40,15 @@ defmodule Crew.ImagesTest do
     refute Map.has_key?(states, {box.id, image.id})
     assert states[{box.id, other.id}] == "downloading"
   end
+
+  test "a box's image.state is recorded, and one for an image the control plane doesn't have is ignored",
+       %{box: box, image: image} do
+    online(box)
+    agent_event(box, "image.state", %{"image_id" => image.id, "state" => "downloading", "progress" => 40})
+    assert Images.box_states()[{box.id, image.id}] == "downloading"
+
+    gone = CrewProtocol.uuid7()
+    agent_event(box, "image.state", %{"image_id" => gone, "state" => "ready", "progress" => 100})
+    refute Map.has_key?(Images.box_states(), {box.id, gone})
+  end
 end

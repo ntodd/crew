@@ -133,9 +133,15 @@ defmodule Crew.VMs do
     :ok
   end
 
+  # Progress comes every few seconds while a box prepares an image; only
+  # an end (ready or failed) can change a pass. An image the control
+  # plane no longer has is ignored.
   def handle_agent_event(box_id, %CrewProtocol.Event{type: "image.state", payload: p}) do
-    Images.put_box_state(box_id, p.image_id, p.state, progress: p.progress, error: p[:error])
-    Crew.Scheduler.poke()
+    if Images.get(p.image_id) do
+      Images.put_box_state(box_id, p.image_id, p.state, progress: p.progress, error: p[:error])
+      if p.state in ["ready", "failed"], do: Crew.Scheduler.poke()
+    end
+
     :ok
   end
 
