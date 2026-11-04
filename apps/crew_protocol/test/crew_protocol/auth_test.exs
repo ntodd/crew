@@ -73,6 +73,39 @@ defmodule CrewProtocol.AuthTest do
       assert {:error, :bad_signature} =
                Auth.verify_release("1.2.3", "linux-amd64", sha, "!!", public)
     end
+
+    # The box's first install checks the signature with openssl in a
+    # shell script (Crew.Boxes.Flatcar), and CI's sign job may sign with
+    # openssl too: both rebuild these exact bytes.
+    test "sign these exact bytes, with no trailing newline", %{public: public, private: private} do
+      sha = String.duplicate("a", 64)
+
+      assert Auth.release_message("1.2.3", "linux-amd64", sha) ==
+               "crew-release-v1\n1.2.3\nlinux-amd64\n" <> sha
+
+      {:ok, sig} = Auth.sign_release("1.2.3", "linux-amd64", sha, private) |> Base.decode64()
+
+      assert :crypto.verify(
+               :eddsa,
+               :none,
+               "crew-release-v1\n1.2.3\nlinux-amd64\n" <> sha,
+               sig,
+               [public, :ed25519]
+             )
+    end
+
+    test "refuse a field with a newline in it", %{public: public, private: private} do
+      sha = String.duplicate("a", 64)
+      sig = Auth.sign_release("1.2.3", "linux-amd64", sha, private)
+
+      assert {:error, :bad_signature} =
+               Auth.verify_release("1.2.3\nlinux-amd64", "", sha, sig, public)
+
+      assert {:error, :bad_signature} =
+               Auth.verify_release("1.2.3", "linux-amd64", sha <> "\n", sig, public)
+
+      assert_raise ArgumentError, fn -> Auth.release_message("1.2.3\n", "linux-amd64", sha) end
+    end
   end
 
   describe "manifest signatures" do
