@@ -864,7 +864,7 @@ The other spikes are recorded here as they run.
   every `mix.exs` version" holds without a version bump commit. A
   build has to pass `CREW_VERSION` through: the smoke test fails a
   tarball whose `bin/crew_agent version` isn't the tag's.
-  `build-linux.sh` passes `VERSION` into its build container, not
+  `build-linux.sh` passes `CREW_VERSION` into its build container, not
   `CREW_VERSION`, so today its releases report 0.1.0 (found by running
   the smoke test on a real linux-arm64 build).
 - **One sign job for everything.** `guest-image.yml` signed and
