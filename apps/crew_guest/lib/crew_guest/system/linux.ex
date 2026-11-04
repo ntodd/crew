@@ -108,6 +108,12 @@ defmodule CrewGuest.System.Linux do
     end
   end
 
+  @impl true
+  def stop(_cfg) do
+    System.stop(0)
+    :ok
+  end
+
   # Contents
 
   defp profile do

@@ -34,7 +34,11 @@ defmodule CrewGuest.Config do
     runner_env: [],
     payload_timeout_ms: 60_000,
     payload_retry_ms: 200,
+    # A stop the agent asks for: the runner gets half, the flush the rest.
     flush_timeout_ms: 10_000,
+    # The same for SIGTERM, which systemd follows with SIGKILL after the
+    # unit's stop timeout.
+    sigterm_timeout_ms: 6_000,
     metrics_interval_ms: 5_000
   ]
 

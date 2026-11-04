@@ -15,12 +15,23 @@ defmodule CrewGuest.Main do
      and token, for the hook to report `job_refused`).
   6. The job: steps, pages, metrics, the control poll, and last the runner.
 
+  Steps 1 to 5 run in a task, and so does the final flush, so this process
+  can act on a stop at any point.
+
   **When the runner exits:** `job_finished` with its exit code, then the
   rest of the pages and the worker log are read, everything is flushed
   (10 s at most) and the VM powers off.
 
   **On `{"stop": true}`** from any response: SIGTERM to the runner, up to
-  half the flush budget for it to exit, then the same, all within 10 s.
+  half the flush budget for it to exit, then the same, all within 10 s. A
+  runner still up at half time is reported `job_finished` with detail
+  `runner_stop_timeout`. During the boot, the boot is dropped and what's
+  held is flushed.
+
+  **On SIGTERM** (`sigterm/1`: systemd is stopping the VM, see
+  `CrewGuest.Signals`): the same, within `sigterm_timeout_ms` (6 s), and
+  then crew-guest exits instead of powering off. A stop already under way
+  ends by SIGTERM's deadline if that's sooner.
 
   A failed OS step (DNS, the CA, Docker) is logged and reported as a log
   line, and the boot carries on: the job may not need it.
@@ -40,6 +51,9 @@ defmodule CrewGuest.Main do
   @doc "Asks for a stop (the agent said `{\"stop\": true}`). Safe to call at any time."
   def request_stop(server \\ __MODULE__), do: GenServer.cast(server, :stop)
 
+  @doc "SIGTERM: stops in order, then exits. Safe to call at any time."
+  def sigterm(server \\ __MODULE__), do: GenServer.cast(server, :sigterm)
+
   # Server
 
   @impl true
@@ -49,74 +63,102 @@ defmodule CrewGuest.Main do
       system: Keyword.fetch!(opts, :system),
       client: Keyword.fetch!(opts, :client),
       outbox: Keyword.get(opts, :outbox, Outbox),
+      # :booting → :running → :stopping → :halting → :halted
       phase: :booting,
+      boot: nil,
       job: nil,
       runner: nil,
-      deadline: nil
+      drain: nil,
+      deadline: nil,
+      # What :halted means: :poweroff, or :exit after a SIGTERM.
+      ending: :poweroff
     }
 
-    # The job's processes and the resize task are linked: if they fail,
-    # this process still flushes and powers off in order.
+    # The job's processes and the tasks are linked: if they fail, this
+    # process still flushes and powers off in order.
     Process.flag(:trap_exit, true)
     {:ok, s, {:continue, :boot}}
   end
 
   @impl true
-  def handle_continue(:boot, s) do
-    %{cfg: cfg, system: sys} = s
-    step(s, "setting up the network", fn -> sys.setup_network(cfg) end)
-    resize = Task.async(fn -> sys.resize_root(cfg) end)
-
-    case fetch_payload(s) do
-      {:ok, payload} ->
-        {:noreply, s, {:continue, {:setup, payload, resize}}}
-
-      {:error, reason} ->
-        Logger.error("crew-guest: no payload (#{inspect(reason)}); powering off")
-        {:noreply, poweroff(s)}
-    end
-  end
-
-  def handle_continue({:setup, payload, resize}, s) do
-    %{cfg: cfg, system: sys} = s
-    pem = present(payload["ca_pem"])
-
-    if pem, do: step(s, "installing the cache CA", fn -> sys.install_ca(cfg, pem) end)
-    await_resize(s, resize)
-    step(s, "configuring Docker", fn -> sys.configure_docker(cfg, pem) end)
-    step(s, "notifying systemd", fn -> sys.notify_ready(cfg) end)
-    step(s, "starting Docker", fn -> sys.start_docker(cfg) end)
-
-    with :ok <- check_jit(s, payload["jit_config"]),
-         :ok <- prepare_runner(s, payload) do
-      {:noreply, start_job(s)}
-    else
-      :error -> {:noreply, shutdown(s, deadline(s.cfg.flush_timeout_ms))}
-    end
-  end
+  def handle_continue(:boot, s), do: {:noreply, %{s | boot: Task.async(fn -> boot(s) end)}}
 
   @impl true
-  def handle_cast(:stop, %{phase: :running} = s) do
+  def handle_cast(:stop, %{phase: :booting} = s) do
     Logger.info("crew-guest: the agent asked for a stop")
-    deadline = deadline(s.cfg.flush_timeout_ms)
-
-    try do
-      Runner.stop(s.runner)
-    catch
-      # It has just exited: its exit is already on its way here.
-      :exit, _reason -> :ok
-    end
-
-    Process.send_after(self(), :runner_stop_timeout, div(s.cfg.flush_timeout_ms, 2))
-    {:noreply, %{s | phase: :stopping, deadline: deadline}}
+    {:noreply, s |> drop_boot() |> shutdown(deadline(s.cfg.flush_timeout_ms))}
   end
 
-  def handle_cast(:stop, %{phase: :booting} = s),
-    do: {:noreply, shutdown(s, deadline(s.cfg.flush_timeout_ms))}
+  def handle_cast(:stop, %{phase: :running} = s) do
+    Logger.info("crew-guest: the agent asked for a stop")
+    {:noreply, stop_runner(s, s.cfg.flush_timeout_ms)}
+  end
 
   def handle_cast(:stop, s), do: {:noreply, s}
 
+  def handle_cast(:sigterm, %{phase: :booting} = s) do
+    s = %{s | ending: :exit}
+    {:noreply, s |> drop_boot() |> shutdown(deadline(s.cfg.sigterm_timeout_ms))}
+  end
+
+  def handle_cast(:sigterm, %{phase: :running} = s),
+    do: {:noreply, stop_runner(%{s | ending: :exit}, s.cfg.sigterm_timeout_ms)}
+
+  def handle_cast(:sigterm, %{phase: phase} = s) when phase in [:stopping, :halting] do
+    budget = s.cfg.sigterm_timeout_ms
+    if phase == :stopping, do: Process.send_after(self(), :runner_stop_timeout, div(budget, 2))
+    {:noreply, sooner(%{s | ending: :exit}, deadline(budget))}
+  end
+
+  # Powered off already: this SIGTERM is systemd carrying that out.
+  def handle_cast(:sigterm, %{phase: :halted, ending: :poweroff} = s) do
+    s.system.stop(s.cfg)
+    {:noreply, %{s | ending: :exit}}
+  end
+
+  def handle_cast(:sigterm, s), do: {:noreply, s}
+
   @impl true
+  def handle_info({ref, result}, %{boot: %Task{ref: ref}} = s) do
+    Process.demonitor(ref, [:flush])
+    s = %{s | boot: nil}
+
+    case result do
+      :ready ->
+        {:noreply, start_job(s)}
+
+      :refused ->
+        {:noreply, shutdown(s, deadline(s.cfg.flush_timeout_ms))}
+
+      {:no_payload, reason} ->
+        Logger.error("crew-guest: no payload (#{inspect(reason)}); powering off")
+        {:noreply, halt(s)}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{boot: %Task{ref: ref}} = s) do
+    report(s, "crew-guest: the boot failed (#{inspect(reason)})")
+    {:noreply, shutdown(%{s | boot: nil}, deadline(s.cfg.flush_timeout_ms))}
+  end
+
+  def handle_info({ref, result}, %{drain: %Task{ref: ref}} = s) do
+    Process.demonitor(ref, [:flush])
+    if result != :ok, do: undelivered()
+    {:noreply, halt(%{s | drain: nil})}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{drain: %Task{ref: ref}} = s) do
+    Logger.warning("crew-guest: the flush failed (#{inspect(reason)})")
+    {:noreply, halt(%{s | drain: nil})}
+  end
+
+  # The flush is out of time, even if it hasn't noticed.
+  def handle_info(:deadline, %{phase: :halting} = s) do
+    Task.shutdown(s.drain, :brutal_kill)
+    undelivered()
+    {:noreply, halt(%{s | drain: nil})}
+  end
+
   def handle_info({:runner_exited, status}, %{phase: phase} = s)
       when phase in [:running, :stopping] do
     Outbox.state(s.outbox, "job_finished", "exit_code=#{status}")
@@ -125,6 +167,7 @@ defmodule CrewGuest.Main do
 
   def handle_info(:runner_stop_timeout, %{phase: :stopping} = s) do
     Logger.warning("crew-guest: the runner didn't exit after SIGTERM")
+    Outbox.state(s.outbox, "job_finished", "runner_stop_timeout")
     {:noreply, shutdown(s, s.deadline)}
   end
 
@@ -144,7 +187,36 @@ defmodule CrewGuest.Main do
 
   def handle_info(_msg, s), do: {:noreply, s}
 
-  # Boot
+  # Boot (in its task)
+
+  defp boot(s) do
+    %{cfg: cfg, system: sys} = s
+    step(s, "setting up the network", fn -> sys.setup_network(cfg) end)
+    resize = Task.async(fn -> sys.resize_root(cfg) end)
+
+    case fetch_payload(s) do
+      {:ok, payload} -> setup(s, payload, resize)
+      {:error, reason} -> {:no_payload, reason}
+    end
+  end
+
+  defp setup(s, payload, resize) do
+    %{cfg: cfg, system: sys} = s
+    pem = present(payload["ca_pem"])
+
+    if pem, do: step(s, "installing the cache CA", fn -> sys.install_ca(cfg, pem) end)
+    await_resize(s, resize)
+    step(s, "configuring Docker", fn -> sys.configure_docker(cfg, pem) end)
+    step(s, "notifying systemd", fn -> sys.notify_ready(cfg) end)
+    step(s, "starting Docker", fn -> sys.start_docker(cfg) end)
+
+    with :ok <- check_jit(s, payload["jit_config"]),
+         :ok <- prepare_runner(s, payload) do
+      :ready
+    else
+      :error -> :refused
+    end
+  end
 
   defp fetch_payload(s) do
     deadline = deadline(s.cfg.payload_timeout_ms)
@@ -227,6 +299,15 @@ defmodule CrewGuest.Main do
     end
   end
 
+  defp drop_boot(%{boot: nil} = s), do: s
+
+  defp drop_boot(s) do
+    Task.shutdown(s.boot, :brutal_kill)
+    %{s | boot: nil}
+  end
+
+  # The job
+
   defp start_job(s) do
     %{cfg: cfg, outbox: outbox} = s
     diag = Path.join(cfg.runner_dir, "_diag")
@@ -271,21 +352,35 @@ defmodule CrewGuest.Main do
     end
   end
 
-  # Ending
-
-  defp shutdown(s, deadline) do
-    s = %{s | phase: :halting}
-
-    # Pages and steps that are left go into the outbox before the flush.
-    finish(Pages, deadline)
-    finish(Steps, deadline)
-
-    case Outbox.flush(s.outbox, max(deadline - now(), 0)) do
-      :ok -> :ok
-      {:error, :timeout} -> Logger.warning("crew-guest: powering off with reports undelivered")
+  # SIGTERM to the runner, which gets half the budget to exit.
+  defp stop_runner(s, budget) do
+    try do
+      Runner.stop(s.runner)
+    catch
+      # It has just exited: its exit is already on its way here.
+      :exit, _reason -> :ok
     end
 
-    poweroff(s)
+    Process.send_after(self(), :runner_stop_timeout, div(budget, 2))
+    %{s | phase: :stopping, deadline: deadline(budget)}
+  end
+
+  # Ending
+
+  # The flush runs apart, so a SIGTERM can still cut it short.
+  defp shutdown(s, deadline) do
+    outbox = s.outbox
+    drain = Task.async(fn -> drain(outbox, deadline) end)
+    arm(deadline)
+    %{s | phase: :halting, drain: drain, deadline: deadline}
+  end
+
+  # In its task: pages and steps that are left go into the outbox before
+  # the flush.
+  defp drain(outbox, deadline) do
+    finish(Pages, deadline)
+    finish(Steps, deadline)
+    Outbox.flush(outbox, max(deadline - now(), 0))
   end
 
   defp finish(module, deadline) do
@@ -295,7 +390,24 @@ defmodule CrewGuest.Main do
       Logger.warning("crew-guest: #{inspect(module)} didn't finish: #{inspect(reason)}")
   end
 
-  defp poweroff(s) do
+  defp sooner(%{deadline: current} = s, deadline) when deadline < current do
+    if s.phase == :halting, do: arm(deadline)
+    %{s | deadline: deadline}
+  end
+
+  defp sooner(s, _deadline), do: s
+
+  defp arm(deadline), do: Process.send_after(self(), :deadline, max(deadline - now(), 0))
+
+  defp undelivered, do: Logger.warning("crew-guest: ending with reports undelivered")
+
+  defp halt(%{ending: :exit} = s) do
+    Logger.info("crew-guest: stopping")
+    s.system.stop(s.cfg)
+    %{s | phase: :halted}
+  end
+
+  defp halt(s) do
     Logger.info("crew-guest: powering off")
     s.system.poweroff(s.cfg)
     %{s | phase: :halted}

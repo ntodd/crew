@@ -3,7 +3,10 @@ defmodule CrewGuest.Application do
 
   use Application
 
-  alias CrewGuest.{Config, Session}
+  alias CrewGuest.{Config, Session, Signals}
+
+  # Past SIGTERM's budget, the release itself gets this long to stop.
+  @release_stop_ms 2_000
 
   @impl true
   def start(_type, _args) do
@@ -32,6 +35,13 @@ defmodule CrewGuest.Application do
   defp session(true) do
     case Config.load() do
       {:ok, cfg} ->
+        # SIGTERM stops the job in order, rather than just the release.
+        :ok =
+          Signals.install(
+            on_sigterm: &Session.sigterm/0,
+            deadline_ms: cfg.sigterm_timeout_ms + @release_stop_ms
+          )
+
         [{Session, config: cfg, system: CrewGuest.System.impl(cfg.mode)}]
 
       {:error, reason} ->

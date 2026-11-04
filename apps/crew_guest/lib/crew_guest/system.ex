@@ -42,6 +42,12 @@ defmodule CrewGuest.System do
   @doc "Powers the VM off. In local mode, exits."
   @callback poweroff(Config.t()) :: :ok
 
+  @doc """
+  Ends crew-guest after a SIGTERM. Whoever sent it (systemd, on its way to
+  `poweroff.target`) is already stopping the VM, so this only exits.
+  """
+  @callback stop(Config.t()) :: :ok
+
   @spec impl(:vm | :local) :: module()
   def impl(:vm), do: CrewGuest.System.Linux
   def impl(:local), do: CrewGuest.System.Local
