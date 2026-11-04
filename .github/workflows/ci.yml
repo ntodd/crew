@@ -95,6 +95,48 @@ jobs:
       - run: mix sobelow --config --exit
       - run: mix deps.audit
       - run: mix test
+      # What Flatcar's Ignition (the version Flatcar ships) makes of the
+      # configs the control plane renders for Flatcar boxes (§12.2): every
+      # box type, arch and mode, with placeholder values.
+      - name: Validate the Flatcar Ignition
+        if: matrix.db == 'sqlite'
+        env:
+          IGNITION_VALIDATE: quay.io/coreos/ignition-validate:v2.24.0@sha256:b951f790f0ec6ae3a440ba67f2121e4ed19017d3f5024e45dd5c5916602687b2
+        run: |
+          for type in linux-metal linux-vm mac-vm; do
+            for arch in amd64 arm64; do
+              for mode in provision reprovision; do
+                flag=""
+                if [ "$mode" = reprovision ]; then flag=--reprovision; fi
+                out="$RUNNER_TEMP/$type-$arch-$mode.ign"
+                mix crew.ignition --type "$type" --arch "$arch" $flag --out "$out"
+                echo "$type $arch $mode"
+                docker run --rm -i "$IGNITION_VALIDATE" - < "$out"
+              done
+            done
+          done
+
+  # ShellCheck on what Flatcar boxes and the launchers run (§12.2,
+  # §12.3), at a pinned release checked against its SHA-256.
+  shell:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ShellCheck
+        run: |
+          tarball="$RUNNER_TEMP/shellcheck.tar.xz"
+          curl -fsSL -o "$tarball" \
+            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          echo "$SHELLCHECK_SHA256  $tarball" | sha256sum -c -
+          tar -xJf "$tarball" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck" --version
+          "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck" --shell=sh -x \
+            apps/crew/priv/flatcar/* apps/crew/priv/agent/*.sh
 
   # The UI in a real browser, against a fake GitHub (e2e/).
   browser:
