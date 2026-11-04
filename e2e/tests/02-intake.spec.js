@@ -41,7 +41,8 @@ test("repos, runs and jobs come in over webhooks", async ({ page, request }) => 
 
   await row.getByRole("link", { name: /CI/ }).click()
   await expect(page.locator("#commit-message")).toHaveText("Make the tests faster")
-  await expect(page.locator(`#job-${jobs[0].id}`)).toContainText("Waiting")
+  // Waiting, or Blocked (no boxes enrolled) once the scheduler has had a pass.
+  await expect(page.locator(`#job-${jobs[0].id}`)).toContainText(/Waiting|Blocked/)
   await expect(page.locator(`#job-${jobs[1].id}`)).toContainText("crew-l-arm64")
   await expect(page.locator(`#job-${jobs[2].id}`)).toContainText("Can't run")
   await expect(page.locator(`#job-${jobs[2].id}`)).toContainText("unknown size huge")
