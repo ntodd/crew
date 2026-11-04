@@ -405,8 +405,14 @@ defmodule CrewAgent.Driver.Firecracker do
   @impl true
   def leftovers do
     case vmctl(%{"verb" => "list"}) do
-      {:ok, resp} -> {:ok, Enum.uniq(Map.get(resp, "vms", []) ++ Map.get(resp, "jails", []))}
-      {:error, code, detail} -> {:error, "#{code}: #{detail}"}
+      {:ok, resp} ->
+        jails = for %{"vm_id" => id} = j <- Map.get(resp, "jails", []), do: {id, j["lease_index"]}
+        leases = Map.new(jails)
+        ids = Enum.uniq(Map.get(resp, "vms", []) ++ Enum.map(jails, &elem(&1, 0)))
+        {:ok, Enum.map(ids, &{&1, leases[&1]})}
+
+      {:error, code, detail} ->
+        {:error, "#{code}: #{detail}"}
     end
   end
 

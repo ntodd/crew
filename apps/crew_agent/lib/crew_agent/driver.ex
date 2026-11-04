@@ -59,9 +59,10 @@ defmodule CrewAgent.Driver do
   @callback cleanup(vm_id :: String.t()) :: :ok | {:error, term}
   @doc """
   The VMs the driver holds something for (a process, a unit, a jail),
+  each with the lease it recorded if it did,
   for the agent to hold against its records at start. Optional.
   """
-  @callback leftovers() :: {:ok, [String.t()]} | {:error, term}
+  @callback leftovers() :: {:ok, [{String.t(), non_neg_integer() | nil}]} | {:error, term}
   @optional_callbacks leftovers: 0
   @doc "How the VM ended, once it's not alive: `{:ok, %{code: integer, reason: atom | nil}}`."
   @callback exit_status(vm_id :: String.t()) :: {:ok, map()} | :unknown

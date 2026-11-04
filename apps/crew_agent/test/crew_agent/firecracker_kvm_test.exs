@@ -203,10 +203,19 @@ defmodule CrewAgent.FirecrackerKVMTest do
     orphan = CrewProtocol.uuid7()
     jail = Path.join([ctx.config.data_dir, "jail", "firecracker", orphan])
     File.mkdir_p!(Path.join(jail, "root"))
-    assert {:ok, ids} = Firecracker.leftovers()
-    assert orphan in ids
+    File.write!(Path.join(jail, "lease"), "16000\n")
+    assert {:ok, leftovers} = Firecracker.leftovers()
+    assert {orphan, 16_000} in leftovers
+
+    # Its lease is its jail's until the jail goes: crew-vmctl won't make
+    # the tap for anyone else.
+    assert {:error, "lease_in_use", _} =
+             Firecracker.vmctl(%{"verb" => "tap-add", "lease_index" => 16_000})
+
     Cleanup.reconcile()
     refute File.exists?(jail)
+    assert {:ok, _} = CrewAgent.Net.claim(other = CrewProtocol.uuid7(), 16_000)
+    CrewAgent.Net.release(other)
   end
 
   @tamper "crew_kvm_test"

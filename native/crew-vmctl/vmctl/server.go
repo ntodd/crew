@@ -72,7 +72,7 @@ type Response struct {
 	Detail  string       `json:"detail,omitempty"`
 	VM      *VMStatus    `json:"vm,omitempty"`
 	VMs     []string     `json:"vms,omitempty"`
-	Jails   []string     `json:"jails,omitempty"`
+	Jails   []JailInfo   `json:"jails,omitempty"`
 	Already bool         `json:"already,omitempty"`
 	Info    *Info        `json:"info,omitempty"`
 	Site4   *Site4Status `json:"site4,omitempty"`
@@ -293,16 +293,14 @@ func (s *Server) cleanup(ctx context.Context, vmID string, peer Peer) error {
 		_, _ = s.Sys.Run(ctx, nil, "systemctl", "reset-failed", Unit(vmID))
 	}
 	// The lease crew-vmctl recorded when it started the VM, not the
-	// agent's word for it.
-	if body, err := s.Sys.ReadFile(leaseFile(s.Paths, vmID), 32); err == nil {
-		if n, err := strconv.Atoi(strings.TrimSpace(string(body))); err == nil {
-			if l, err := s.Net.Lease(n); err == nil {
-				if err := s.pairDel(ctx, l); err != nil {
-					return err
-				}
-				if err := s.tapDel(ctx, l); err != nil {
-					return err
-				}
+	// agent's word for it, and only if no other jail records it too.
+	if n := s.jailLease(vmID); n > 0 {
+		if l, err := s.Net.Lease(n); err == nil && s.leaseHolder(n, vmID) == "" {
+			if err := s.pairDel(ctx, l); err != nil {
+				return err
+			}
+			if err := s.tapDel(ctx, l); err != nil {
+				return err
 			}
 		}
 	}
@@ -311,16 +309,47 @@ func (s *Server) cleanup(ctx context.Context, vmID string, peer Peer) error {
 
 func leaseFile(p Paths, vmID string) string { return p.JailDir(vmID) + "/lease" }
 
+// JailInfo is a VM with a jail directory, and the lease start recorded
+// there (0 when there's none).
+type JailInfo struct {
+	VMID       string `json:"vm_id"`
+	LeaseIndex int    `json:"lease_index,omitempty"`
+}
+
+// ErrLeaseInUse: another VM's jail records the lease.
+const ErrLeaseInUse = "lease_in_use"
+
 // jails is the VMs with a jail directory, live or not: what cleanup
 // still has to remove.
-func (s *Server) jails() []string {
-	ids := []string{}
+func (s *Server) jails() []JailInfo {
+	out := []JailInfo{}
 	for _, dir := range s.Sys.Glob(s.Paths.JailDir("*")) {
 		if id := filepath.Base(dir); IsUUID(id) {
-			ids = append(ids, id)
+			out = append(out, JailInfo{VMID: id, LeaseIndex: s.jailLease(id)})
 		}
 	}
-	return ids
+	return out
+}
+
+func (s *Server) jailLease(vmID string) int {
+	body, err := s.Sys.ReadFile(leaseFile(s.Paths, vmID), 32)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(body)))
+	return n
+}
+
+// leaseHolder is the VM, other than except, whose jail records lease
+// index n, or "". A lease is one jail's at most: its tap and pair are
+// that VM's until its cleanup.
+func (s *Server) leaseHolder(n int, except string) string {
+	for _, j := range s.jails() {
+		if j.LeaseIndex == n && j.VMID != except {
+			return j.VMID
+		}
+	}
+	return ""
 }
 
 func (s *Server) waitGone(ctx context.Context, vmID string, max time.Duration) error {
@@ -350,6 +379,11 @@ func (s *Server) tapAdd(ctx context.Context, l Lease) error {
 	// The tap is the VM's uid's: never someone else's.
 	if err := s.checkIDs(l); err != nil {
 		return err
+	}
+	// Nor another VM's: a jail that records the lease (a live VM, or one
+	// whose cleanup hasn't happened) keeps it, whatever the agent thinks.
+	if holder := s.leaseHolder(l.Index, ""); holder != "" {
+		return fail(ErrLeaseInUse, "lease %d is %s's (its jail records it)", l.Index, holder)
 	}
 	// A tap left by a VM that's gone (a crash mid-cleanup) is made again,
 	// so it's this lease's, owned by this uid.

@@ -56,19 +56,50 @@ defmodule CrewAgent.VMs.Cleanup do
     if File.dir?(dir), do: SafeFS.write_atomic(Path.join(dir, @marker), body, 0o640), else: :ok
   end
 
+  @conflicts {__MODULE__, :conflicts}
+  @orphans {__MODULE__, :orphans}
+
   @doc """
-  At start, before anything can start: each pending VM takes its lease
-  back, so no new VM is given a tap that may still be there.
+  Holds the lease of every VM the agent has a record of that isn't done
+  with it: live (its server or adoption has it) or with a cleanup
+  pending. The janitor does this synchronously as the agent starts,
+  before the link (and so any `vm.start`) is up, and again each minute.
+
+  Two records holding one lease is a conflict, kept with the orphans'
+  (`reconcile/0`) in `conflicts/0`, and no VM starts while there are any
+  (`CrewAgent.VMs.start/1`).
   """
-  def claim_leases(config \\ Config.get()) do
-    for vm_id <- pending_ids(config), index = lease_index(config, vm_id), is_integer(index) do
-      case Net.claim(vm_id, index) do
-        {:ok, _} -> :ok
-        {:error, why} -> Logger.error("VM #{vm_id}'s lease #{index}: #{inspect(why)}")
-      end
+  def reserve_leases(config \\ Config.get()) do
+    found =
+      for vm_id <- vm_ids(config),
+          held?(config, vm_id),
+          index = lease_index(config, vm_id),
+          is_integer(index),
+          not claim(vm_id, index),
+          do: {vm_id, index}
+
+    put_conflicts(found)
+    if found == [], do: :ok, else: {:error, found}
+  end
+
+  @doc "Leases two records (or a record and an orphan jail) hold: `[{vm_id, index}]`."
+  def conflicts, do: :persistent_term.get(@conflicts, [])
+
+  defp put_conflicts(found) do
+    if found != [] and found != conflicts() do
+      Logger.error("leases held twice, so no VM starts until it's sorted out: #{inspect(found)}")
     end
 
-    :ok
+    :persistent_term.put(@conflicts, found)
+  end
+
+  defp claim(vm_id, index), do: match?({:ok, _}, Net.claim(vm_id, index))
+
+  defp vm_ids(config) do
+    case File.ls(Config.vms_dir(config)) do
+      {:ok, names} -> Enum.filter(names, &CrewProtocol.uuid?/1)
+      _ -> []
+    end
   end
 
   @doc """
@@ -93,25 +124,63 @@ defmodule CrewAgent.VMs.Cleanup do
   end
 
   @doc """
-  At start: cleans up what the driver holds (units, jails) for VMs that
-  the agent has neither live (adoption's) nor pending (`retry_all/0`'s).
+  Cleans up what the driver holds (units, jails) for VMs the agent has
+  neither live (adoption's) nor pending (`retry_all/0`'s): at start and
+  every minute, so an orphan whose cleanup fails, or a `list` that
+  fails, is tried again. Until its cleanup works an orphan holds the
+  lease its jail recorded, so no new VM is given its tap. The jail is
+  the record of the work; nothing needs writing here.
   """
   def reconcile(config \\ Config.get()) do
     driver = Driver.impl()
 
     with true <- Code.ensure_loaded?(driver) and function_exported?(driver, :leftovers, 0),
-         {:ok, ids} <- driver.leftovers() do
-      for vm_id <- ids, CrewProtocol.uuid?(vm_id), not held?(config, vm_id) do
-        Logger.warning("VM #{vm_id} has a jail or unit and no record here: cleaning it up")
-
-        case driver.cleanup(vm_id) do
-          :ok -> :ok
-          {:error, why} -> failed(config, vm_id, inspect_why(why))
+         {:ok, leftovers} <- driver.leftovers() do
+      orphans =
+        for {vm_id, index} <- leftovers, CrewProtocol.uuid?(vm_id), not held?(config, vm_id) do
+          {vm_id, index}
         end
-      end
+
+      clashes =
+        for {id, index} <- orphans, is_integer(index), not claim(id, index), do: {id, index}
+
+      put_conflicts(Enum.uniq(conflicts() ++ clashes))
+
+      # Orphans held before and gone now (their jail went some other way)
+      # give their leases back too.
+      held = MapSet.new(for {id, i} <- orphans, is_integer(i), do: id)
+      for id <- held_orphans(), not MapSet.member?(held, id), do: Net.release(id)
+      :persistent_term.put(@orphans, held)
+
+      for {vm_id, index} <- orphans, do: clean_orphan(config, driver, vm_id, index)
     end
 
     :ok
+  end
+
+  defp held_orphans, do: :persistent_term.get(@orphans, MapSet.new())
+
+  @doc false
+  def reset do
+    :persistent_term.erase(@conflicts)
+    :persistent_term.erase(@orphans)
+  end
+
+  defp clean_orphan(config, driver, vm_id, index) do
+    Logger.warning("VM #{vm_id} has a jail or unit and no record here: cleaning it up")
+
+    case driver.cleanup(vm_id) do
+      :ok ->
+        # Its lease, if it held one, is free now.
+        if is_integer(index), do: Net.release(vm_id)
+        :persistent_term.put(@orphans, MapSet.delete(held_orphans(), vm_id))
+        put_conflicts(Enum.reject(conflicts(), &(elem(&1, 0) == vm_id)))
+
+      {:error, why} ->
+        # A VM with a directory here gets a pending record (and with it
+        # its lease); one without is found again by its jail next time.
+        failed(config, vm_id, inspect_why(why))
+    end
   end
 
   # Live (it has a vm.json and hasn't exited: adoption has it) or pending.

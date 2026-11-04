@@ -343,13 +343,56 @@ func TestList(t *testing.T) {
 		t.Fatalf("%q", sys.cmds)
 	}
 
-	// And the jails it holds, unit or not, so the agent can find any it
-	// has no record of.
-	dir := paths.JailDir("x")[:len(paths.JailDir("x"))-1]
-	sys.globs[dir+"*"] = []string{dir + vmID, dir + "0195f3a2-0000-7000-8000-00000000dead", dir + "not-a-uuid"}
+	// And the jails it holds, unit or not, with the lease each recorded,
+	// so the agent can find any it has no record of and keep their leases.
+	dead := "0195f3a2-0000-7000-8000-00000000dead"
+	jailed(sys, vmID, 3)
+	jailed(sys, dead, 0)
+	sys.globs[paths.JailDir("*")] = append(sys.globs[paths.JailDir("*")], paths.JailDir("not-a-uuid"))
 	r = handle(t, server(t, sys, time.Now()), `{"verb":"list"}`)
-	if !reflect.DeepEqual(r.Jails, []string{vmID, "0195f3a2-0000-7000-8000-00000000dead"}) {
-		t.Fatalf("%+v", r)
+	if want := []JailInfo{{VMID: vmID, LeaseIndex: 3}, {VMID: dead}}; !reflect.DeepEqual(r.Jails, want) {
+		t.Fatalf("%+v", r.Jails)
+	}
+}
+
+// jailed gives the fake host a jail directory for id, with the lease it
+// recorded (0 for none).
+func jailed(sys *fakeSys, id string, lease int) {
+	sys.globs[paths.JailDir("*")] = append(sys.globs[paths.JailDir("*")], paths.JailDir(id))
+	if lease > 0 {
+		sys.root[leaseFile(paths, id)] = []byte(fmt.Sprintf("%d\n", lease))
+	}
+}
+
+// A lease belongs to one jail at most: whatever the agent's bookkeeping
+// says, a tap another VM's jail records isn't made again for a new one,
+// and a cleanup doesn't take away a tap another jail records.
+func TestALeaseIsOneJails(t *testing.T) {
+	other := "0195f3a2-0000-7000-8000-00000000beee"
+	sys := newFake()
+	jailed(sys, other, 3)
+	sys.exists["/sys/class/net/crewt3"] = true
+	r := handle(t, server(t, sys, time.Now()), `{"verb":"tap-add","lease_index":3}`)
+	if r.OK || r.Error != ErrLeaseInUse || sys.ran("ip") {
+		t.Fatalf("tap-add of another jail's lease: %+v %q", r, sys.cmds)
+	}
+	if r := handle(t, server(t, sys, time.Now()), `{"verb":"tap-add","lease_index":4}`); !r.OK {
+		t.Fatalf("another lease: %+v", r)
+	}
+
+	clean := newFake()
+	clean.answer = showing("")
+	jailed(clean, vmID, 3)
+	jailed(clean, other, 3)
+	clean.exists["/sys/class/net/crewt3"] = true
+	if r := handle(t, server(t, clean, time.Now()), `{"verb":"cleanup","vm_id":"`+vmID+`"}`); !r.OK {
+		t.Fatal(r)
+	}
+	if clean.ran("nft") || clean.ran("ip") {
+		t.Fatalf("cleanup took a lease another jail records: %q", clean.cmds)
+	}
+	if !reflect.DeepEqual(clean.removed, []string{vmID}) {
+		t.Fatalf("removed %v", clean.removed)
 	}
 }
 

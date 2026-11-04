@@ -20,33 +20,51 @@ defmodule CrewAgent.VMs do
 
   @doc """
   `vm.start`, idempotent by `vm_id` (§10.3): a VM whose directory exists
-  answers ok if it's alive, and `duplicate` if not.
+  answers ok if it's alive, and `duplicate` if not. Nothing starts while
+  a lease is held twice (`CrewAgent.VMs.Cleanup.conflicts/0`): a new VM
+  could be given a tap that's still another's.
   """
   def start(cmd) do
     vm_id = cmd.payload.vm_id
     dir = Config.vm_dir(Config.get(), vm_id)
 
-    if File.exists?(dir) do
-      if VM.whereis(vm_id) || Driver.impl().alive?(vm_id),
-        do: :ok,
-        else: {:error, "duplicate", "VM #{vm_id} was started before"}
-    else
-      case DynamicSupervisor.start_child(@sup, {VM, {:start, cmd, nil}}) do
-        {:ok, _pid} ->
-          :ok
+    conflicts = Cleanup.conflicts()
 
-        {:error, {:start_failed, :image_not_ready}} ->
-          {:error, "image_not_ready", "the image isn't ready on this box"}
+    cond do
+      conflicts != [] ->
+        {:error, "lease_conflict",
+         "leases held twice: " <> Enum.map_join(conflicts, ", ", fn {id, n} -> "#{n} (#{id})" end)}
 
-        {:error, {:start_failed, reason}} ->
-          {:error, "start_failed", to_string(reason)}
+      File.exists?(dir) ->
+        existing(vm_id)
 
-        {:error, :duplicate} ->
-          {:error, "duplicate", "VM #{vm_id} was started before"}
+      true ->
+        start_new(cmd, vm_id)
+    end
+  end
 
-        {:error, reason} ->
-          {:error, "start_failed", inspect(reason)}
-      end
+  defp existing(vm_id) do
+    if VM.whereis(vm_id) || Driver.impl().alive?(vm_id),
+      do: :ok,
+      else: {:error, "duplicate", "VM #{vm_id} was started before"}
+  end
+
+  defp start_new(cmd, vm_id) do
+    case DynamicSupervisor.start_child(@sup, {VM, {:start, cmd, nil}}) do
+      {:ok, _pid} ->
+        :ok
+
+      {:error, {:start_failed, :image_not_ready}} ->
+        {:error, "image_not_ready", "the image isn't ready on this box"}
+
+      {:error, {:start_failed, reason}} ->
+        {:error, "start_failed", to_string(reason)}
+
+      {:error, :duplicate} ->
+        {:error, "duplicate", "VM #{vm_id} was started before"}
+
+      {:error, reason} ->
+        {:error, "start_failed", inspect(reason)}
     end
   end
 

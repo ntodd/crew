@@ -82,8 +82,8 @@ range's capacity less one (16,383 for a /16). `force` is a boolean.
 | `start` | `vm_id` | Reads `vms/<vm_id>/vm.json` and `fc.json`, checks them (below), checks the packet filter itself (as `nft-verify`, refilling a short `site4` once), lays out the jail and runs the VM's unit. Refused (`already_launched`) if the unit is live or the jail directory exists: a VM is launched once. Refused (`nft_mismatch`, `site4_not_ready`) if the filter doesn't verify, whatever the agent last saw. |
 | `stop` | `vm_id`, `force` | `systemctl kill --kill-whom=main --signal=SIGKILL` (force) or `systemctl stop --no-block` the unit. `not_found` if it isn't running. Only the main process, the VMM: killing the whole cgroup (systemd uses `cgroup.kill`) also kills the `ExecStopPost` forked into it a moment later, and the exit record with it. |
 | `status` | `vm_id` | The unit's `ActiveState` (`gone` once systemd has dropped it), `SubState`, main PID, and the exit record once there is one. |
-| `list` | | Every `crew-vm-*` unit systemd knows (`vms`), and every VM with a jail directory (`jails`), live or not: what `cleanup` would still remove. The agent cleans up any it has no live or pending record of, at start. |
-| `tap-add` / `tap-del` | `lease_index` | `crewt<n>`, owned by uid and gid 200000 + n, with `<gateway>/30`, `disable_ipv6=1` and `rp_filter=1` (set before the link is up). `tap-add` makes a leftover tap again. |
+| `list` | | Every `crew-vm-*` unit systemd knows (`vms`), and every VM with a jail directory (`jails`: `{vm_id, lease_index}`, the lease `start` recorded), live or not: what `cleanup` would still remove. The agent cleans up any it has no live or pending record of, at start and every minute, and holds their leases until it has. |
+| `tap-add` / `tap-del` | `lease_index` | `crewt<n>`, owned by uid and gid 200000 + n, with `<gateway>/30`, `disable_ipv6=1` and `rp_filter=1` (set before the link is up). `tap-add` makes a leftover tap again, but refuses (`lease_in_use`) a lease any VM's jail records: a lease is one jail's until that VM's cleanup, whatever the agent's bookkeeping says. `cleanup` likewise leaves a pair and tap another jail records. |
 | `pair-add` / `pair-del` | `lease_index` | `crewt<n> . <guest>` in `inet crew`'s `vm_pairs`. Deleting one that's gone is fine. |
 | `nft-verify` | | Compares the loaded rules with the shipped ones (below): `nft_mismatch` on any difference. Then checks that `site4` holds everything crew-net puts there (more is fine): `site4_not_ready` if not. Answers `site4: {egress, prefixes}`, the egress address in it if crew-vmctl knows one. It only looks. |
 | `site4` | | Refills `site4` now, as crew-net's timer does. The agent asks when it learns a new egress address. |
@@ -94,7 +94,7 @@ range's capacity less one (16,383 for a /16). `force` is a boolean.
 
 Error codes: `bad_request`, `unknown_verb`, `invalid_config`,
 `already_launched`, `not_found`, `busy`, `nft_mismatch`,
-`site4_not_ready`, `id_in_use`, `failed`.
+`site4_not_ready`, `id_in_use`, `lease_in_use`, `failed`.
 
 Two more commands aren't verbs, since no socket request reaches them:
 `crew-vmctl exited <vm_id>` (the unit's `ExecStopPost`) and

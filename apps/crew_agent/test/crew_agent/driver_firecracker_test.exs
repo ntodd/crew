@@ -338,10 +338,15 @@ defmodule CrewAgent.Driver.FirecrackerTest do
 
   test "leftovers are every unit and jail crew-vmctl holds", ctx do
     vmctl(ctx, fn %{"verb" => "list"} ->
-      %{"ok" => true, "vms" => ["a", "b"], "jails" => ["b", "c"]}
+      %{
+        "ok" => true,
+        "vms" => ["a", "b"],
+        "jails" => [%{"vm_id" => "b", "lease_index" => 4}, %{"vm_id" => "c"}]
+      }
     end)
 
-    assert {:ok, ["a", "b", "c"]} = Firecracker.leftovers()
+    # With the lease each jail recorded, so the agent can hold it.
+    assert {:ok, [{"a", nil}, {"b", 4}, {"c", nil}]} = Firecracker.leftovers()
   end
 
   describe "capabilities" do

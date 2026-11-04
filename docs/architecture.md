@@ -221,10 +221,20 @@ The other spikes are recorded here as they run.
   space anyway, and the disk watchdog sees it); its directory isn't
   swept. A start whose cleanup fails keeps its directory the same way,
   with an exit record. `CrewAgent.VMs.Janitor`, which replaced the
-  adoption task, retries at start (after taking the pending leases back,
-  before anything can start) and every minute. At start it also cleans
-  up whatever crew-vmctl holds (`list`: units and jails) for VMs with no
-  live or pending record here.
+  adoption task, takes every lease the agent's records hold (live VMs,
+  pending cleanups) in its `init`, so before the link starts and any
+  `vm.start` can come; adoption follows asynchronously. A lease two
+  records hold is a conflict that refuses every `vm.start`
+  (`lease_conflict`) until it's sorted out. Every minute it retakes the
+  leases, retries pending cleanups and cleans up whatever crew-vmctl
+  holds (`list`: units, and jails with the lease each recorded) for VMs
+  with no live or pending record here, holding each such orphan's lease
+  until its cleanup works; the jail is the record, so a failed cleanup
+  or a failed `list` is simply tried again.
+- **A lease is one jail's,** on crew-vmctl's side too: `tap-add` refuses
+  a lease any VM's jail records (`lease_in_use`), and `cleanup` leaves a
+  pair and tap another jail records, so a mistake in the agent's
+  bookkeeping can't give one VM's tap to another or delete it.
 - **When the filter stops verifying:** crew-vmctl's `start` checks it
   itself (about 50 ms a start on the M3's VM), and the agent kills every
   VM on the box when crew-vmctl says it doesn't verify twice in a row
