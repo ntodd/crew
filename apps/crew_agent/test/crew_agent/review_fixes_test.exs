@@ -81,25 +81,30 @@ defmodule CrewAgent.ReviewFixesTest do
   test "the inventory stays within the protocol's bounds, live VMs first" do
     dir = Config.vms_dir(Config.get())
 
-    for _ <- 1..1005 do
-      id = CrewProtocol.uuid7()
-      File.mkdir_p!(Path.join(dir, id))
+    ids =
+      for _ <- 1..1005 do
+        id = CrewProtocol.uuid7()
+        File.mkdir_p!(Path.join(dir, id))
 
-      File.write!(
-        Path.join([dir, id, "exited.json"]),
-        Jason.encode!(%{
-          "reason" => "poweroff",
-          "code" => 0,
-          "at" => System.os_time(:millisecond)
-        })
-      )
-    end
+        File.write!(
+          Path.join([dir, id, "exited.json"]),
+          Jason.encode!(%{
+            "reason" => "poweroff",
+            "code" => 0,
+            "at" => System.os_time(:millisecond)
+          })
+        )
+
+        id
+      end
 
     vms = VMs.inventory()
     assert length(vms) <= 1000
     assert {:ok, _} = CrewProtocol.Event.new("box.inventory", %{vms: vms, images: []})
     :ok = VMs.sweep_exited(-1)
-    assert Enum.all?(VMs.inventory(), & &1.alive)
+    # (An earlier test's VM can record its exit after the sweep.)
+    left = MapSet.new(VMs.inventory(), & &1.vm_id)
+    refute Enum.any?(ids, &MapSet.member?(left, &1))
   end
 
   test "on vz, each VM gets its own guest.sock, and it only answers for that VM" do
