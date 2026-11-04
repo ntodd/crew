@@ -75,6 +75,8 @@ test("a Flatcar box enrolls and runs a job VM under Firecracker", async ({page, 
   // The first verdict comes before the box learns its egress address.
   await expect(page.locator("#capabilities")).toContainText("Firewall verified", {timeout: 120_000})
   await shot(page, layer, "flatcar-box")
+  // Its registry cache (crew-cache.service) took the deployment's config.
+  await expect(page.locator("#operations")).toContainText(/Configure the cache\s*succeeded/, {timeout: 120_000})
 
   // The real guest image, prepared on the box from the control plane.
   await page.goto("/admin/images")
