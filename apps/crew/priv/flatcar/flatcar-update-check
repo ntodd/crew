@@ -1,0 +1,17 @@
+#!/bin/sh
+# Flags an OS update update-engine has applied, which takes effect on the
+# next boot, the way Debian flags one (Foreman's flatcar-update-check,
+# docs/crew_spec.md §12.1): /run/reboot-required, with what asked for it
+# in /run/reboot-required.pkgs. The agent reports both in box.reboot, and
+# an admin reboots the box from its page. From crew-flatcar-update.timer,
+# every minute.
+set -u
+status=$(update_engine_client -status 2>/dev/null) || exit 0
+case "$status" in
+  *UPDATE_STATUS_UPDATED_NEED_REBOOT*) ;;
+  *) exit 0 ;;
+esac
+version=$(printf '%s\n' "$status" | sed -n 's/^NEW_VERSION=//p')
+line="flatcar-${version:-update}"
+grep -qxF "$line" /run/reboot-required.pkgs 2>/dev/null || echo "$line" >> /run/reboot-required.pkgs
+[ -e /run/reboot-required ] || echo "*** System restart required ***" > /run/reboot-required

@@ -1,0 +1,36 @@
+# What a Crew release pins for its Flatcar boxes (docs/crew_spec.md
+# §12.1, §12.3): the first-boot Flatcar, the Tailscale system extension
+# the Ignition installs, and vfkit for the mac-vm launcher. Flatcar keeps
+# a box current after its first boot; these only decide where it starts.
+#
+# The single source: the control plane compiles it into the Ignition
+# (Crew.Boxes.Flatcar) and fills the launchers (/agent/linux-vm.sh,
+# /agent/mac-vm.sh) from it. KEY=value, no quotes, no spaces. Bumping any
+# of these is a supply-chain review (§20.4).
+
+# Flatcar Container Linux, stable. The SHA-512s are from the release's
+# signed DIGESTS files (flatcar_production_image.bin.bz2.DIGESTS and
+# flatcar_production_image.vmlinuz.DIGESTS, under
+# https://stable.release.flatcar-linux.net/<arch>-usr/<version>/), the
+# verity hashes from its flatcar_production_image_verity.txt.
+FLATCAR_VERSION=4757.2.3
+FLATCAR_IMAGE_SHA512_AMD64=f3d1391c9c36594abcaa5674716d95997c25ec334b75548b93873857e72d6d840621066807a85a47a7a3b4161d5259d0e88b8822c78eef369ba2be8bd57568d1
+FLATCAR_IMAGE_SHA512_ARM64=5fdbb01d9d9706e7d93b22f619148723d6e88b300d241c2773ff34c17b93b81965798d29a5b6138a2a7197a8fd7b027d5093b458cacf90330360816c8a0b08e4
+FLATCAR_KERNEL_SHA512_AMD64=8ac5ce48e95b6a62baa8b342b022c1c0df994fc30c3042e062acd50eb13672e132ebd0a5ce3517a02aaa7582125c8dfeeb4aabd0bf85a2b7a5a7f644b4be773d
+FLATCAR_KERNEL_SHA512_ARM64=e9d852a45c4953123f513589f0c6b22abd3fbd58354875884fa03bc73d0be85b884cfcadb03646dc66b4b8ad9d710a2830cceee4f3b14712163fa56115f772b2
+FLATCAR_VERITY_AMD64=1eda159b35fabd052c62622359e7a2069af95db3ef23924c9c5652e444715586
+FLATCAR_VERITY_ARM64=6ae5c5ebc899cb7e26ff0cf052d73929ebb0340d53d537c96a4957eafa5184f4
+# The USR-A partition every Flatcar image boots from first (the mac-vm
+# prep boot mounts /usr by it and the verity hash).
+FLATCAR_USR_A=7130c94a-213a-4e5a-8e26-6cce9662f132
+
+# Tailscale from Flatcar's sysext bakery (https://extensions.flatcar.org),
+# by the SHA-256s in its SHA256SUMS. The bakery calls amd64 x86-64.
+TAILSCALE_SYSEXT_VERSION=v1.104.4
+TAILSCALE_SYSEXT_SHA256_AMD64=e4e4a13af92b61711ea3a9a4413e7769502024b33f60860c9de15a270021b221
+TAILSCALE_SYSEXT_SHA256_ARM64=e6ef409eb52e4fc10fc08b5011274b03f54181b1c7bdef3c3a5f5c48e6bd7f37
+
+# vfkit (crc-org/vfkit): Red Hat's signed universal release binary, with
+# the virtualization entitlement.
+VFKIT_VERSION=v0.6.4
+VFKIT_SHA256=0ed83fc8ca7aa708598835480dba1362406aa7cd1dab3b27464eb76327d9652d
