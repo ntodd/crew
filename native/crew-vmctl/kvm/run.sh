@@ -2,10 +2,18 @@
 # Runs the agent's :kvm suite (apps/crew_agent/test/crew_agent/firecracker_kvm_test.exs)
 # on this Linux host: real Firecracker VMs through crew-vmctl, as a box runs them.
 #
-#   sudo CREW_REAL_IMAGE_DIR=<dir> native/crew-vmctl/kvm/run.sh [--keep]
+#   sudo CREW_REAL_IMAGE_DIR=<dir> native/crew-vmctl/kvm/run.sh [--keep] [--conformance]
 #
 # CREW_REAL_IMAGE_DIR holds the guest image: `Image` (arm64) or `kernel`, and
 # `rootfs.ext4`. On /srv/crew's filesystem it's reflinked, not copied.
+#
+# --conformance runs the driver conformance suite (spec §11.6,
+# apps/crew_agent/test/conformance/) instead of the :kvm suite, with
+# crew_cache up on 10.199.0.1 (./cache.sh) for item 4. The image must have
+# the conformance check (images/guest/conformance). These pass through:
+# CREW_CONFORMANCE_TARGETS, CREW_CONFORMANCE_EGRESS, CREW_CONFORMANCE_KIND,
+# CREW_CONFORMANCE_STARTS, and CREW_CONFORMANCE_ONLY (a test name, for
+# `mix test --only test:<name>`).
 #
 # From a checkout of this repo, it:
 #   1. checks the host: root, /dev/kvm, systemd, nft, iptables-nft, ip, and
@@ -17,7 +25,7 @@
 #      checks the units in one boot transaction (systemd-analyze verify),
 #      puts them in /run/systemd/system (runtime only, gone at reboot)
 #      and starts crew-net and crew-vmctl.socket;
-#   5. runs `mix test --only kvm` as root, on the host's network;
+#   5. runs `mix test --only kvm` (or the conformance suite) as root, on the host's network;
 #   6. checks nothing is left: crew-vm units, taps, vm_pairs elements, jails;
 #   7. takes it all down again, unless --keep.
 #
@@ -39,7 +47,14 @@ marker=$data/.crew-kvm-test
 units="crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.service crew-net-site4.timer"
 docker_sock=/run/crew-kvm-docker.sock
 keep=0
-[ "${1:-}" = "--keep" ] && keep=1
+conformance=0
+for arg in "$@"; do
+  case $arg in
+    --keep) keep=1 ;;
+    --conformance) conformance=1 ;;
+    *) echo "kvm: unknown argument $arg" >&2 && exit 64 ;;
+  esac
+done
 
 say() { echo "kvm: $*"; }
 die() {
@@ -87,6 +102,7 @@ dock() { DOCKER_HOST=unix://$docker_sock docker "$@"; }
 # shellcheck disable=SC2329 # the EXIT trap's
 teardown() {
   status=$?
+  [ "$conformance" = 0 ] || "$here/cache.sh" down --if-ours || true
   if [ "$keep" = 0 ]; then
     say "taking it down"
     systemctl stop crew-vmctl.socket crew-net-site4.timer crew-net.service 2>/dev/null || true
@@ -204,11 +220,28 @@ ip -br addr show crew0
 
 # -- 5. the tests ---------------------------------------------------------------------
 
-say "mix test --only kvm"
+tests="--only kvm"
+if [ "$conformance" = 1 ]; then
+  # Item 4's cache, on 10.199.0.1 as a box's (crew0 is crew-net's now).
+  "$here/cache.sh" up
+  export CREW_CONFORMANCE_DRIVER=firecracker CREW_CONFORMANCE_CACHE_MGMT=http://127.0.0.1:7780
+  CREW_CONFORMANCE_CACHE_TOKEN=$(cat "$work/cache.token")
+  export CREW_CONFORMANCE_CACHE_TOKEN
+  if [ -n "${CREW_CONFORMANCE_ONLY:-}" ]; then
+    tests="test/conformance --only test:$CREW_CONFORMANCE_ONLY"
+  else
+    tests="test/conformance --only conformance"
+  fi
+fi
+pass_env="CREW_CONFORMANCE_DRIVER CREW_CONFORMANCE_CACHE_MGMT CREW_CONFORMANCE_CACHE_TOKEN
+  CREW_CONFORMANCE_TARGETS CREW_CONFORMANCE_EGRESS CREW_CONFORMANCE_KIND CREW_CONFORMANCE_STARTS"
+
+say "mix test $tests"
 status=0
 if [ "$native" = 1 ]; then
+  # shellcheck disable=SC2086 # $tests is words
   (cd "$repo/apps/crew_agent" && export MIX_ENV=test CREW_REAL_IMAGE_DIR="$image" &&
-    mix deps.get && mix test --only kvm) || status=$?
+    mix deps.get && mix test $tests) || status=$?
 else
   # The image, plus make and a compiler (muontrap compiles a C port) and
   # nft (a test changes the ruleset, as root on the host's network, so the
@@ -219,13 +252,16 @@ else
       "$ELIXIR_IMAGE" | dock build --network host -q -t "$tag" -
   fi
   mkdir -p "$work/mix" "$work/hex"
+  envs=""
+  for v in $pass_env; do envs="$envs -e $v"; done
+  # shellcheck disable=SC2086,SC2016 # $envs is words (-e NAME passes NAME through); $TESTS is the container's
   dock run --rm --network host --cgroupns host --cap-add NET_ADMIN --device /dev/kvm --device /dev/net/tun \
     -v "$data:$data" -v /run/crew:/run/crew -v "$image:$image:ro" -v "$repo:/src" \
-    -v "$work/mix:/root/.mix" -v "$work/hex:/root/.hex" \
-    -e MIX_ENV=test -e CREW_REAL_IMAGE_DIR="$image" -w /src/apps/crew_agent \
+    -v "$work/mix:/root/.mix" -v "$work/hex:/root/.hex" $envs \
+    -e MIX_ENV=test -e CREW_REAL_IMAGE_DIR="$image" -e TESTS="$tests" -w /src/apps/crew_agent \
     "$tag" sh -c 'mix local.hex --force --if-missing >/dev/null &&
       mix local.rebar --force --if-missing >/dev/null && mix deps.get >/dev/null &&
-      mix test --only kvm' || status=$?
+      mix test $TESTS' || status=$?
 fi
 
 # -- 6. nothing left ---------------------------------------------------------------------
