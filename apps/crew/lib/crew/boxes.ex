@@ -17,7 +17,8 @@ defmodule Crew.Boxes do
   import Ecto.Query
 
   alias Crew.{Activity, Audit, Repo, Scope}
-  alias Crew.Boxes.{Box, JoinToken}
+  alias Crew.Agents.Releases
+  alias Crew.Boxes.{Box, Flatcar, JoinToken}
 
   @token_ttl 3600
   @drift 0.10
@@ -43,12 +44,18 @@ defmodule Crew.Boxes do
   @doc """
   Creates a join token for a box. Returns the raw token, shown once; only
   its hash is stored.
+
+  For a Flatcar box (§12.2) it also keeps what the box's Ignition needs:
+  the data disk (`linux-metal` only, required there), a break-glass SSH
+  key for `core`, and a Tailscale auth key the admin pasted (stored
+  encrypted, and forgotten at enrollment).
   """
   def create_join_token(%Scope{} = scope, attrs) do
     types = %{
       box_name: :string,
       box_type: :string,
       data_disk: :string,
+      ssh_keys: :string,
       tailscale_auth_key: :string
     }
 
@@ -62,8 +69,14 @@ defmodule Crew.Boxes do
           else: [box_name: "must be a lowercase DNS label of at most 40 characters"]
       end)
       |> Ecto.Changeset.validate_inclusion(:box_type, Box.types())
-      |> Ecto.Changeset.validate_format(:data_disk, ~r"\A/dev/[a-z0-9/]{1,40}\z",
-        message: "must be a device like /dev/sdb"
+      |> validate_data_disk()
+      |> Ecto.Changeset.validate_change(:ssh_keys, fn :ssh_keys, keys ->
+        if Enum.all?(split_keys(keys), &Flatcar.ssh_key?/1),
+          do: [],
+          else: [ssh_keys: "must be SSH public keys, one per line"]
+      end)
+      |> Ecto.Changeset.validate_format(:tailscale_auth_key, ~r/\Atskey-[A-Za-z0-9_-]+\z/,
+        message: "must be a Tailscale auth key (tskey-...)"
       )
 
     cond do
@@ -77,12 +90,15 @@ defmodule Crew.Boxes do
         data = Ecto.Changeset.apply_changes(changeset)
         raw = "cj_" <> (32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false))
 
+        flatcar? = data.box_type in Flatcar.types()
+
         Repo.insert!(%JoinToken{
           token_hash: hash(raw),
           box_name: data.box_name,
           box_type: data.box_type,
-          data_disk: data[:data_disk],
-          tailscale_auth_key: data[:tailscale_auth_key],
+          data_disk: if(data.box_type == "linux-metal", do: data[:data_disk]),
+          ssh_keys: if(flatcar?, do: split_keys(data[:ssh_keys]), else: []),
+          tailscale_auth_key: if(flatcar?, do: data[:tailscale_auth_key]),
           created_by_id: scope.user.id,
           expires_at: DateTime.add(DateTime.utc_now(), @token_ttl)
         })
@@ -91,6 +107,29 @@ defmodule Crew.Boxes do
         {:ok, raw}
     end
   end
+
+  defp validate_data_disk(changeset) do
+    if Ecto.Changeset.get_field(changeset, :box_type) == "linux-metal" do
+      changeset
+      |> Ecto.Changeset.validate_required([:data_disk],
+        message: "is needed for a dedicated Linux machine"
+      )
+      |> Ecto.Changeset.validate_change(:data_disk, fn :data_disk, disk ->
+        if Flatcar.data_disk?(disk),
+          do: [],
+          else: [data_disk: "must be a device like /dev/sdb or /dev/disk/by-id/..."]
+      end)
+    else
+      changeset
+    end
+  end
+
+  # SSH keys, given as a list or one per line.
+  defp split_keys(keys) when is_list(keys),
+    do: keys |> Enum.filter(&is_binary/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+
+  defp split_keys(keys) when is_binary(keys), do: keys |> String.split(~r/\R/) |> split_keys()
+  defp split_keys(_), do: []
 
   @doc """
   Enrolls an agent: spends the join token and records the agent's public
@@ -105,7 +144,11 @@ defmodule Crew.Boxes do
            true <- is_nil(token.used_at) and DateTime.compare(token.expires_at, now) == :gt,
            {:ok, public_key} <- decode_key(attrs["public_key"]),
            {:ok, box} <- upsert_enrolled_box(token, public_key, attrs) do
-        token |> Ecto.Changeset.change(used_at: now, box_id: box.id) |> Repo.update!()
+        # The Tailscale key was for this box's first boot, which this is.
+        token
+        |> Ecto.Changeset.change(used_at: now, box_id: box.id, tailscale_auth_key: nil)
+        |> Repo.update!()
+
         Audit.log(nil, "box.enroll", box, %{"agent_version" => attrs["agent_version"]})
         disconnect(box)
         Activity.record("box_joined", "#{box.name} enrolled", box_id: box.id)
@@ -118,6 +161,140 @@ defmodule Crew.Boxes do
   end
 
   def enroll(_, _), do: {:error, :invalid_token}
+
+  # -- Flatcar boxes (§12.2) -------------------------------------------------------
+
+  @doc """
+  The first-boot Ignition for the Flatcar box `raw_token` enrolls, for
+  `params["arch"]` (`amd64` or `arm64`), with `params["ssh_keys"]` (the
+  launcher's own key, a list or one per line) added to the token's
+  break-glass key for `core`. Returns `{:ok, config, box_name}`.
+
+  It embeds the token, which stays good for the agent's own enrollment
+  (that spends it), the release key, the newest release for the arch,
+  and the box's Tailscale key: the one pasted on Add box, or one minted
+  with the OAuth client the first time it's asked for and kept for the
+  next ask. See `Crew.Boxes.Flatcar`.
+  """
+  def flatcar_ignition(raw_token, params) do
+    arch = params["arch"]
+
+    with true <- arch in Flatcar.arches() || {:error, :bad_arch},
+         %JoinToken{} = token <- valid_join_token(raw_token) || {:error, :invalid_token},
+         true <- token.box_type in Flatcar.types() || {:error, :not_flatcar},
+         {:ok, release} <- Releases.install_set(Flatcar.target(arch)),
+         {:ok, ts_key} <- box_tailscale_key(token),
+         {:ok, config} <-
+           Flatcar.ignition(%{
+             mode: :provision,
+             name: token.box_name,
+             type: token.box_type,
+             arch: arch,
+             data_disk: token.data_disk,
+             ssh_keys: token.ssh_keys ++ split_keys(params["ssh_keys"]),
+             url: Crew.Config.base_url(),
+             join_token: raw_token,
+             tailscale_auth_key: ts_key,
+             release: %{
+               version: release.version,
+               agent: artifact(release.agent),
+               cache: artifact(release.cache)
+             },
+             release_key: Crew.Config.release_public_key(),
+             dev: Crew.Config.dev?()
+           }) do
+      {:ok, config, token.box_name}
+    end
+  end
+
+  defp artifact(release),
+    do: %{url: Releases.url(release), sha256: release.sha256, signature: release.signature}
+
+  defp valid_join_token(raw) when is_binary(raw) do
+    case Repo.get_by(JoinToken, token_hash: hash(raw)) do
+      %JoinToken{used_at: nil} = token ->
+        if DateTime.compare(token.expires_at, DateTime.utc_now()) == :gt, do: token
+
+      _ ->
+        nil
+    end
+  end
+
+  defp valid_join_token(_), do: nil
+
+  defp box_tailscale_key(%JoinToken{tailscale_auth_key: key}) when is_binary(key), do: {:ok, key}
+
+  defp box_tailscale_key(token),
+    do: if(Crew.Tailscale.configured?(), do: mint_box_key(token), else: {:ok, nil})
+
+  # Minted outside a transaction (it's a call to Tailscale), then kept
+  # only if no other request stored one first: a key minted by a request
+  # that lost the race expires unused.
+  defp mint_box_key(token) do
+    expiry = max(DateTime.diff(token.expires_at, DateTime.utc_now()), 600)
+
+    case Crew.Tailscale.create_box_auth_key(token.box_name, expiry) do
+      {:ok, key} ->
+        Repo.update_all(
+          from(t in JoinToken, where: t.id == ^token.id and is_nil(t.tailscale_auth_key)),
+          set: [tailscale_auth_key: key]
+        )
+
+        {:ok, Repo.reload!(token).tailscale_auth_key}
+
+      {:error, reason} ->
+        {:error, {:tailscale, reason}}
+    end
+  end
+
+  @doc """
+  The data disk a `linux-metal` box was added with (its newest join
+  token's), or nil.
+  """
+  def data_disk(%Box{id: id}) do
+    Repo.one(
+      from t in JoinToken,
+        where: t.box_id == ^id and not is_nil(t.data_disk),
+        order_by: [desc: t.inserted_at],
+        limit: 1,
+        select: t.data_disk
+    )
+  end
+
+  @doc """
+  The reprovision Ignition for a Flatcar box (§12.2): no join token, no
+  Tailscale key, for a new OS disk over the box's data disk. A
+  `linux-metal` box's data disk is `params["data_disk"]`, or the one it
+  was added with. Admins only; audited.
+  """
+  def reprovision_ignition(%Scope{} = scope, %Box{} = box, params) do
+    cond do
+      not Scope.admin?(scope) ->
+        {:error, :unauthorized}
+
+      box.type not in Flatcar.types() ->
+        {:error, :not_flatcar}
+
+      true ->
+        disk = present(params["data_disk"]) || data_disk(box)
+
+        with {:ok, config} <-
+               Flatcar.ignition(%{
+                 mode: :reprovision,
+                 name: box.name,
+                 type: box.type,
+                 arch: params["arch"],
+                 data_disk: disk,
+                 ssh_keys: split_keys(params["ssh_keys"])
+               }) do
+          Audit.log(scope, "box.reprovision_ignition", box, %{"arch" => params["arch"]})
+          {:ok, config}
+        end
+    end
+  end
+
+  defp present(value) when is_binary(value) and value != "", do: String.trim(value)
+  defp present(_), do: nil
 
   defp upsert_enrolled_box(token, public_key, attrs) do
     box = get_by_name(token.box_name) || %Box{name: token.box_name}

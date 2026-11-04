@@ -36,6 +36,66 @@ defmodule CrewWeb.AgentController do
   end
 
   @doc """
+  A Flatcar box's first-boot Ignition for a join token (§12.2, Foreman's):
+  `join_token`, `arch` and optional `ssh_keys[]`, answered with the box's
+  name in `X-Crew-Box`. It carries the token, so a bad one counts against
+  the client like a failed enrollment; a good one stays good for the
+  agent's own enrollment.
+  """
+  def flatcar_ignition(conn, params) do
+    key = "enroll-failed:#{CrewWeb.ClientIP.from_conn(conn)}"
+
+    with false <- RateLimit.exhausted?(key, @window, @max_failures),
+         {:ok, config, name} <- Boxes.flatcar_ignition(params["join_token"], params) do
+      conn
+      |> put_resp_header("cache-control", "no-store")
+      |> put_resp_header("x-crew-box", name)
+      |> put_resp_header(
+        "content-disposition",
+        ~s(attachment; filename="crew-#{name}-#{params["arch"]}.ign")
+      )
+      |> json(config)
+    else
+      true ->
+        conn |> put_status(:too_many_requests) |> json(%{error: "too many attempts"})
+
+      {:error, :invalid_token} ->
+        RateLimit.failed(key, @window, @max_failures)
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "join token is invalid, expired or used"})
+
+      {:error, reason} ->
+        {status, message} = ignition_error(reason, params)
+        conn |> put_status(status) |> json(%{error: message})
+    end
+  end
+
+  defp ignition_error(:bad_arch, _),
+    do: {:bad_request, "arch must be one of: #{Enum.join(Crew.Boxes.Flatcar.arches(), ", ")}"}
+
+  defp ignition_error(:bad_ssh_key, _), do: {:bad_request, "ssh_keys must be SSH public keys"}
+
+  defp ignition_error(:not_flatcar, _),
+    do:
+      {:bad_request,
+       "this join token is for a mac-vz box, which doesn't run Flatcar; its Add box page has the steps"}
+
+  defp ignition_error(:no_release, params),
+    do:
+      {:service_unavailable,
+       "no agent release for #{Crew.Boxes.Flatcar.target(params["arch"])} is registered (CREW_AGENT_RELEASE_DIR)"}
+
+  defp ignition_error(:no_release_key, _),
+    do: {:service_unavailable, "no release key is configured (CREW_RELEASE_PUBLIC_KEY)"}
+
+  defp ignition_error({:tailscale, reason}, _),
+    do: {:bad_gateway, "Tailscale wouldn't mint the box a key: #{inspect(reason)}"}
+
+  defp ignition_error(reason, _), do: {:bad_request, "can't make this box's Ignition: #{reason}"}
+
+  @doc """
   A registered release file: the tarball, or its `.sha256` or `.sig`.
   Only in development do boxes download from here (`Releases.url/1`);
   the control plane serves what it holds either way, as Foreman's does.

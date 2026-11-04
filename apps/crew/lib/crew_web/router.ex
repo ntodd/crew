@@ -72,12 +72,15 @@ defmodule CrewWeb.Router do
   # pipeline: tarballs and scripts aren't JSON, and curl asks for */*.
   scope "/agent", CrewWeb do
     get "/releases/:version/:target/:file", AgentController, :release
+    post "/flatcar/ignition", AgentController, :flatcar_ignition
   end
 
   # Admin pages outside /admin. Before the signed-in scope, so
   # /boxes/new isn't taken for a box id.
   scope "/", CrewWeb do
     pipe_through [:browser, :admin]
+
+    get "/boxes/:id/reprovision.ign", BoxController, :reprovision
 
     live_session :admin_actions,
       on_mount: [
