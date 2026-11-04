@@ -3,9 +3,11 @@ defmodule CrewCache.DNS.Server do
   The resolver's sockets: UDP, and TCP on the same port. Each UDP query
   is answered in its own task (at most 2048 at once; past that they're
   dropped, as a full resolver would); each TCP connection gets a task
-  that answers up to 100 queries, 10 s apart at most.
+  that answers up to 100 queries, 10 s apart at most, with at most 256
+  connections, 16 per client.
 
-  The per-client rate limit is checked here, as each query arrives.
+  The per-client rate limit is checked here, as each query arrives: a
+  UDP query over it is dropped on the spot, costing no task.
   """
   use GenServer
 
@@ -14,9 +16,9 @@ defmodule CrewCache.DNS.Server do
   alias CrewCache.DNS.{Cache, Query}
 
   @tasks CrewCache.DNS.Tasks
+  @tcp_tasks CrewCache.DNS.TCPTasks
   @tcp_idle_ms 10_000
   @tcp_max_queries 100
-  @max_tcp 256
 
   def start_link(config), do: GenServer.start_link(__MODULE__, config, name: __MODULE__)
 
@@ -44,14 +46,15 @@ defmodule CrewCache.DNS.Server do
 
   @impl true
   def handle_info({:udp, socket, ip, port, packet}, state) do
-    limited? = not Cache.allow?(ip)
-
-    Task.Supervisor.start_child(@tasks, fn ->
-      case Query.handle(packet, ip, :udp, limited?) do
-        {:reply, reply} -> :gen_udp.send(socket, ip, port, reply)
-        :drop -> :ok
-      end
-    end)
+    # Over the limit: dropped here, costing no task and no reply.
+    if Cache.allow?(ip) do
+      Task.Supervisor.start_child(@tasks, fn ->
+        case Query.handle(packet, ip, :udp, false) do
+          {:reply, reply} -> :gen_udp.send(socket, ip, port, reply)
+          :drop -> :ok
+        end
+      end)
+    end
 
     {:noreply, state}
   end
@@ -78,8 +81,9 @@ defmodule CrewCache.DNS.Server do
   end
 
   defp start_session(socket) do
-    with true <- Task.Supervisor.children(@tasks) |> length() < @max_tcp,
-         {:ok, pid} <- Task.Supervisor.start_child(@tasks, fn -> session(socket) end),
+    with {:ok, {ip, _}} <- :inet.peername(socket),
+         true <- Cache.tcp_open(ip),
+         {:ok, pid} <- start_task(socket, ip),
          :ok <- :gen_tcp.controlling_process(socket, pid) do
       send(pid, :go)
     else
@@ -87,17 +91,25 @@ defmodule CrewCache.DNS.Server do
     end
   end
 
-  defp session(socket) do
-    receive do
-      :go -> :ok
-    after
-      5_000 -> exit(:normal)
-    end
+  defp start_task(socket, ip) do
+    case Task.Supervisor.start_child(@tcp_tasks, fn -> session(socket, ip) end) do
+      {:ok, pid} ->
+        {:ok, pid}
 
-    case :inet.peername(socket) do
-      {:ok, {ip, _}} -> serve(socket, ip, @tcp_max_queries)
-      _ -> :ok
+      error ->
+        Cache.tcp_closed(ip)
+        error
     end
+  end
+
+  defp session(socket, ip) do
+    receive do
+      :go -> serve(socket, ip, @tcp_max_queries)
+    after
+      5_000 -> :ok
+    end
+  after
+    Cache.tcp_closed(ip)
 
     :gen_tcp.close(socket)
   end

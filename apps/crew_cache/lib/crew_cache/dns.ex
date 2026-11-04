@@ -18,6 +18,7 @@ defmodule CrewCache.DNS do
       [
         CrewCache.DNS.Cache,
         {Task.Supervisor, name: CrewCache.DNS.Tasks, max_children: 2048},
+        {Task.Supervisor, name: CrewCache.DNS.TCPTasks, max_children: 256},
         {CrewCache.DNS.Server, config}
       ],
       strategy: :rest_for_one
