@@ -69,10 +69,11 @@ defmodule CrewAgent.CacheTest do
 
     assert_received {:mgmt, "POST", "/config", ["Bearer tok"], body}
 
+    refute Map.has_key?(Jason.decode!(body), "parent")
+
     assert %{
              "enabled_hosts" => ["ghcr.io", "quay.io"],
              "allowlist" => ["ghcr.io/actions/*"],
-             "parent" => nil,
              "rotate_ca" => true,
              # The box's own networks and egress address, which the cache
              # refuses to connect to (§15.5), as VMs are refused them.
@@ -131,6 +132,47 @@ defmodule CrewAgent.CacheTest do
     # The cache restarted: its counters start over.
     restarted = put_in(first, ["hosts", Access.at(0), "hits"], 2)
     {report, _} = Cache.Stats.delta(second, restarted)
+    assert [%{hits: 2}] = report.hosts
+  end
+
+  test "the box's site4 reaches the cache when it changes, and again after a failure", %{
+    config: config
+  } do
+    assert {:ok, ["10.0.0.0/24"]} = Cache.Stats.sync_site4(config, nil, ["10.0.0.0/24"])
+    assert_received {:mgmt, "POST", "/config", _, body}
+    assert Jason.decode!(body) == %{"site4" => ["10.0.0.0/24"]}
+
+    assert {:ok, ["10.0.0.0/24"]} =
+             Cache.Stats.sync_site4(config, ["10.0.0.0/24"], ["10.0.0.0/24"])
+
+    refute_received {:mgmt, "POST", "/config", _, _}
+
+    assert {:ok, _} =
+             Cache.Stats.sync_site4(config, ["10.0.0.0/24"], ["10.0.0.0/24", "203.0.113.7/32"])
+
+    assert_received {:mgmt, "POST", "/config", _, _}
+
+    down = %{config | cache_mgmt_url: "http://127.0.0.1:1"}
+
+    assert {:error, ["10.0.0.0/24"]} =
+             Cache.Stats.sync_site4(down, ["10.0.0.0/24"], ["192.0.2.0/24"])
+  end
+
+  test "an agent restart keeps its baseline, unless the cache restarted too", %{config: config} do
+    stats = %{"instance" => "a", "hosts" => [%{"host" => "ghcr.io", "hits" => 7}]}
+    Cache.Stats.save_baseline(config, stats)
+
+    assert Cache.Stats.baseline(config, %{"instance" => "a"}) == stats
+    assert Cache.Stats.baseline(config, %{"instance" => "b"}) == nil
+    # A cache that doesn't say which it is: the counters going down tell.
+    assert Cache.Stats.baseline(config, %{}) == stats
+
+    {report, _} =
+      Cache.Stats.delta(stats, %{
+        "instance" => "a",
+        "hosts" => [%{"host" => "ghcr.io", "hits" => 9}]
+      })
+
     assert [%{hits: 2}] = report.hosts
   end
 end

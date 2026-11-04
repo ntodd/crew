@@ -476,3 +476,20 @@ The other spikes are recorded here as they run.
   policy lets through. Those settings (`net_except`, `resolve`,
   `origins`, `upstream_cacerts`) have no environment variables, and
   `net_except` can only ever open loopback.
+
+## Cache integration notes
+
+- **The CA generation** a box's cache is on counts only once its
+  `cache.config` with `rotate_ca` succeeds: the generation rides in the
+  operation's args, and `Crew.Caches.config_applied/1` reads it from the
+  `op.result`. A rotation that failed, or never answered, is asked for
+  again at the next join.
+- **site4 reaches the cache on its own**, every 60 s when it changed
+  (the egress address is learned after the agent starts, and can move),
+  and again after a push that failed, as `POST /config {"site4": …}`.
+- **Stats survive an agent restart:** the last `GET /stats` is kept in
+  `agent/cache-stats.json` with the cache's `instance`; a new instance,
+  or counters that went down, start from 0.
+- **No parent from the control plane yet.** Parent serving (§15.7) isn't
+  built, so `cache.config` never carries one and the agent sends no
+  `parent` key: a parent given to the cache some other way stays.

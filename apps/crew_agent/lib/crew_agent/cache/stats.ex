@@ -1,12 +1,22 @@
 defmodule CrewAgent.Cache.Stats do
   @moduledoc """
-  Every 60 s, the box cache's counters as `cache.stats` (§10.4): what
-  changed since the last report, so the control plane's rows sum. A
-  counter that went down means the cache restarted, and counts from 0.
+  Keeps the box cache in step with the agent, every 60 s:
+
+  - **`cache.stats`** (§10.4): what changed since the last report, so the
+    control plane's rows sum. The baseline is kept in
+    `agent/cache-stats.json`, so an agent restart doesn't report the
+    cache's lifetime again; a cache that restarted (a new `instance`, or
+    counters that went down) counts from 0.
+  - **site4** (§15.5): the box's networks and egress address, which the
+    cache refuses to connect to, pushed whenever they change (the
+    egress address is learned after start, and can move) and again
+    after a push that failed.
   """
   use GenServer
 
-  alias CrewAgent.{Cache, Config, Outbox}
+  require Logger
+
+  alias CrewAgent.{Cache, Config, Outbox, Site}
 
   @every_ms 60_000
   # Counters run from the cache's start; bytes_stored is a level.
@@ -16,29 +26,82 @@ defmodule CrewAgent.Cache.Stats do
 
   @impl true
   def init(nil) do
+    send(self(), :site4)
     Process.send_after(self(), :report, @every_ms)
-    {:ok, nil}
+    {:ok, %{previous: :unloaded, site4: nil}}
   end
 
   @impl true
-  def handle_info(:report, previous) do
-    Process.send_after(self(), :report, @every_ms)
+  def handle_info(:site4, state) do
+    Process.send_after(self(), :site4, @every_ms)
+    config = Config.get()
+    {_, pushed} = sync_site4(config, state.site4, Site.current(config))
+    {:noreply, %{state | site4: pushed}}
+  end
 
-    case Cache.stats(Config.get()) do
+  def handle_info(:report, state) do
+    Process.send_after(self(), :report, @every_ms)
+    config = Config.get()
+
+    case Cache.stats(config) do
       {:ok, current} ->
         :persistent_term.put({__MODULE__, :store_bytes}, int(get_in(current, ["store", "bytes"])))
+
+        previous =
+          if state.previous == :unloaded, do: baseline(config, current), else: state.previous
+
         {report, current} = delta(previous, current)
 
         {:ok, event} =
           CrewProtocol.Event.new("cache.stats", Map.put(report, :t, System.os_time(:millisecond)))
 
         Outbox.push(event)
-        {:noreply, current}
+        save_baseline(config, current)
+        {:noreply, %{state | previous: current}}
 
       _ ->
-        {:noreply, previous}
+        {:noreply, state}
     end
   end
+
+  @doc """
+  Pushes `site4` to the cache unless it's what was pushed last.
+  `{:ok, pushed}`, or `{:error, last}` to try again next time.
+  """
+  def sync_site4(_config, last, site4) when last == site4, do: {:ok, last}
+
+  def sync_site4(config, last, site4) do
+    case Cache.put_site4(config, site4) do
+      :ok ->
+        {:ok, site4}
+
+      {:error, reason} ->
+        Logger.warning("the cache didn't take the box's site4 (#{inspect(reason)}); retrying")
+        {:error, last}
+    end
+  end
+
+  @doc "The last report's counters, if they're from this cache instance."
+  def baseline(config, current) do
+    with {:ok, json} <- File.read(baseline_file(config)),
+         {:ok, %{} = saved} <- Jason.decode(json),
+         true <- same_instance?(saved["instance"], current["instance"]) do
+      saved
+    else
+      _ -> nil
+    end
+  end
+
+  defp same_instance?(a, b) when is_binary(a) and is_binary(b), do: a == b
+  defp same_instance?(_, _), do: true
+
+  def save_baseline(config, stats) do
+    path = baseline_file(config)
+    File.mkdir_p!(Path.dirname(path))
+    CrewAgent.SafeFS.write_atomic(path, Jason.encode!(stats), 0o640)
+  end
+
+  defp baseline_file(config), do: Path.join([config.data_dir, "agent", "cache-stats.json"])
 
   @doc "How much the cache holds, from its last `GET /stats` (0 before one)."
   def store_mib, do: div(:persistent_term.get({__MODULE__, :store_bytes}, 0), 1_048_576)
