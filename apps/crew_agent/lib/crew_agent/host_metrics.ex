@@ -12,7 +12,7 @@ defmodule CrewAgent.HostMetrics do
     {cpu_pct, cpu} = cpu(config, prev)
     mem = memory(config)
     {disk_total, disk_free} = disk(config.data_dir)
-    {_, vm_area_free} = disk(CrewAgent.Config.vms_dir(config))
+    vm_area_free = vm_area_free(config)
 
     {%{
        t: System.os_time(:millisecond),
@@ -27,6 +27,20 @@ defmodule CrewAgent.HostMetrics do
        cache_used_mib: 0,
        vms_running: CrewAgent.VMs.running_count()
      }, cpu}
+  end
+
+  # A driver whose VMs take no disk (the null driver) says what's free.
+  defp vm_area_free(config) do
+    driver = CrewAgent.Config.driver_module(config)
+
+    if Code.ensure_loaded?(driver) and function_exported?(driver, :vm_area_free_mib, 0) do
+      # (Dynamic: the compiler would warn that other drivers lack it.)
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
+      apply(driver, :vm_area_free_mib, [])
+    else
+      {_, free} = disk(CrewAgent.Config.vms_dir(config))
+      free
+    end
   end
 
   # -- Linux -------------------------------------------------------------------

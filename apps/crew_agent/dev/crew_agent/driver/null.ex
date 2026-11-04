@@ -21,6 +21,9 @@ defmodule CrewAgent.Driver.Null do
 
   # -- the behaviour ------------------------------------------------------------
 
+  # Its VMs take no disk, so the whole area is always free.
+  @vm_area_mib 409_600
+
   @impl CrewAgent.Driver
   def capabilities do
     {:ok,
@@ -30,7 +33,7 @@ defmodule CrewAgent.Driver.Null do
        guest_arch: if(arm?(), do: "arm64", else: "x64"),
        vcpus: Application.get_env(:crew_agent, :null_vcpus, 16),
        memory_mib: Application.get_env(:crew_agent, :null_memory_mib, 65_536),
-       vm_area_mib: 409_600,
+       vm_area_mib: @vm_area_mib,
        max_vcpus_per_vm: 32,
        max_memory_mib_per_vm: 65_536,
        vmm_overhead_mib: 64,
@@ -40,6 +43,9 @@ defmodule CrewAgent.Driver.Null do
        firewall_ok: true
      }}
   end
+
+  @impl CrewAgent.Driver
+  def vm_area_free_mib, do: @vm_area_mib
 
   defp arm?, do: :erlang.system_info(:system_architecture) |> to_string() |> String.contains?(["aarch64", "arm"])
 
