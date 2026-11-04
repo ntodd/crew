@@ -149,7 +149,7 @@ test("linux-metal: the data disk, then the Ignition to download", async ({page})
   await expect(page.locator("#ignition-download")).toBeVisible()
   await expect(page.locator("#flatcar-install")).toContainText("flatcar-install -d /dev/sda -i crew-rack1.ign")
   // The file holds the token: the command makes it 0600.
-  await expect(page.locator("#join-command")).toContainText("(umask 077; curl -fsSL -X POST")
+  await expect(page.locator("#join-command")).toContainText("(umask 077; f=crew-")
   await expect(page.locator("#join-instructions")).toContainText("Delete it once the box has enrolled")
   await shot(page, layer, "linux-metal-ignition")
 

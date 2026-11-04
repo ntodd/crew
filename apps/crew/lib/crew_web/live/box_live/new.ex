@@ -210,11 +210,11 @@ defmodule CrewWeb.BoxLive.New do
               </div>
             </form>
             <p class="mb-2 text-sm text-ink-2">
-              Or fetch it on the machine (readable only by you, with the umask):
+              Or fetch it on the machine (a new file only you can read):
             </p>
             <.command
               id="join-command"
-              command={"(umask 077; curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o crew-#{@box_name}.ign)"}
+              command={"(umask 077; f=crew-#{@box_name}.ign; rm -f \"$f.new\" && curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o \"$f.new\" && mv -f \"$f.new\" \"$f\")"}
             />
             <p class="mb-2 mt-4 text-sm text-ink-2">
               Then, from Flatcar's live image, install it to the OS disk (not the data disk) and reboot:
