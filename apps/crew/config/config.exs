@@ -60,7 +60,9 @@ config :crew, Oban,
        # §9.4: log retention and the total cap.
        {"17 * * * *", Crew.Logs.Prune},
        # §13.1: actions/runner's releases, for the runner's freshness.
-       {"23 4 * * *", Crew.Images.Runner}
+       {"23 4 * * *", Crew.Images.Runner},
+       # §20.4: the control plane's image files, checked and kept in bounds.
+       {"37 4 * * *", Crew.Images.Upkeep}
      ]}
   ]
 

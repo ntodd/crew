@@ -90,8 +90,52 @@ defmodule CrewAgent.Images do
         :ok
 
       true ->
+        sweep(config, image.id)
         Prepare.run(config, image, opts)
     end
+  end
+
+  # A temp dir nothing has written to for this long belongs to a prepare
+  # that's gone (an agent restart, an op.cancel): one still running
+  # writes as it downloads and converts.
+  @abandoned_s 600
+
+  @doc """
+  Removes other images' temp dirs left by prepares that were cut short
+  and won't be resumed, before a prepare needs the room. `keep_id`'s is
+  kept, to resume.
+  """
+  def sweep(config, keep_id) do
+    cutoff = System.os_time(:second) - @abandoned_s
+    keep = tmp_dir(config, keep_id)
+
+    for name <- ls(Config.images_dir(config)),
+        String.starts_with?(name, ".") and String.ends_with?(name, ".tmp"),
+        path = Path.join(Config.images_dir(config), name),
+        path != keep,
+        newest_mtime(path) < cutoff do
+      File.rm_rf(path)
+    end
+
+    :ok
+  end
+
+  defp ls(dir) do
+    case File.ls(dir) do
+      {:ok, names} -> names
+      _ -> []
+    end
+  end
+
+  defp newest_mtime(dir) do
+    [dir | Enum.map(ls(dir), &Path.join(dir, &1))]
+    |> Enum.map(fn p ->
+      case File.stat(p, time: :posix) do
+        {:ok, %{mtime: t}} -> t
+        _ -> 0
+      end
+    end)
+    |> Enum.max()
   end
 
   def remove(image_id) do
