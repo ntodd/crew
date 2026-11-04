@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -203,25 +204,68 @@ func (h *LinuxSys) CreateFile(path string, data []byte) error {
 // WriteState writes <data>/vmctl/<name> through a temporary file and a
 // rename, in a directory only root can change.
 func (h *LinuxSys) WriteState(name string, data []byte) error {
-	if strings.ContainsAny(name, "/") || name == "" || strings.HasPrefix(name, ".") {
-		return fmt.Errorf("state %q: not a file name", name)
-	}
-	dfd, err := unix.Open(h.Paths.Data, unix.O_DIRECTORY|unix.O_RDONLY|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return err
-	}
-	defer unix.Close(dfd)
-	sfd, err := rootDir(dfd, StateDir)
+	sfd, err := h.stateDir(name)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(sfd)
-	tmp := "." + name + ".tmp"
-	_ = unix.Unlinkat(sfd, tmp, 0)
+	// A temporary file of this process's own, created exclusively: two
+	// writers never share (or remove) one another's.
+	tmp := fmt.Sprintf(".%s.%d.%d.tmp", name, os.Getpid(), time.Now().UnixNano())
 	if err := createAt(sfd, tmp, 0o644, data, 0, 0); err != nil {
 		return err
 	}
-	return unix.Renameat(sfd, tmp, sfd, name)
+	if err := unix.Renameat(sfd, tmp, sfd, name); err != nil {
+		_ = unix.Unlinkat(sfd, tmp, 0)
+		return err
+	}
+	return nil
+}
+
+// stateDir opens crew-vmctl's state directory (made root's if missing)
+// for a file called name.
+func (h *LinuxSys) stateDir(name string) (int, error) {
+	if strings.ContainsAny(name, "/") || name == "" || strings.HasPrefix(name, ".") {
+		return -1, fmt.Errorf("state %q: not a file name", name)
+	}
+	dfd, err := unix.Open(h.Paths.Data, unix.O_DIRECTORY|unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(dfd)
+	return rootDir(dfd, StateDir)
+}
+
+// lockWait is how long Lock waits for another crew-vmctl to finish.
+const lockWait = 30 * time.Second
+
+// Lock flocks <data>/vmctl/<name>.lock, a root-owned file, waiting up to
+// lockWait for whoever holds it.
+func (h *LinuxSys) Lock(name string) (func(), error) {
+	sfd, err := h.stateDir(name)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(sfd)
+	fd, err := beneathAt(sfd, name+".lock", unix.O_RDWR|unix.O_CREAT, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return func() {
+				_ = unix.Flock(fd, unix.LOCK_UN)
+				unix.Close(fd)
+			}, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) || time.Now().After(deadline) {
+			unix.Close(fd)
+			return nil, fmt.Errorf("locking %s: %w", name, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (h *LinuxSys) Exists(path string) bool {

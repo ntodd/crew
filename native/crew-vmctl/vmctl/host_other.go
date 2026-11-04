@@ -26,6 +26,7 @@ func (otherSys) ReadFile(string, int64) ([]byte, error)                 { return
 func (otherSys) WriteFile(string, []byte) error                         { return errLinux }
 func (otherSys) CreateFile(string, []byte) error                        { return errLinux }
 func (otherSys) WriteState(string, []byte) error                        { return errLinux }
+func (otherSys) Lock(string) (func(), error)                            { return nil, errLinux }
 func (otherSys) Exists(string) bool                                     { return false }
 func (otherSys) Glob(string) []string                                   { return nil }
 func (otherSys) PrepareJail(Jail) error                                 { return errLinux }

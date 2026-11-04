@@ -27,6 +27,8 @@ type fakeSys struct {
 	jails   []Jail
 	removed []string
 	ref     ruleset.Listing
+	locked  string   // the lock held, if any
+	events  []string // locks, state writes and nft loads, in order
 }
 
 func newFake() *fakeSys {
@@ -91,6 +93,9 @@ func TestVMIDsMustBeNobodys(t *testing.T) {
 func (f *fakeSys) Run(_ context.Context, stdin []byte, argv ...string) ([]byte, error) {
 	f.cmds = append(f.cmds, argv)
 	f.stdins = append(f.stdins, string(stdin))
+	if strings.Join(argv, " ") == "nft -f -" {
+		f.events = append(f.events, "nft -f - under "+f.locked)
+	}
 	if f.answer != nil {
 		out, err := f.answer(argv)
 		return []byte(out), err
@@ -119,7 +124,20 @@ func (f *fakeSys) WriteFile(path string, data []byte) error {
 }
 
 func (f *fakeSys) WriteState(name string, data []byte) error {
+	f.events = append(f.events, "write "+name+" under "+f.locked)
 	return f.WriteFile(paths.State(name), data)
+}
+
+func (f *fakeSys) Lock(name string) (func(), error) {
+	if f.locked != "" {
+		return nil, fmt.Errorf("%s is held already", f.locked)
+	}
+	f.locked = name
+	f.events = append(f.events, "lock "+name)
+	return func() {
+		f.events = append(f.events, "unlock "+name)
+		f.locked = ""
+	}, nil
 }
 
 func (f *fakeSys) CreateFile(path string, data []byte) error {
