@@ -1,0 +1,450 @@
+name: Release
+
+# A tag vX.Y.Z builds, checks, signs and publishes a release (spec §20.1).
+# Foreman's release.yml, hardened:
+#
+#   - every action is pinned by commit SHA, as in ci.yml, and what the
+#     jobs download is pinned by version and checksum;
+#   - permissions: {} by default, granted per job;
+#   - the signing key is the CREW_RELEASE_SIGNING_KEY secret of the
+#     release-signing environment, which has required reviewers and
+#     deploys only from protected v* tags. Only the sign job uses that
+#     environment, and it runs GitHub's own actions and openssl, nothing
+#     else.
+#
+# It publishes:
+#
+#   ghcr.io/<owner>/crew:X.Y.Z     and :latest      SQLite
+#   ghcr.io/<owner>/crew:X.Y.Z-pg  and :latest-pg   Postgres
+#   the GitHub release vX.Y.Z      every tarball, guest image file and
+#                                  signature, with the release key's
+#                                  fingerprint in its notes
+#
+# The images carry the signed tarballs and guest manifests, which a
+# control plane registers at boot; it downloads the guest images' kernel
+# and rootfs from the GitHub release, checked against the manifests.
+#
+# Setting it up, cutting a release and the bumps before one:
+# docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+
+permissions: {}
+
+env:
+  ELIXIR_VERSION: "1.20.4"
+  OTP_VERSION: "29.1.1"
+
+jobs:
+  # The tag, every mix.exs version, the release key and the supply-chain
+  # review (packaging/release/check.sh), before anything is built.
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      fingerprint: ${{ steps.check.outputs.fingerprint }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - id: check
+        env:
+          CREW_RELEASE_PUBLIC_KEY: ${{ vars.CREW_RELEASE_PUBLIC_KEY }}
+        run: packaging/release/check.sh "$GITHUB_REF_NAME"
+
+  # CI doesn't run on tags by itself, and nothing is published from a
+  # commit that fails it.
+  ci:
+    needs: check
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  # The Go helpers (§4), from vendor/ with no network, and govulncheck
+  # over them: crew-vmctl for Linux, and crew-vz on macOS arm64, ad-hoc
+  # signed with its entitlements. The tarball builds compile their own
+  # copies the same way; this is the gate before them.
+  native:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-24.04
+          - os: darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      GOVULNCHECK_VERSION: v1.9.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: native/go.mod
+          cache: false
+      # From the module proxy, checked against Go's checksum database.
+      - name: Install govulncheck
+        run: go install "golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION"
+      - name: crew-vmctl
+        if: matrix.os == 'linux'
+        run: |
+          make -C native crew-vmctl GO=go VERSION="$VERSION"
+          test "$(native/crew-vmctl/bin/linux-amd64/crew-vmctl version)" = "crew-vmctl $VERSION"
+          file native/crew-vmctl/bin/linux-arm64/crew-vmctl | grep -q 'ARM aarch64, .*statically linked'
+      - name: crew-vz
+        if: matrix.os == 'darwin'
+        run: |
+          make -C native crew-vz GO=go VERSION="$VERSION"
+          test "$(native/crew-vz/bin/crew-vz version)" = "crew-vz $VERSION"
+          codesign --verify --strict native/crew-vz/bin/crew-vz
+          codesign -d --entitlements - native/crew-vz/bin/crew-vz | grep -q com.apple.security.virtualization
+      - name: govulncheck
+        working-directory: native
+        env:
+          GOFLAGS: -mod=vendor
+          GOPROXY: "off"
+        run: '"$(go env GOPATH)/bin/govulncheck" ./...'
+
+  # The agent and cache tarballs (§20.1 items 3 and 4), each built and
+  # smoke-tested on a runner of its own OS and arch before anything is
+  # signed. build-linux.sh makes a Linux target's agent and cache
+  # tarballs together, so the cache has no job of its own.
+  agents:
+    needs: [check, ci, native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          # packaging/release/build-darwin.sh comes with the agent's
+          # self-update on macOS (§20.2), taking the same arguments as
+          # build-linux.sh and setting up its own Erlang and Elixir
+          # (setup-beam has no macOS). Until it's in, this leg fails and
+          # so does the release.
+          - target: darwin-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      CREW_VERSION: ${{ needs.check.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      GO: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: native/go.mod
+          cache: false
+      - name: Build
+        run: |
+          case "$TARGET" in
+            linux-*) packaging/release/build-linux.sh "$TARGET" "$VERSION" out ;;
+            darwin-*) packaging/release/build-darwin.sh "$TARGET" "$VERSION" out ;;
+          esac
+          ls -l out
+      - name: Smoke test
+        run: |
+          for tarball in out/*.tar.gz; do
+            packaging/release/smoke.sh "$tarball" "$VERSION" "$TARGET"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tarballs-${{ matrix.target }}
+          path: out/*.tar.gz
+          compression-level: 0
+          if-no-files-found: error
+
+  # The guest images (§13.1), built and checked per arch, unsigned:
+  # sign signs their manifests with everything else.
+  guest:
+    needs: check
+    uses: ./.github/workflows/guest-image.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+    permissions:
+      contents: read
+
+  # Signs every tarball (over its version, target and SHA-256) and every
+  # guest image manifest (its exact bytes) with the release key. The only
+  # job in the release-signing environment, so the only one that can
+  # read the key; it runs GitHub's own actions and openssl, and refuses a
+  # key whose public half isn't packaging/release/release-key.pub.
+  sign:
+    needs: [check, agents, guest]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            images/guest/sign.sh
+            images/guest/keys
+            packaging/release/release-key.pub
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tarballs-*
+          path: out/tarballs
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: guest-*
+          path: out/guest
+          merge-multiple: true
+      - name: Sign
+        env:
+          CREW_RELEASE_SIGNING_KEY: ${{ secrets.CREW_RELEASE_SIGNING_KEY }}
+        run: |
+          images/guest/sign.sh --release --public-key-file packaging/release/release-key.pub \
+            out/tarballs/*.tar.gz out/guest/*.manifest.json
+          mkdir signatures
+          cp out/tarballs/*.sha256 out/tarballs/*.sig out/guest/*.manifest.sig signatures/
+          ls -l signatures
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signatures
+          path: signatures/
+          if-no-files-found: error
+
+  # Checks the signed release as the control plane and boxes will, with
+  # the committed release key (never the test key): every tarball against
+  # its .sha256 and signature, every manifest's signature, and every guest
+  # file against its manifest. Then gathers the release's files.
+  verify:
+    needs: [check, sign]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tarballs-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: guest-*
+          path: release
+          merge-multiple: true
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: signatures
+          path: release
+      - name: Verify
+        working-directory: images/guest/tools
+        env:
+          KEY: ${{ github.workspace }}/packaging/release/release-key.pub
+          RELEASE: ${{ github.workspace }}/release
+        run: |
+          mix deps.get --check-locked
+          mix crew.verify --release --public-key-file "$KEY" "$RELEASE"
+          for m in "$RELEASE"/*.manifest.json; do
+            mix crew_image.verify --release --public-key-file "$KEY" "$m"
+          done
+          ls -l "$RELEASE"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          compression-level: 0
+          if-no-files-found: error
+
+  # One image per database and architecture, each built on a runner of
+  # that arch with the release's signed tarballs and manifests inside,
+  # started once (SQLite) and pushed with an arch suffix; manifest joins
+  # them into the published tags.
+  images:
+    needs: [check, verify]
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      DB: ${{ matrix.db }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      # The tarballs and the manifests, not the kernels and rootfs.
+      - name: Put the release where the image takes it
+        run: |
+          cp release/*.tar.gz release/*.tar.gz.sha256 release/*.tar.gz.sig docker/release/agents/
+          cp release/*.manifest.json release/*.manifest.sig docker/release/images/
+          ls -l docker/release/*
+      - name: Build
+        env:
+          CREW_RELEASE_PUBLIC_KEY: ${{ vars.CREW_RELEASE_PUBLIC_KEY }}
+        run: |
+          image=$(echo "ghcr.io/$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          suffix=""
+          if [ "$DB" = postgres ]; then suffix=-pg; fi
+          tag="$image:$VERSION$suffix-$ARCH"
+          docker build -f docker/control-plane.Dockerfile \
+            --build-arg CREW_DB="$DB" \
+            --build-arg CREW_VERSION="$VERSION" \
+            --build-arg CREW_RELEASE_PUBLIC_KEY="$CREW_RELEASE_PUBLIC_KEY" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t "$tag" .
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+      # It comes up, answers /healthz and registers everything it carries.
+      - name: Start it
+        if: matrix.db == 'sqlite'
+        run: |
+          docker run -d --name crew-smoke \
+            -e SECRET_KEY_BASE="$(openssl rand -hex 48)" \
+            -e CREW_ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+            -e PHX_HOST=crew.example.ts.net "$TAG"
+          for _ in $(seq 60); do
+            if docker exec crew-smoke curl -fsS -o /dev/null http://127.0.0.1:4000/healthz; then break; fi
+            sleep 2
+          done
+          docker exec crew-smoke curl -fsS http://127.0.0.1:4000/healthz
+          sleep 5
+          docker logs crew-smoke > smoke.log 2>&1
+          if grep "wasn't registered" smoke.log; then exit 1; fi
+          docker rm -f crew-smoke
+      - name: Push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$TAG"
+
+  manifest:
+    needs: [check, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Tag the multi-arch images
+        # bash, not the default shell, so a failed gh api isn't hidden by the pipe.
+        shell: bash
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image=$(echo "ghcr.io/$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # :latest only moves to the highest version, so a patch tagged on
+          # an older line doesn't take it back.
+          highest=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate \
+            --jq '.[].ref | ltrimstr("refs/tags/")' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          [ -n "$highest" ] || { echo "::error::couldn't list the release tags"; exit 1; }
+          for suffix in "" -pg; do
+            set -- -t "$image:$VERSION$suffix"
+            [ "$highest" = "$GITHUB_REF_NAME" ] && set -- "$@" -t "$image:latest$suffix"
+            docker buildx imagetools create "$@" \
+              "$image:$VERSION$suffix-amd64" "$image:$VERSION$suffix-arm64"
+          done
+
+  # After the images, so a control plane that sees the release can pull
+  # it. The notes are docs/releases/<tag>.md (with its supply-chain
+  # review) and what operators check before upgrading.
+  publish:
+    needs: [check, verify, manifest]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The previous tag, to say what changed since it.
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Publish the GitHub release
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+          FINGERPRINT: ${{ needs.check.outputs.fingerprint }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          image=$(echo "ghcr.io/$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          protocol_of() { git show "$1:apps/crew_protocol/lib/crew_protocol.ex" | sed -n 's/^  @version \([0-9]*\)$/\1/p'; }
+          prev=$(git tag -l 'v*.*.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V |
+            awk -v tag="$GITHUB_REF_NAME" '$0 == tag { print last; exit } { last = $0 }')
+          protocol=$(protocol_of "$GITHUB_REF_NAME")
+
+          {
+            # docs/releases/<tag>.md, without its title (the release has one).
+            sed '1{/^# /d;}' "docs/releases/$GITHUB_REF_NAME.md"
+            echo
+            echo "## Release key"
+            echo
+            echo "Every tarball and guest image manifest here is signed with the release key \`$FINGERPRINT\`."
+            echo "The Deployment page shows the key a control plane trusts; check they match before adding a box."
+            echo
+            echo "## Control plane"
+            echo
+            echo "Images, with this release's agents, caches and guest image manifests inside: \`$image:$VERSION\` (SQLite) and \`$image:$VERSION-pg\` (Postgres)."
+            echo
+            if [ -z "$prev" ]; then
+              echo "Protocol $protocol."
+            elif [ "$(protocol_of "$prev")" = "$protocol" ]; then
+              echo "Protocol $protocol, the same as $prev."
+            else
+              echo "**Protocol $protocol; $prev spoke $(protocol_of "$prev").** Once boxes run these agents, the control plane can't be rolled back to a release older than this one."
+            fi
+            echo
+            migrations=""
+            if [ -n "$prev" ]; then
+              migrations=$(git diff --name-only --diff-filter=A "$prev" "$GITHUB_REF_NAME" -- apps/crew/priv/repo/migrations | xargs -r -n 1 basename)
+            fi
+            if [ -n "$migrations" ]; then
+              echo "Migrations since $prev (they run on boot; back up first):"
+              for migration in $migrations; do echo "- $migration"; done
+            elif [ -n "$prev" ]; then
+              echo "No migrations since $prev."
+            fi
+            echo
+            echo "## Guest images"
+            echo
+            echo "packages.lock.diff is the guest's package changes since ${prev:-the start}."
+          } > notes.md
+          cat notes.md
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Crew $VERSION" \
+            --notes-file notes.md release/*
