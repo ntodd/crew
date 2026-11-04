@@ -44,7 +44,7 @@ defmodule CrewGuest.Main do
 
   require Logger
 
-  alias CrewGuest.{API, Control, EnvFile, JIT, Metrics, Outbox, Pages, Runner, Steps}
+  alias CrewGuest.{API, Conformance, Control, EnvFile, JIT, Metrics, Outbox, Pages, Runner, Steps}
 
   @resize_timeout 120_000
 
@@ -74,6 +74,8 @@ defmodule CrewGuest.Main do
       boot: nil,
       job: nil,
       runner: nil,
+      # What `runner` is: the runner, or the conformance check (§11.6).
+      runner_mod: Runner,
       drain: nil,
       deadline: nil,
       # What :halted means: :poweroff, or :exit after a SIGTERM.
@@ -134,6 +136,9 @@ defmodule CrewGuest.Main do
       :ready ->
         {:noreply, start_job(s)}
 
+      :conformance ->
+        {:noreply, start_conformance(s)}
+
       :refused ->
         {:noreply, shutdown(s, deadline(s.cfg.flush_timeout_ms))}
 
@@ -178,7 +183,7 @@ defmodule CrewGuest.Main do
     Logger.warning("crew-guest: the runner didn't exit after SIGTERM")
 
     try do
-      Runner.kill(s.runner)
+      s.runner_mod.kill(s.runner)
     catch
       :exit, _reason -> :ok
     end
@@ -225,6 +230,18 @@ defmodule CrewGuest.Main do
   end
 
   defp setup(s, payload, resize) do
+    case Conformance.parse(payload) do
+      {:error, reasons} ->
+        report(s, "crew-guest: refusing the conformance payload: #{Enum.join(reasons, "; ")}")
+        :refused
+
+      mode ->
+        setup_os(s, payload, resize)
+        prepare(s, mode, payload)
+    end
+  end
+
+  defp setup_os(s, payload, resize) do
     %{cfg: cfg, system: sys} = s
     pem = present(payload["ca_pem"])
 
@@ -234,12 +251,27 @@ defmodule CrewGuest.Main do
     step(s, "configuring Docker", fn -> sys.configure_docker(cfg, pem, mirrors) end)
     step(s, "notifying systemd", fn -> sys.notify_ready(cfg) end)
     step(s, "starting Docker", fn -> sys.start_docker(cfg) end)
+  end
 
+  defp prepare(s, nil, payload) do
     with :ok <- check_jit(s, payload["jit_config"]),
          :ok <- prepare_runner(s, payload) do
       :ready
     else
       :error -> :refused
+    end
+  end
+
+  # Conformance mode (§11.6): the image's check instead of the runner. The
+  # JIT config isn't looked at or written anywhere.
+  defp prepare(s, {:ok, object}, payload) do
+    case s.system.prepare_conformance(s.cfg, Conformance.files(object, payload)) do
+      :ok ->
+        :conformance
+
+      {:error, reason} ->
+        report(s, "crew-guest: couldn't prepare the conformance check: #{inspect(reason)}")
+        :refused
     end
   end
 
@@ -377,11 +409,53 @@ defmodule CrewGuest.Main do
     end
   end
 
+  # Conformance mode (§11.6): the check, with the control poll and
+  # metrics. It stands where the runner would, so it's reported as
+  # `runner_listening` (detail `conformance`) once it starts, and its exit
+  # as `job_finished`, and stops the same way.
+  defp start_conformance(s) do
+    %{cfg: cfg, outbox: outbox} = s
+    main = self()
+
+    on_line = fn text ->
+      Outbox.log(outbox, [
+        %{t: System.system_time(:millisecond), step_ref: "conformance", text: text}
+      ])
+    end
+
+    children = [
+      {Metrics, name: Metrics, client: s.client, interval_ms: cfg.metrics_interval_ms},
+      {Control, client: s.client},
+      {Conformance.Check,
+       name: Conformance.Check,
+       config: cfg,
+       file: Path.join(cfg.run_dir, Conformance.file_name()),
+       on_line: on_line,
+       on_exit: &send(main, {:runner_exited, &1})}
+    ]
+
+    case Supervisor.start_link(children,
+           strategy: :one_for_one,
+           max_restarts: 10,
+           max_seconds: 60
+         ) do
+      {:ok, job} ->
+        check = Process.whereis(Conformance.Check)
+        Process.monitor(check)
+        Outbox.state(outbox, "runner_listening", "conformance")
+        %{s | job: job, runner: check, runner_mod: Conformance.Check, phase: :running}
+
+      {:error, reason} ->
+        report(s, "crew-guest: couldn't start the conformance check: #{inspect(reason)}")
+        shutdown(s, deadline(s.cfg.flush_timeout_ms))
+    end
+  end
+
   # SIGTERM to the runner (once: Runner.stop/1 sees to that), which gets
   # all of the budget but the flush's reserve to exit.
   defp stop_runner(s, budget) do
     try do
-      Runner.stop(s.runner)
+      s.runner_mod.stop(s.runner)
     catch
       # It has just exited: its exit is already on its way here.
       :exit, _reason -> :ok

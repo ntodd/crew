@@ -1,0 +1,25 @@
+#!/bin/bash
+# A stand-in for the guest image's /opt/crew/conformance/check, for
+# crew-guest's tests. It's given the path of conformance.json and nothing
+# else, prints a structured line per check named there, and holds for
+# hold_s (SIGTERM ends it, as the real one's trap does).
+#
+#   STUB_CONFORMANCE_OUT=<file>   copy conformance.json here
+#   STUB_CONFORMANCE_EXIT=<n>     exit code (default 0)
+set -eu
+
+echo "stub-conformance: $# argument(s)"
+file=$1
+if [ -n "${STUB_CONFORMANCE_OUT:-}" ]; then cp "$file" "$STUB_CONFORMANCE_OUT"; fi
+for c in $(jq -r '.checks[]' "$file"); do
+  echo "crew-conformance: $c ok stub"
+done
+trap 'echo "stub-conformance: got SIGTERM"; kill "$child" 2>/dev/null; exit 143' TERM
+child=
+hold=$(jq -r '.hold_s // 0' "$file")
+if [ "$hold" -gt 0 ]; then
+  sleep "$hold" &
+  child=$!
+  wait $!
+fi
+exit "${STUB_CONFORMANCE_EXIT:-0}"
