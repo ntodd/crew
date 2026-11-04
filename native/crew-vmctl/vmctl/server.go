@@ -194,10 +194,18 @@ func (s *Server) stop(ctx context.Context, vmID string, force bool) error {
 		return fail(ErrNotFound, "%s isn't running", Unit(vmID))
 	}
 	if force {
-		_, err = s.Sys.Run(ctx, nil, "systemctl", "kill", "--signal=SIGKILL", Unit(vmID))
-	} else {
-		_, err = s.Sys.Run(ctx, nil, "systemctl", "stop", "--no-block", Unit(vmID))
+		return s.kill(ctx, vmID)
 	}
+	_, err = s.Sys.Run(ctx, nil, "systemctl", "stop", "--no-block", Unit(vmID))
+	return err
+}
+
+// kill SIGKILLs the VMM, the unit's main process (jailer exec'd it, so
+// it's the only one). Not the whole cgroup: systemd kills a cgroup
+// through cgroup.kill, which also takes the ExecStopPost forked into it
+// moments later, and the exit record with it.
+func (s *Server) kill(ctx context.Context, vmID string) error {
+	_, err := s.Sys.Run(ctx, nil, "systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", Unit(vmID))
 	return err
 }
 
@@ -261,7 +269,7 @@ func (s *Server) cleanup(ctx context.Context, vmID string, peer Peer) error {
 		return err
 	}
 	if live(st.State) {
-		if _, err := s.Sys.Run(ctx, nil, "systemctl", "kill", "--signal=SIGKILL", Unit(vmID)); err != nil {
+		if err := s.kill(ctx, vmID); err != nil {
 			return err
 		}
 		if err := s.waitGone(ctx, vmID, 10*time.Second); err != nil {

@@ -75,7 +75,7 @@ range's capacity less one (16,383 for a /16). `force` is a boolean.
 | Verb | Arguments | Does |
 |---|---|---|
 | `start` | `vm_id` | Reads `vms/<vm_id>/vm.json` and `fc.json`, checks them (below), lays out the jail and runs the VM's unit. Refused (`already_launched`) if the unit is live or the jail directory exists: a VM is launched once. |
-| `stop` | `vm_id`, `force` | `systemctl kill --signal=SIGKILL` (force) or `systemctl stop --no-block` the unit. `not_found` if it isn't running. |
+| `stop` | `vm_id`, `force` | `systemctl kill --kill-whom=main --signal=SIGKILL` (force) or `systemctl stop --no-block` the unit. `not_found` if it isn't running. Only the main process, the VMM: killing the whole cgroup (systemd uses `cgroup.kill`) also kills the `ExecStopPost` forked into it a moment later, and the exit record with it. |
 | `status` | `vm_id` | The unit's `ActiveState` (`gone` once systemd has dropped it), `SubState`, main PID, and the exit record once there is one. |
 | `list` | | Every `crew-vm-*` unit systemd knows. |
 | `tap-add` / `tap-del` | `lease_index` | `crewt<n>`, owned by uid and gid 200000 + n, with `<gateway>/30`, `disable_ipv6=1` and `rp_filter=1` (set before the link is up). `tap-add` makes a leftover tap again. |
