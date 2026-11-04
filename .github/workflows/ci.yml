@@ -142,10 +142,18 @@ jobs:
       - name: ShellCheck the release and update scripts
         run: |
           sc="$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck"
-          "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh
+          "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh \
+            packaging/release/check.sh packaging/release/test/check-test.sh
           "$sc" -x images/guest/sign.sh packaging/release/build-linux.sh
       - name: crew-update's decisions
         run: docker/test/crew-update-test.sh
+      # The release's check job reads every mix.exs with elixir.
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - name: The release check
+        run: packaging/release/test/check-test.sh
 
   # The UI in a real browser, against a fake GitHub (e2e/).
   browser:
