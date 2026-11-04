@@ -145,6 +145,7 @@ if [ ! -s "$agent/env" ] || [ -n "$CREW_JOIN_TOKEN" ]; then
     echo "CREW_BOX_NAME=$CREW_BOX_NAME"
     echo "CREW_DATA_DIR=$data"
     echo "CREW_DRIVER=firecracker"
+    echo "CREW_CACHE_MGMT_URL=http://127.0.0.1:7780"
     echo "CREW_RELEASE_PUBLIC_KEY=$CREW_RELEASE_PUBLIC_KEY"
     if [ "${CREW_DEV:-}" = 1 ]; then echo "CREW_DEV=1"; fi
     if [ -n "$CREW_JOIN_TOKEN" ]; then echo "CREW_JOIN_TOKEN=$CREW_JOIN_TOKEN"; fi
