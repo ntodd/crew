@@ -76,6 +76,19 @@ defmodule CrewAgent.Driver.VZTest do
 
     cfg = spec.vm_dir |> Path.join("vz.json") |> File.read!() |> Jason.decode!()
     lease = spec.net
+    {site4, cfg} = Map.pop!(cfg, "site4")
+
+    # site4: this Mac's own subnets, and the admin's list (§14.2).
+    {:ok, ifaddrs} = :inet.getifaddrs()
+
+    assert site4 ==
+             CrewAgent.Site.site4(
+               ctx.config,
+               CrewAgent.Site.connected(ifaddrs, ctx.config.vm_net),
+               nil
+             )
+
+    assert "203.0.113.7/32" in site4
 
     assert cfg == %{
              "vm_id" => spec.vm_id,
@@ -96,8 +109,7 @@ defmodule CrewAgent.Driver.VZTest do
              "service_ip" => "10.199.0.1",
              "cache_addr" => "",
              "dns_fallback" => "1.1.1.1",
-             "site4" => ["203.0.113.7/32"],
-             "max_conns" => 2048,
+             "max_conns" => 1024,
              "mtu" => 1500
            }
 
@@ -119,6 +131,27 @@ defmodule CrewAgent.Driver.VZTest do
   test "production paths fit" do
     path = "/Library/Application Support/Crew/vms/#{CrewProtocol.uuid7()}/guest.sock"
     assert byte_size(path) <= 103
+  end
+
+  test "the cache VM's address comes from hostvm/cachevm.ip", ctx do
+    vzd(ctx)
+    File.mkdir_p!(Path.join(ctx.dir, "hostvm"))
+    File.write!(Path.join([ctx.dir, "hostvm", "cachevm.ip"]), "192.168.64.3\n")
+    spec = spec(ctx.config)
+    assert :ok = VZ.start(spec)
+    cfg = spec.vm_dir |> Path.join("vz.json") |> File.read!() |> Jason.decode!()
+    assert cfg["cache_addr"] == "192.168.64.3"
+  end
+
+  test "a cachevm.ip that isn't an address is ignored", ctx do
+    vzd(ctx)
+    File.mkdir_p!(Path.join(ctx.dir, "hostvm"))
+    File.write!(Path.join([ctx.dir, "hostvm", "cachevm.ip"]), "192.168.64.3:80; rm -rf /\n")
+    spec = spec(ctx.config)
+    assert :ok = VZ.start(spec)
+
+    assert (spec.vm_dir |> Path.join("vz.json") |> File.read!() |> Jason.decode!())["cache_addr"] ==
+             ""
   end
 
   test "a refused start is an error with crew-vzd's code", ctx do

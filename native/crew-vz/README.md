@@ -38,10 +38,10 @@ make integration
 | `vz.json` | agent | The VM's config (below). |
 | the disk (e.g. `rootfs.ext4`) | agent | An APFS clone (`clonefile`). Must have exactly one hard link. |
 | `guest.sock` | agent | The guest API for this VM (§13.4). crew-vz connects to it for every guest connection to `10.199.0.1:7777`. |
-| `vz.pid` | crew-vz | Created exclusively at launch (holds the pid) and never removed. If it exists, the VM was launched once and is never launched again, even when the helper died before it could write `exited.json`. |
-| `console.log` | crew-vz | The guest console, capped at 8 MiB: past that it keeps the first 4 MiB, a marker line, and a rolling tail. The tail is rewritten at most once a second. Truncated when the VM starts. |
+| `vz.pid` | crew-vz | Created exclusively at launch (holds the pid) and never removed. If it exists, the VM was launched once and is never launched again, even when the helper died before it could write `vz-exited.json`. |
+| `console.log` | crew-vz | The guest console, capped at 8 MiB: past that it keeps the first 4 MiB, a marker line, and a rolling tail. The tail is rewritten at most once a second. A fresh file each start: whatever was at the path (a symlink or hard link included) is replaced, never written through. `vz.log` likewise. |
 | `ctl.sock` | crew-vz | The helper's control socket (0660), removed on a clean exit. |
-| `exited.json` | crew-vz (or crew-vzd) | Written once, atomically, when the helper is done. Never overwritten. |
+| `vz-exited.json` | crew-vz (or crew-vzd) | Written once, atomically, when the helper is done. Never overwritten. |
 | `vz.log` | crew-vzd | The helper's stderr (structured logs). |
 
 **Permissions.** The helper runs as `_crewvm` and creates files in this
@@ -65,7 +65,7 @@ rejects `guest_socket` and `ctl_socket` paths longer than 103.
   "console_log": "/Library/Application Support/Crew/vms/01JC9Z4V8R2Q/console.log",
   "guest_socket": "/Library/Application Support/Crew/vms/01JC9Z4V8R2Q/guest.sock",
   "ctl_socket": "/Library/Application Support/Crew/vms/01JC9Z4V8R2Q/ctl.sock",
-  "exited_path": "/Library/Application Support/Crew/vms/01JC9Z4V8R2Q/exited.json",
+  "exited_path": "/Library/Application Support/Crew/vms/01JC9Z4V8R2Q/vz-exited.json",
   "lease": {"gateway": "10.200.0.1/30", "guest": "10.200.0.2/30", "mac": "02:00:0a:c8:00:02"},
   "service_ip": "10.199.0.1",
   "cache_addr": "192.168.64.3",
@@ -90,7 +90,7 @@ crew-vzd and the helper both validate the file. Fields:
 | `console_log` | path | In the VM's directory. May be absent; if present, a regular file. |
 | `guest_socket` | path | In the VM's directory. May be absent (guest connections to :7777 are then refused); if present, a socket. ≤ 103 bytes. |
 | `ctl_socket` | path | In the VM's directory. ≤ 103 bytes. |
-| `exited_path` | path | In the VM's directory. Must be absent when the VM starts. |
+| `exited_path` | path | In the VM's directory, named `vz-exited.json` (fixed, so crew-vzd finds it without vz.json, and it never collides with the agent's own `exited.json`). Must be absent when the VM starts. |
 | `lease.gateway` | CIDR | `<base+1>/30`: the helper's address. |
 | `lease.guest` | CIDR | `<base+2>/30`: the guest's address, in the same /30. |
 | `lease.mac` | MAC | The guest NIC's MAC. Unicast, and not the gateway MAC `02:c7:e0:00:00:01`. |
@@ -98,7 +98,7 @@ crew-vzd and the helper both validate the file. Fields:
 | `cache_addr` | IPv4 | Optional. The cache VM (`hostvm/cachevm.ip`), with no port. Unicast, not loopback. |
 | `dns_fallback` | `ip[:port]` | Optional, for development: the upstream for port 53 **only when `cache_addr` is empty**. Port defaults to 53. Unicast, not loopback. |
 | `site4` | [CIDR] | This site's own addresses (≤ 1024 entries; a bare address means /32). Refused like `blocked4`. |
-| `max_conns` | int | 1 to 2048, default 2048. Open TCP connections plus UDP flows. |
+| `max_conns` | int | 1 to 2048, default 2048 (the agent sends 1024). Open TCP connections plus UDP flows. Each TCP connection can hold up to 1 MiB each way in the helper, outside the guest's memory, so the cap bounds that: 2 GiB at 1024. |
 | `mtu` | int | 1500 to 65535, default 1500. The guest's virtio-net picks it up with no guest change (measured below). |
 
 All paths are absolute and clean, with no `..`. No component below the
@@ -123,7 +123,10 @@ crew-vz daemon [--socket "/Library/Application Support/Crew/vzd.sock"]
   SIGKILL), its helpers keep running.
 - **Re-adoption.** On start, the daemon asks every `vms/*/ctl.sock` for
   `status` and adopts the helpers that answer. It watches adopted helpers by
-  pid. A helper that disappears without writing `exited.json` gets
+  pid. At start it also finds launches (`vz.pid`) with no helper and no
+  record, from a power loss or a helper that died while crew-vzd was
+  down, and records them as `helper_died`; a live but silent helper is
+  watched by pid. A helper that disappears without writing `vz-exited.json` gets
   `{"code":1,"reason":"helper_died"}` from the daemon.
 - The LaunchDaemon plist should also set `AbandonProcessGroup` to `true`.
 
@@ -156,7 +159,7 @@ Response: `{"ok": true, ...}` or `{"ok": false, "error": "<code>", "detail": "<t
          "drops": {"ipv6": 9, "arp": 3}}}
 ```
 
-- `exited`: the VM's helper is gone; `exited` holds `exited.json`.
+- `exited`: the VM's helper is gone; `exited` holds `vz-exited.json`.
 - `not_started`: the VM dir exists but was never launched.
 - `lost`: launched (`vz.pid` exists), but there is no helper and no record
   yet. This is transient: the daemon writes the record when it notices.
@@ -164,7 +167,7 @@ Response: `{"ok": true, ...}` or `{"ok": false, "error": "<code>", "detail": "<t
   answering.
 
 Error codes: `bad_request`, `unknown_op`, `not_found`, `invalid_config`,
-`already_running`, `already_exited` (exited.json exists, so the disk has
+`already_running`, `already_exited` (vz-exited.json exists, so the disk has
 been used), `already_launched` (vz.pid exists), `start_failed` (the detail
 carries the helper's exit record), `not_running`, `cannot_request_stop`,
 `internal`.
@@ -178,10 +181,10 @@ crew-vz run --config <data>/vms/<id>/vz.json --deadline <unix> [--data-dir DIR] 
 crew-vzd runs this; it can also be run by hand. The helper:
 
 1. Loads and validates vz.json. On failure it exits 1 **without** writing
-   `exited.json`, because the paths can't be trusted.
-2. Refuses to start (exit 1, nothing written) if `exited.json` or `vz.pid`
+   `vz-exited.json`, because the paths can't be trusted.
+2. Refuses to start (exit 1, nothing written) if `vz-exited.json` or `vz.pid`
    exists, then creates `vz.pid`. From here on, every exit writes
-   `exited.json`.
+   `vz-exited.json`.
 3. If the deadline has already passed, it writes `{3, "deadline"}` without
    booting.
 4. Builds the VM: `VZLinuxBootLoader` (Image, cmdline, no initrd), vcpus and
@@ -196,7 +199,7 @@ crew-vzd runs this; it can also be run by hand. The helper:
 `{"op":"stop","force":bool}`. Graceful is VZ `requestStop` (the power
 button); force is VZ `stop`.
 
-**Exit codes and `exited.json`:** `{"code", "reason", "at", "detail"?}`, with
+**Exit codes and `vz-exited.json`:** `{"code", "reason", "at", "detail"?}`, with
 `at` in RFC 3339 UTC with milliseconds.
 
 | Code | Reason | When |
@@ -297,7 +300,7 @@ LaunchDaemon running as `_crewvm` after a reboot; that needs root.
 ## Tests
 
 - `make test`: unit tests for config validation, policy, the L2 filter,
-  console capping, exited.json, the control protocol, the helper lifecycle
+  console capping, vz-exited.json, the control protocol, the helper lifecycle
   (with a fake VM) and the daemon (the test binary re-execs as a fake
   helper). `netstack` also runs a second gVisor stack as a fake guest over a
   real socketpair, covering the guest API, refusals, DNS, the cap, and raw

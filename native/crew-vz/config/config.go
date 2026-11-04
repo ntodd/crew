@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ntodd/crew/native/crew-vz/exitrec"
 	"io"
 	"net"
 	"net/netip"
@@ -234,6 +235,9 @@ func (c *Config) validatePaths(dataDir string) error {
 		if err := checkLeaf(p.path, p.kind); err != nil {
 			return fmt.Errorf("%s: %w", p.field, err)
 		}
+	}
+	if filepath.Base(c.ExitedPath) != exitrec.FileName {
+		return fmt.Errorf("exited_path %s: must be named %s", c.ExitedPath, exitrec.FileName)
 	}
 	if err := diskNotShared(c.Disk); err != nil {
 		return fmt.Errorf("disk: %w", err)

@@ -91,12 +91,18 @@ if [ -z "$DRY" ]; then [ "$(id -u)" -eq 0 ] || fail "run this as root (sudo)"; f
 # -- uninstall ------------------------------------------------------------------
 
 if [ -n "$UNINSTALL" ]; then
+  # The agent first, so nothing starts another VM; then crew-vzd, whose
+  # helpers outlive it by design (§10.7), so they're stopped by hand.
   for label in com.crew.agent com.crew.vzd; do
     run launchctl bootout "system/$label" 2>/dev/null || true
     run rm -f "$DAEMONS/$label.plist"
   done
+  run pkill -KILL -U _crewvm -f 'crew-vz run' || true
+  if [ -z "$DRY" ] && pgrep -U _crewvm -f 'crew-vz run' >/dev/null 2>&1; then
+    fail "job VMs are still running (pgrep -U _crewvm -f 'crew-vz run')"
+  fi
   run rm -rf "$PREFIX"
-  say "removed the services and $PREFIX; $DATA is kept (its VMs were stopped with crew-vzd)"
+  say "removed the services and $PREFIX, and stopped every job VM; $DATA is kept"
   exit 0
 fi
 
@@ -115,6 +121,9 @@ if [ -n "$enroll" ]; then
   [ -n "$URL" ] || fail "--url is required"
   case "$URL" in wss://*) ;; *) fail "--url must be wss:// (the agent only talks TLS)" ;; esac
 fi
+# A reinstall keeps the box's name and URL unless they're given again.
+env_value() { [ -f "$DATA/agent/env" ] && sed -n "s/^$1=//p" "$DATA/agent/env" | tail -n 1 | sed "s/^'//; s/'\$//"; }
+[ -n "$NAME" ] || NAME=$(env_value CREW_BOX_NAME || true)
 [ -n "$NAME" ] || NAME=$(scutil --get LocalHostName 2>/dev/null | tr '[:upper:]' '[:lower:]' || hostname -s)
 echo "$NAME" | grep -Eq '^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$' || fail "box name '$NAME' isn't a DNS label of 1 to 40 characters (use --name)"
 
@@ -185,10 +194,12 @@ run chown -R root:wheel "$PREFIX"
 
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
-existing_url=""
-if [ -z "$enroll" ] && [ -f "$DATA/agent/env" ]; then
-  existing_url=$(sed -n "s/^CREW_URL=//p" "$DATA/agent/env" | tr -d "'")
-fi
+existing_url=$(env_value CREW_URL || true)
+# The admin's own settings (CREW_EXTRA_BLOCKED, reserves...) survive a
+# reinstall; only these lines are the installer's.
+owned='^(CREW_URL|CREW_JOIN_TOKEN|CREW_BOX_NAME|CREW_DATA_DIR|CREW_DRIVER|CREW_VZD_SOCKET|CREW_VZ_BIN|RELEASE_DISTRIBUTION|HOME)='
+kept=""
+if [ -f "$DATA/agent/env" ]; then kept=$(grep -Ev "$owned" "$DATA/agent/env" || true); fi
 
 {
   echo "CREW_URL=$(q "${URL:-$existing_url}")"
@@ -200,6 +211,7 @@ fi
   echo "CREW_VZ_BIN=$(q "$PREFIX/bin/crew-vz")"
   echo "RELEASE_DISTRIBUTION=none"
   echo "HOME=/var/empty"
+  [ -z "$kept" ] || printf '%s\n' "$kept"
 } | put "$DATA/agent/env" 0600 _crewagent:crewvm
 
 if [ -n "$REENROLL" ]; then run rm -f "$identity"; fi

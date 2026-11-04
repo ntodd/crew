@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -125,7 +126,10 @@ func Run(ctx context.Context, o Options) error {
 func (d *Daemon) vmDir(id string) string      { return filepath.Join(d.o.DataDir, "vms", id) }
 func (d *Daemon) configPath(id string) string { return filepath.Join(d.vmDir(id), "vz.json") }
 
-// adoptAll finds helpers that are still running from an earlier daemon.
+// adoptAll finds helpers that are still running from an earlier daemon,
+// and gives a record to every launch whose helper died while no daemon
+// was watching (a power loss, or crew-vzd down), so it isn't "lost"
+// forever.
 func (d *Daemon) adoptAll() {
 	socks, _ := filepath.Glob(filepath.Join(d.o.DataDir, "vms", "*", "ctl.sock"))
 	for _, s := range socks {
@@ -135,6 +139,43 @@ func (d *Daemon) adoptAll() {
 		}
 		d.tryAdopt(id)
 	}
+	pids, _ := filepath.Glob(filepath.Join(d.o.DataDir, "vms", "*", helper.PIDFile))
+	for _, p := range pids {
+		id := filepath.Base(filepath.Dir(p))
+		if !config.ValidVMID(id) || d.lookup(id) != nil {
+			continue
+		}
+		if ok, _ := exitrec.Exists(filepath.Join(d.vmDir(id), exitrec.FileName)); ok {
+			continue
+		}
+		pid := readPID(p)
+		if pid > 0 && syscall.Kill(pid, 0) == nil {
+			// Alive but not answering: watch it, and record its end.
+			d.mu.Lock()
+			e := &entry{vmID: id, pid: pid, adopted: true, gone: make(chan struct{})}
+			d.vms[id] = e
+			d.mu.Unlock()
+			go d.watchAdopted(e)
+			d.log.Warn("watching an unresponsive helper", "vm_id", id, "pid", pid)
+			continue
+		}
+		rec := exitrec.Record{Code: exitrec.CodeError, Reason: exitrec.ReasonHelperDied, At: time.Now(), Detail: "found dead at crew-vzd start"}
+		if err := exitrec.Write(filepath.Join(d.vmDir(id), exitrec.FileName), rec); err == nil {
+			d.log.Warn("a helper died while crew-vzd was down", "vm_id", id)
+		}
+	}
+}
+
+func readPID(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0
+	}
+	return pid
 }
 
 // tryAdopt adopts the helper answering on vm id's ctl.sock, if any.
@@ -185,7 +226,7 @@ func (d *Daemon) helperGone(e *entry, status string) {
 	}
 	// Only the daemon-validated location; first writer wins, so the
 	// helper's own record is never replaced.
-	if err := exitrec.Write(filepath.Join(d.vmDir(e.vmID), "exited.json"), rec); err == nil {
+	if err := exitrec.Write(filepath.Join(d.vmDir(e.vmID), exitrec.FileName), rec); err == nil {
 		d.log.Warn("helper exited without a record", "vm_id", e.vmID, "status", status)
 	}
 	close(e.gone)
@@ -316,7 +357,12 @@ func realPath(p string) string {
 
 func (d *Daemon) launch(cfg *config.Config, cfgPath string, deadline int64) (*entry, error) {
 	logPath := filepath.Join(d.vmDir(cfg.VMID), HelperLog)
-	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND|syscall.O_NOFOLLOW, 0o640)
+	// A fresh inode: whatever is at the path (a hard link to a file
+	// elsewhere, say) is replaced, never written through.
+	if err := os.Remove(logPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("helper log: %w", err)
+	}
+	logf, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("helper log: %w", err)
 	}
@@ -445,7 +491,7 @@ func (d *Daemon) status(ctx context.Context, id string) ctlproto.Response {
 	if _, err := os.Lstat(dir); err != nil {
 		return ctlproto.Fail(ctlproto.ErrNotFound, "no VM %s", id)
 	}
-	if rec, err := exitrec.Read(filepath.Join(dir, "exited.json")); err == nil {
+	if rec, err := exitrec.Read(filepath.Join(dir, exitrec.FileName)); err == nil {
 		return ctlproto.Response{OK: true, VM: &ctlproto.VMStatus{VMID: id, State: "exited", Exited: &rec}}
 	}
 	state := "not_started"

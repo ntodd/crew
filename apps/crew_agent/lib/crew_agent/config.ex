@@ -26,6 +26,7 @@ defmodule CrewAgent.Config do
             vz_cache_addr: nil,
             vz_dns_fallback: nil,
             vz_mtu: 1500,
+            vz_max_conns: 1024,
             dev_image_dir: nil,
             cache_mgmt_url: nil,
             cache_mgmt_token: nil,

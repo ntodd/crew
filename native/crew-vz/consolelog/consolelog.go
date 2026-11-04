@@ -65,7 +65,12 @@ func Open(path string, o Options) (*Writer, error) {
 	if o.HeadMax < 0 || o.TailMax <= markerLen {
 		return nil, fmt.Errorf("consolelog: tail (%d) must be larger than the %d-byte marker", o.TailMax, markerLen)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0o640)
+	// A fresh inode each boot: whatever is at the path (a hard link to a
+	// file elsewhere, say) is replaced, never truncated or written through.
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o640)
 	if err != nil {
 		return nil, err
 	}
