@@ -149,11 +149,15 @@ func run(disks []string, iso, serial, efiVars, kernel, initrd, cmdline string, c
 		return err
 	}
 	defer out.Close()
-	in, err := os.Open(os.DevNull)
+	// The console's input is a pipe nothing writes to. /dev/null reads
+	// as end of file at once, and the framework polls it in a loop, which
+	// kept a host core busy with the guest idle.
+	in, keepOpen, err := os.Pipe()
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+	defer keepOpen.Close()
 	att, err := vz.NewFileHandleSerialPortAttachment(in, out)
 	if err != nil {
 		return err
