@@ -2,10 +2,17 @@ defmodule CrewWeb.BoxLive.New do
   @moduledoc """
   Add box (§12.2, §10.2): a name and a type, then a single-use join
   token (valid for an hour) and what to run on the machine.
+
+  A Flatcar box (`linux-metal`, `linux-vm`, `mac-vm`) also takes an
+  optional break-glass SSH key, a Tailscale auth key when the control
+  plane has no OAuth client to mint one, and on bare metal the data
+  disk. The launchers fetch the box's Ignition themselves; bare metal
+  downloads it here.
   """
   use CrewWeb, :live_view
 
   alias Crew.Boxes
+  alias Crew.Boxes.Flatcar
 
   @types [
     {"mac-vz", "Mac (Virtualization.framework)"},
@@ -20,6 +27,7 @@ defmodule CrewWeb.BoxLive.New do
      assign(socket,
        page_title: "Add box",
        form: to_form(%{"box_name" => "", "box_type" => "mac-vz"}, as: :box),
+       minted?: Crew.Tailscale.configured?(),
        token: nil,
        box_name: nil,
        box_type: nil
@@ -27,6 +35,9 @@ defmodule CrewWeb.BoxLive.New do
   end
 
   @impl true
+  def handle_event("change", %{"box" => params}, socket),
+    do: {:noreply, assign(socket, :form, to_form(params, as: :box))}
+
   def handle_event("create", %{"box" => params}, socket) do
     case Boxes.create_join_token(socket.assigns.current_scope, params) do
       {:ok, token} ->
@@ -50,6 +61,8 @@ defmodule CrewWeb.BoxLive.New do
 
   @impl true
   def render(assigns) do
+    assigns = assign(assigns, :type, assigns.form[:box_type].value)
+
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} current_path={@current_path}>
       <:breadcrumb navigate={~p"/boxes"}>Boxes</:breadcrumb>
@@ -60,23 +73,74 @@ defmodule CrewWeb.BoxLive.New do
       </.header>
 
       <.panel :if={is_nil(@token)} id="add-box-panel">
-        <.form for={@form} id="add-box" phx-submit="create" class="space-y-2">
+        <.form for={@form} id="add-box" phx-change="change" phx-submit="create" class="space-y-2">
           <.input field={@form[:box_name]} label="Name" placeholder="m1ultra" />
           <fieldset class="mb-3">
             <legend class="label">Type</legend>
             <div class="space-y-2">
-              <label :for={{value, label} <- types()} class="flex items-center gap-2 text-sm text-ink">
+              <label
+                :for={{value, label} <- types()}
+                class="flex items-start gap-2 text-sm text-ink sm:items-center"
+              >
                 <input
                   type="radio"
-                  class="radio"
+                  class="radio mt-0.5 sm:mt-0"
                   name="box[box_type]"
                   value={value}
-                  checked={@form[:box_type].value == value}
+                  checked={@type == value}
                 />
-                <span class="font-mono text-xs text-ink-2">{value}</span> {label}
+                <span>
+                  <span class="font-mono text-xs text-ink-2">{value}</span> {label}
+                </span>
               </label>
             </div>
           </fieldset>
+
+          <div :if={@type in Flatcar.types()} id="flatcar-fields" class="space-y-2">
+            <div :if={@type == "linux-metal"}>
+              <.input
+                field={@form[:data_disk]}
+                label="Data disk"
+                placeholder="/dev/sdb"
+                autocomplete="off"
+              />
+              <p class="-mt-2 mb-3 text-xs text-ink-3">
+                The disk for images, job VMs and the cache (XFS). Crew formats it only if it's empty. A
+                <span class="font-mono">/dev/disk/by-id/…</span>
+                path survives disks being renamed.
+              </p>
+            </div>
+
+            <.input
+              field={@form[:ssh_keys]}
+              type="textarea"
+              rows="2"
+              label="Break-glass SSH key (optional)"
+              placeholder="ssh-ed25519 AAAA… you@laptop"
+              class="input font-mono text-xs"
+            />
+            <p class="-mt-2 mb-3 text-xs text-ink-3">
+              Lets you in as <span class="font-mono">core</span> if the agent can't be reached.
+            </p>
+
+            <div :if={not @minted?}>
+              <.input
+                field={@form[:tailscale_auth_key]}
+                type="password"
+                label="Tailscale auth key (optional)"
+                placeholder="tskey-auth-…"
+                autocomplete="off"
+              />
+              <p class="-mt-2 mb-3 text-xs text-ink-3">
+                Single-use and pre-authorized, tagged <span class="font-mono">tag:crew-box</span>.
+                Without one, the box has to reach this control plane some other way.
+              </p>
+            </div>
+            <p :if={@minted?} id="tailscale-minted" class="mb-3 text-xs text-ink-3">
+              The box gets a Tailscale auth key of its own, from this control plane's OAuth client.
+            </p>
+          </div>
+
           <.button type="submit" variant="primary" size="sm">Create join token</.button>
         </.form>
       </.panel>
@@ -111,13 +175,50 @@ defmodule CrewWeb.BoxLive.New do
               id="join-command"
               command={"curl -fsSL #{Crew.Config.base_url()}/agent/#{type}.sh | sudo sh -s -- --token #{@token}"}
             />
-          <% "linux-metal" -> %>
-            <p class="mb-2 text-sm text-ink-2">
-              Boot the machine from Flatcar with this box's Ignition. It's fetched with the token:
+            <p class="mt-3 text-xs text-ink-3">
+              It takes <span class="font-mono">--cpus N</span>,
+              <span class="font-mono">--memory GiB</span>
+              and <span class="font-mono">--data GiB</span>
+              (the data disk, 200 by default, at least 100). It prints the box's progress until it has enrolled.
             </p>
+          <% "linux-metal" -> %>
+            <p class="mb-3 text-sm text-ink-2">
+              Download the box's Ignition. It holds the join token (and the box's Tailscale key), so keep it to yourself.
+            </p>
+            <form
+              id="ignition-download"
+              action="/agent/flatcar/ignition"
+              method="post"
+              class="mb-4 flex flex-wrap items-end gap-3"
+            >
+              <input type="hidden" name="join_token" value={@token} />
+              <div class="w-40">
+                <.input
+                  type="select"
+                  name="arch"
+                  id="ignition-arch"
+                  label="Architecture"
+                  value="amd64"
+                  options={[{"x86_64 (amd64)", "amd64"}, {"arm64", "arm64"}]}
+                />
+              </div>
+              <div class="mb-3">
+                <.button type="submit" size="sm" icon="hero-arrow-down-tray-micro">
+                  Download Ignition
+                </.button>
+              </div>
+            </form>
+            <p class="mb-2 text-sm text-ink-2">Or fetch it on the machine:</p>
             <.command
               id="join-command"
-              command={"curl -fsSL -X POST -d join_token=#{@token} -d arch=x86_64 #{Crew.Config.base_url()}/agent/flatcar/ignition > crew-box.ign"}
+              command={"curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition > crew-#{@box_name}.ign"}
+            />
+            <p class="mb-2 mt-4 text-sm text-ink-2">
+              Then, from Flatcar's live image, install it to the OS disk (not the data disk) and reboot:
+            </p>
+            <.command
+              id="flatcar-install"
+              command={"sudo flatcar-install -d /dev/sda -i crew-#{@box_name}.ign && sudo reboot"}
             />
         <% end %>
 

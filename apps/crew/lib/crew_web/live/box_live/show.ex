@@ -2,18 +2,31 @@ defmodule CrewWeb.BoxLive.Show do
   @moduledoc """
   A box (§17.3): status, capabilities (pinned and reported, with
   approval), firewall and virtualisation, the latest metrics, what its
-  agent last reported (VMs and images), recent operations, and revoking.
+  agent last reported (VMs and images), recent operations, the
+  reprovision Ignition for a Flatcar box (§12.2), and revoking.
   """
   use CrewWeb, :live_view
 
   alias Crew.{Agents, Boxes, Metrics, Operations, Repos, Scheduler, Scope, VMs}
+  alias Crew.Boxes.Flatcar
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     box = Boxes.get!(id)
     if connected?(socket), do: Boxes.subscribe(box.id)
-    {:ok, socket |> assign(:page_title, box.name) |> load(box)}
+
+    {:ok,
+     socket
+     |> assign(:page_title, box.name)
+     |> assign(:data_disk, if(box.type == "linux-metal", do: Boxes.data_disk(box)))
+     |> load(box)}
   end
+
+  # The arch a reprovision Ignition is for, by default: a Mac's VM is
+  # arm64, and otherwise the guests' arch is the box's.
+  defp default_arch(%{type: "mac-vm"}), do: "arm64"
+  defp default_arch(%{guest_arch: "arm64"}), do: "arm64"
+  defp default_arch(_), do: "amd64"
 
   defp load(socket, box) do
     assign(socket,
@@ -380,6 +393,71 @@ defmodule CrewWeb.BoxLive.Show do
           </ul>
         </.panel>
       </div>
+
+      <.panel
+        :if={Scope.admin?(@current_scope) and @box.type in Flatcar.types()}
+        id="reprovision"
+        title="Reprovision"
+      >
+        <:subtitle>
+          For a new OS disk over this box's data disk, to recover it. The Ignition holds no join token or Tailscale key:
+          the box keeps its agent, identity and tailnet node from the data disk, and Flatcar updates itself from there.
+        </:subtitle>
+        <form
+          action={~p"/boxes/#{@box.id}/reprovision.ign"}
+          method="get"
+          class="flex flex-wrap items-end gap-x-3"
+        >
+          <div class="w-40">
+            <.input
+              type="select"
+              name="arch"
+              id="reprovision-arch"
+              label="Architecture"
+              value={default_arch(@box)}
+              options={[{"x86_64 (amd64)", "amd64"}, {"arm64", "arm64"}]}
+            />
+          </div>
+          <div :if={@box.type == "linux-metal"} class="w-full sm:w-56">
+            <.input
+              name="data_disk"
+              id="reprovision-data-disk"
+              label="Data disk"
+              value={@data_disk}
+              placeholder="/dev/sdb"
+              autocomplete="off"
+            />
+          </div>
+          <div class="w-full min-w-0 sm:w-auto sm:flex-1">
+            <.input
+              name="ssh_keys"
+              id="reprovision-ssh-key"
+              label="Break-glass SSH key (optional)"
+              value=""
+              placeholder="ssh-ed25519 AAAA… you@laptop"
+              class="input font-mono text-xs"
+            />
+          </div>
+          <div class="mb-3">
+            <.button type="submit" size="sm" icon="hero-arrow-down-tray-micro">
+              Download Ignition
+            </.button>
+          </div>
+        </form>
+        <%= if @box.type == "linux-metal" do %>
+          <p class="mb-2 text-sm text-ink-2">From Flatcar's live image, onto the OS disk:</p>
+          <.command
+            id="reprovision-command"
+            command={"sudo flatcar-install -d /dev/sda -i crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign && sudo reboot"}
+          />
+        <% else %>
+          <p class="mb-2 text-sm text-ink-2">On the host:</p>
+          <.command
+            id="reprovision-command"
+            command={"sudo crew-box reimage crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign"}
+          />
+        <% end %>
+      </.panel>
 
       <.panel :if={Scope.admin?(@current_scope)} id="danger" title="Revoke">
         <:subtitle>

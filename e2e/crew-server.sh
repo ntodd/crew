@@ -40,6 +40,17 @@ else
   run mix run --no-start "$root/e2e/make_release.exs" "$CREW_IMAGE_RELEASE_DIR"
 fi
 
+# The agent and cache tarballs a Flatcar box's Ignition names (§12.2),
+# signed with the same key: placeholders, or a real build
+# (E2E_AGENT_RELEASE_DIR).
+if [ -n "$E2E_AGENT_RELEASE_DIR" ]; then
+  export CREW_AGENT_RELEASE_DIR="$E2E_AGENT_RELEASE_DIR"
+else
+  export CREW_AGENT_RELEASE_DIR="$root/tmp/e2e/agent-release"
+  rm -rf "$CREW_AGENT_RELEASE_DIR"
+  run mix run --no-start "$root/e2e/make_agent_release.exs" "$CREW_AGENT_RELEASE_DIR"
+fi
+
 run mix ecto.create --quiet
 run mix ecto.migrate --quiet
 if [ -n "$E2E_SEED" ]; then run mix run "$root/e2e/$E2E_SEED"; fi

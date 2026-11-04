@@ -139,6 +139,134 @@ defmodule CrewWeb.BoxLiveTest do
 
       assert html =~ CrewProtocol.Auth.fingerprint(public)
     end
+
+    test "a dedicated Linux machine asks for its data disk, then offers the Ignition", %{
+      conn: conn
+    } do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      refute has_element?(view, "#box_data_disk")
+
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-metal"}}) |> render_change()
+      assert has_element?(view, "#box_data_disk")
+
+      html =
+        view
+        |> form("#add-box", %{"box" => %{"box_name" => "rack1", "box_type" => "linux-metal"}})
+        |> render_submit()
+
+      assert html =~ "is needed for a dedicated Linux machine"
+
+      html =
+        view
+        |> form("#add-box", %{
+          "box" => %{
+            "box_name" => "rack1",
+            "box_type" => "linux-metal",
+            "data_disk" => "/dev/nvme1n1"
+          }
+        })
+        |> render_submit()
+
+      assert [_, token] = Regex.run(~r/value="(cj_[A-Za-z0-9_-]+)"/, html)
+
+      assert has_element?(
+               view,
+               "#ignition-download[action='/agent/flatcar/ignition'][method='post']"
+             )
+
+      assert has_element?(view, "#ignition-download select[name=arch] option[value=amd64]")
+      assert has_element?(view, "#ignition-download select[name=arch] option[value=arm64]")
+      assert has_element?(view, "#join-command", "arch=amd64")
+      assert has_element?(view, "#flatcar-install", "flatcar-install -d")
+
+      assert Crew.Repo.get_by!(Crew.Boxes.JoinToken, box_name: "rack1").data_disk ==
+               "/dev/nvme1n1"
+
+      assert String.starts_with?(token, "cj_")
+    end
+
+    test "a Flatcar box takes a break-glass SSH key", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      refute has_element?(view, "#box_ssh_keys")
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-vm"}}) |> render_change()
+
+      view
+      |> form("#add-box", %{
+        "box" => %{
+          "box_name" => "desk",
+          "box_type" => "linux-vm",
+          "ssh_keys" => "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBreakGlass admin@laptop"
+        }
+      })
+      |> render_submit()
+
+      assert Crew.Repo.get_by!(Crew.Boxes.JoinToken, box_name: "desk").ssh_keys == [
+               "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBreakGlass admin@laptop"
+             ]
+    end
+
+    test "asks for a Tailscale auth key only without an OAuth client", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      view |> form("#add-box", %{"box" => %{"box_type" => "mac-vm"}}) |> render_change()
+      assert has_element?(view, "#box_tailscale_auth_key")
+
+      Application.put_env(:crew, :tailscale, %{client_id: "k", client_secret: "s", tailnet: "-"})
+      on_exit(fn -> Application.delete_env(:crew, :tailscale) end)
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      view |> form("#add-box", %{"box" => %{"box_type" => "mac-vm"}}) |> render_change()
+      refute has_element?(view, "#box_tailscale_auth_key")
+      assert has_element?(view, "#tailscale-minted")
+    end
+
+    test "mac-vz boxes get none of the Flatcar fields", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      view |> form("#add-box", %{"box" => %{"box_type" => "mac-vz"}}) |> render_change()
+      refute has_element?(view, "#box_ssh_keys")
+      refute has_element?(view, "#box_tailscale_auth_key")
+      refute has_element?(view, "#box_data_disk")
+    end
+  end
+
+  describe "reprovisioning a Flatcar box" do
+    test "the box page offers the Ignition, with the data disk it was added with", %{
+      conn: conn,
+      admin: admin
+    } do
+      scope = Crew.Scope.for_user(admin)
+
+      {:ok, raw} =
+        Boxes.create_join_token(scope, %{
+          "box_name" => "rack2",
+          "box_type" => "linux-metal",
+          "data_disk" => "/dev/sdb"
+        })
+
+      {public, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, box} = Boxes.enroll(raw, %{"public_key" => Base.encode64(public)})
+
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+
+      assert has_element?(
+               view,
+               "#reprovision form[action='/boxes/#{box.id}/reprovision.ign'][method=get]"
+             )
+
+      assert has_element?(view, "#reprovision input[name=data_disk][value='/dev/sdb']")
+      assert has_element?(view, "#reprovision", "flatcar-install")
+    end
+
+    test "a VM box's says to use crew-box reimage", %{conn: conn} do
+      box = box_fixture(type: "mac-vm")
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#reprovision", "crew-box reimage")
+      refute has_element?(view, "#reprovision input[name=data_disk]")
+    end
+
+    test "a mac-vz box has none", %{conn: conn} do
+      box = box_fixture(type: "mac-vz")
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      refute has_element?(view, "#reprovision")
+    end
   end
 
   test "members see boxes but can't add, approve or revoke" do
