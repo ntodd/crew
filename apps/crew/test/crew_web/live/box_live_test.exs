@@ -390,6 +390,19 @@ defmodule CrewWeb.BoxLiveTest do
       assert Boxes.get!(box.id).failed_agent_version == nil
     end
 
+    test "a pinned release whose files aren't here says so, and what to do", %{
+      conn: conn,
+      box: box
+    } do
+      box |> Ecto.Changeset.change(desired_agent_version: "0.3.0") |> Crew.Repo.update!()
+      File.rm!(Crew.Agents.Releases.get("agent", "0.3.0", "darwin-arm64").path)
+
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#agent-update-state", "0.3.0's files aren't here")
+      assert has_element?(view, "#agent-files-missing", "crew-agent-0.3.0-darwin-arm64.tar.gz")
+      assert has_element?(view, "#agent-files-missing", Crew.Agents.Releases.store_dir())
+    end
+
     test "members see it but can't change it", %{box: box} do
       conn = log_in(build_conn(), user_fixture())
       {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")

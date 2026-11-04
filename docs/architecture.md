@@ -939,6 +939,23 @@ plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
   downloads from the GitHub release. The agent swaps in the host it
   already reaches the control plane at (`CREW_URL`); the signature
   doesn't cover the URL.
+- **The control plane keeps its own copies** in `CREW_AGENT_STORE_DIR`
+  (`/var/lib/crew/agent-releases`, on the data volume), each with its
+  `.sha256` and `.sig`. An image carries only its own release's
+  tarballs, so after an upgrade a box pinned to an older version would
+  otherwise wait forever for files that are gone (found in review).
+  At boot the image's tarballs are copied in, the store is registered
+  again like the image's directory, and copies nothing needs go: kept
+  are the newest three versions per target, every version a box is
+  pinned to or runs, and the image's own. Before a box is sent a
+  version, its files are checked again (size, SHA-256, a signature that
+  verifies against the key now); a copy that doesn't pass is removed.
+  A version whose files aren't here shows on the box page as such
+  (`:missing`), naming the files and where to put them (from the
+  version's GitHub release, into the store, then a restart), rather
+  than as pending. The store goes into `crew-update`'s backups with the
+  rest of the data volume; it can be left out, since its files are all
+  in the GitHub releases.
 - **A box's target** is its join's `os` and `arch` (`boxes.arch`, new),
   not its guests'. **Its version** is the pin, or else the newest
   registered for the target that it can update to (Linux needs the

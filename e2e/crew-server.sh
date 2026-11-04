@@ -51,6 +51,9 @@ else
   rm -rf "$CREW_AGENT_RELEASE_DIR"
   run mix run --no-start "$root/e2e/make_agent_release.exs" "$CREW_AGENT_RELEASE_DIR"
 fi
+# Where the control plane keeps its copies of them (§20.2), fresh.
+export CREW_AGENT_STORE_DIR="$root/tmp/e2e/agent-store"
+rm -rf "$CREW_AGENT_STORE_DIR"
 
 # Real darwin releases to update a box between (13-agent-update.spec.js).
 if [ -n "${E2E_AGENT_UPDATE:-}" ]; then

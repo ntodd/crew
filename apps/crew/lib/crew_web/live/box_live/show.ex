@@ -182,13 +182,22 @@ defmodule CrewWeb.BoxLive.Show do
   defp update_label(%{state: :updating, version: v}, _online), do: "Installing #{v}"
   defp update_label(%{state: :restarting, version: v}, _online), do: "Restarting into #{v}"
   defp update_label(%{state: :blocked, version: v}, _online), do: "#{v} failed twice"
+  defp update_label(%{state: :missing, version: v}, _online), do: "#{v}'s files aren't here"
   defp update_label(%{state: :none, target: nil}, _online), do: "Not joined yet"
   defp update_label(%{state: :none, target: t}, _online), do: "No release for #{t}"
 
   defp update_color(:current), do: "emerald"
   defp update_color(state) when state in [:pending, :updating, :restarting], do: "sky"
-  defp update_color(:blocked), do: "amber"
+  defp update_color(state) when state in [:blocked, :missing], do: "amber"
   defp update_color(:none), do: "zinc"
+
+  # The tarballs a version's update needs for the box's target.
+  defp missing_files(%{version: v, target: target}) do
+    components =
+      if String.starts_with?(target || "", "linux-"), do: ~w(agent cache), else: ~w(agent)
+
+    for c <- components, do: Releases.file_name(c, v, target)
+  end
 
   defp pin_options(versions, fleet),
     do: [{"Follow the newest (#{fleet || "none"})", ""} | Enum.map(versions, &{&1, &1})]
@@ -325,6 +334,16 @@ defmodule CrewWeb.BoxLive.Show do
               Last update: {@update.error}
             </span>
           </div>
+          <p :if={@update.state == :missing} id="agent-files-missing" class="mt-3 text-sm text-ink-2">
+            This control plane doesn't have
+            <span :for={file <- missing_files(@update)} class="font-mono text-xs">{file}</span>
+            any more, so it can't send them. Pin a version it has, or follow the newest; or put
+            those files from the v{@update.version} GitHub release, each with its
+            <span class="font-mono text-xs">.sha256</span>
+            and <span class="font-mono text-xs">.sig</span>, in
+            <span class="font-mono text-xs">{Releases.store_dir()}</span>
+            and restart the control plane.
+          </p>
           <form
             :if={Scope.admin?(@current_scope) and @versions != []}
             id="pin-agent"

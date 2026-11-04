@@ -123,13 +123,18 @@ defmodule Crew.Agents.Releases do
   """
   def fleet_version(target), do: target |> versions() |> highest()
 
-  @doc "The tarballs an update to `version` sends a box on `target`, or nil."
+  @doc """
+  The tarballs an update to `version` sends a box on `target`, each
+  checked again first (`intact?/1`), or nil.
+  """
   def update_set(target, version) do
-    if version in versions(target) do
-      %{
-        agent: get("agent", version, target),
-        cache: if(String.starts_with?(target, "linux-"), do: get("cache", version, target))
-      }
+    with true <- version in versions(target),
+         agent = get("agent", version, target),
+         cache = if(String.starts_with?(target, "linux-"), do: get("cache", version, target)),
+         true <- Enum.all?(Enum.reject([agent, cache], &is_nil/1), &intact?/1) do
+      %{agent: agent, cache: cache}
+    else
+      _ -> nil
     end
   end
 
@@ -214,7 +219,11 @@ defmodule Crew.Agents.Releases do
     # rest when they join.
     if registered > 0, do: Crew.Agents.Updates.released()
 
-    %{registered: registered, failed: for({:error, f} <- results, do: f)}
+    %{
+      registered: registered,
+      failed: for({:error, f} <- results, do: f),
+      releases: for({:ok, r} <- results, do: r)
+    }
   end
 
   # sobelow_skip ["Traversal.FileModule"]
@@ -249,23 +258,175 @@ defmodule Crew.Agents.Releases do
   def register(_, _, _, _, _, _), do: {:error, "invalid component or target"}
 
   defp store(component, version, target, path, sha, signature) do
-    %Release{
-      component: component,
-      version: version,
-      target: target,
-      sha256: sha,
-      signature: signature,
-      size: File.stat!(path).size,
-      path: path
-    }
-    |> Repo.insert(
-      on_conflict: {:replace, [:sha256, :signature, :size, :path]},
-      conflict_target: [:component, :version, :target]
-    )
-    |> case do
-      # On a conflict the struct carries an id that wasn't stored.
-      {:ok, _} -> {:ok, get(component, version, target)}
-      error -> error
+    with {:ok, path} <- keep_copy(path, sha, signature) do
+      %Release{
+        component: component,
+        version: version,
+        target: target,
+        sha256: sha,
+        signature: signature,
+        size: File.stat!(path).size,
+        path: path
+      }
+      |> Repo.insert(
+        on_conflict: {:replace, [:sha256, :signature, :size, :path]},
+        conflict_target: [:component, :version, :target]
+      )
+      |> case do
+        # On a conflict the struct carries an id that wasn't stored.
+        {:ok, _} -> {:ok, get(component, version, target)}
+        error -> error
+      end
+    end
+  end
+
+  # -- the control plane's own copies --------------------------------------------
+
+  @doc """
+  Where the control plane keeps its own copies of the tarballs it
+  registers (CREW_AGENT_STORE_DIR, on its data volume). An image carries
+  only its own release's tarballs; a box pinned to an older version
+  still needs that version's after an upgrade (§20.2). Each copy has its
+  `.sha256` and `.sig` beside it, so the store registers again at boot
+  like the image's directory.
+  """
+  def store_dir do
+    case Application.get_env(:crew, :agent_store_dir) do
+      dir when is_binary(dir) and dir != "" -> dir
+      _ -> Path.join(System.tmp_dir!(), "crew-agent-releases")
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  # `path` is a tarball register_bundle/1 found and checked; the copy is
+  # named after it, in the store.
+  defp keep_copy(path, sha, signature) do
+    store = Path.expand(store_dir())
+    dest = Path.join(store, Path.basename(path))
+
+    cond do
+      Path.dirname(Path.expand(path)) == store ->
+        {:ok, path}
+
+      sha256(dest) == {:ok, sha} ->
+        write_beside(dest, sha, signature)
+
+      true ->
+        # Copied beside it and renamed into place, so nothing ever finds
+        # half a file (Foreman's).
+        partial = "#{dest}.partial-#{System.unique_integer([:positive])}"
+
+        with :ok <- File.mkdir_p(store),
+             :ok <- File.cp(path, partial),
+             :ok <- File.rename(partial, dest) do
+          write_beside(dest, sha, signature)
+        else
+          {:error, reason} ->
+            File.rm(partial)
+            {:error, "couldn't keep a copy in #{store}: #{:file.format_error(reason)}"}
+        end
+    end
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp write_beside(dest, sha, signature) do
+    File.write!(dest <> ".sha256", "#{sha}  #{Path.basename(dest)}\n")
+    File.write!(dest <> ".sig", signature)
+    {:ok, dest}
+  end
+
+  @doc """
+  Registers what boots with: the image's directory (copied into the
+  store) and the store itself, then prunes the store.
+  """
+  def register_at_boot(image_dir) do
+    bundle = if is_binary(image_dir) and image_dir != "", do: register_bundle(image_dir)
+    register_bundle(store_dir())
+
+    keep = for %Release{version: v} <- (bundle && bundle.releases) || [], uniq: true, do: v
+    prune(keep)
+  end
+
+  @doc """
+  Drops the copies, and their rows, nothing needs: kept are the newest
+  three versions per target, every version a box is pinned to or runs,
+  and `keep`.
+  """
+  # sobelow_skip ["Traversal.FileModule"]
+  # Only files in the store are removed.
+  def prune(keep \\ []) do
+    boxes = Repo.all(from b in Crew.Boxes.Box, select: {b.desired_agent_version, b.agent_version})
+    needed = MapSet.new(keep ++ Enum.flat_map(boxes, &Tuple.to_list/1))
+    store = Path.expand(store_dir())
+
+    for {_target, rows} <- Enum.group_by(Repo.all(Release), & &1.target),
+        newest = rows |> Enum.map(& &1.version) |> Enum.uniq() |> newest(3),
+        row <- rows,
+        row.version not in newest and not MapSet.member?(needed, row.version) do
+      if Path.dirname(Path.expand(row.path)) == store,
+        do: Enum.each(["", ".sha256", ".sig"], &File.rm(row.path <> &1))
+
+      Repo.delete(row)
+    end
+
+    :ok
+  end
+
+  defp newest(versions, n) do
+    versions
+    |> Enum.flat_map(fn v ->
+      case Version.parse(v) do
+        {:ok, parsed} -> [{parsed, v}]
+        :error -> []
+      end
+    end)
+    |> Enum.sort_by(&elem(&1, 0), {:desc, Version})
+    |> Enum.take(n)
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  @doc """
+  The release's file is the one registered: its size and SHA-256, and a
+  signature that verifies against the release key now. Checked before a
+  box is sent it; a stored copy that isn't is removed, so the box page
+  says the version's files aren't here.
+  """
+  # sobelow_skip ["Traversal.FileModule"]
+  def intact?(%Release{} = release) do
+    ok = same_file?(release) and signed?(release)
+
+    if not ok and Path.dirname(Path.expand(release.path)) == Path.expand(store_dir()) do
+      Logger.error("#{Path.basename(release.path)} isn't what was registered; removing it")
+      Enum.each(["", ".sha256", ".sig"], &File.rm(release.path <> &1))
+    end
+
+    ok
+  end
+
+  # sobelow_skip ["Traversal.FileModule"]
+  defp same_file?(release) do
+    case File.stat(release.path) do
+      {:ok, %File.Stat{type: :regular, size: size}} when size == release.size ->
+        sha256(release.path) == {:ok, release.sha256}
+
+      _ ->
+        false
+    end
+  end
+
+  defp signed?(release) do
+    case Crew.Config.release_public_key() do
+      nil ->
+        false
+
+      key ->
+        CrewProtocol.Auth.verify_release(
+          release.version,
+          release.target,
+          release.sha256,
+          release.signature,
+          key
+        ) == :ok
     end
   end
 
