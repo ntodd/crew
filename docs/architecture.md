@@ -52,8 +52,11 @@ The other spikes are recorded here as they run.
   batches after the VM exits, until they're acked or 5 minutes pass. A
   resend for a VM the agent no longer holds is answered `vm.log.gone`.
 - **vz guests** each get their own guest API listener on
-  `vms/<vm_id>/guest.sock`, pinned to that VM; the null driver and
-  Firecracker share one TCP listener.
+  `vms/<vm_id>/guest.sock`, pinned to that VM, and count as their own
+  source for the bad-token limit (a socket has no peer address; when
+  they shared one, one guest guessing tokens dropped every VM's guest
+  API for a minute); the null driver and Firecracker share one TCP
+  listener.
 - **The inventory** lists every live VM, then the most recently exited,
   within the protocol's 1,000; exited VMs' directories go after an hour.
 
@@ -305,11 +308,10 @@ The other spikes are recorded here as they run.
   units, crew-vmctl's paths (a constant, not a setting) and a test say
   `root/current/bin`. How an agent update reaches `root/` is the
   updater's (§20.2), still to build.
-- **Not yet tested on a real VM:** a graceful stop through the guest API
-  (the guest image needs a JIT config it accepts, or a test mode like
-  crew-vz's guest), the network matrix of conformance items 4 and 5
-  beyond `vm_pairs` failing closed, and the console cap against a guest
-  that floods its console.
+- **Tested on a real VM by the conformance suite** (see "Conformance
+  results"): a graceful stop through the guest API, the network matrix
+  of items 4 and 5, and the console cap against a guest that floods its
+  console.
 
 ## Live log notes
 
@@ -334,6 +336,12 @@ The other spikes are recorded here as they run.
 - **While someone has a running job's page open,** its steps come from
   the API every 10 s (rate-limited per job, however many are watching),
   as an optional call.
+- **An agent stop drains what only it holds** (`prep_stop`,
+  `CrewAgent.VMs.drain_logs/1`): each VM sends the lines waiting for its
+  next batch and answers new log posts 503 (the guest keeps them for the
+  next agent), then the agent waits up to 3 s for the control plane to
+  ack every batch. The guest had a 204 for those lines and won't send
+  them again; without this a restart lost them (conformance item 9).
 
 ## crew-guest notes
 
@@ -1130,3 +1138,167 @@ plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
   `systemctl` stubbed; `e2e/tests/13-agent-update.spec.js` (`E2E_AGENT_UPDATE=1`)
   updates a real development release to another and rolls back one that
   crashes, twice.
+
+## Conformance results
+
+The driver conformance suite (§11.6) is
+`apps/crew_agent/test/conformance/conformance_test.exs` (tag
+`:conformance`, excluded by default). It drives the agent's own start
+path and driver: real VMs from the real guest image, through crew-vzd or
+crew-vmctl, with the suite playing the control plane (it takes the
+outbox's events, acks log batches as `vm.log.ack` would, and sends the
+`cache.config` a join would).
+
+### Conformance mode
+
+Items 2 to 6 need commands run inside a guest, and a real job needs
+GitHub. In conformance mode crew-guest runs the image's fixed script,
+`/opt/crew/conformance/check` (`images/guest/conformance/`), instead of
+the runner: it sets the guest up as for a job (the cache CA, Docker),
+reports `runner_listening` with detail `conformance`, sends every line
+the script prints as a log line (`crew-conformance: <item> ok|fail|skip
+<detail>`), then `job_finished` and powers off. A stop reaches the
+script as one SIGTERM, as it would the runner.
+
+**Why it can't be turned on remotely:**
+- the payload carries a `conformance` object only when the agent's own
+  config has `CREW_CONFORMANCE=1` (`agent/env`, root's on a box;
+  `CrewAgent.Conformance`), and the agent logs a warning at boot when it
+  does;
+- `vm.start` has no field for it, and `CrewProtocol.Command` refuses
+  unknown fields, so the control plane can't ask for it (a test holds
+  this);
+- nothing in the object runs: it names checks from the script's fixed
+  list and gives bounded values (IPv4 addresses, ports, counts, plain
+  labels, other VMs' tokens), checked by
+  `CrewProtocol.Guest.cast_conformance/1` in the agent and again in
+  crew-guest, which refuses an object that doesn't pass and powers off;
+- the script's path is crew-guest's own constant, not read from the
+  payload, the environment or the command line; it gets only the path
+  of the checked object, in a clean environment, and checks every value
+  against a pattern again before using it, only ever as an argument
+  (`conformance/check_test.sh`);
+- the JIT config isn't checked or written anywhere in this mode.
+
+The suite registers each VM's object in-process
+(`CrewAgent.Conformance.put/2`) before its `vm.start`; with nothing
+registered a VM runs `CrewAgent.Conformance.default/0`.
+
+### Running it
+
+**vz,** on a Mac, from the repository's root:
+
+```sh
+make -C native crew-vz && make -C images/guest rootfs artifacts
+cd apps/crew_agent && CREW_REAL_IMAGE_DIR=$PWD/../../images/guest/out/arm64 \
+  CREW_VZ_BIN=$PWD/../../native/crew-vz/bin/crew-vz \
+  CREW_CONFORMANCE_TARGETS=mac-lan-7000=<Mac LAN IP>:7000,... \
+  CREW_CONFORMANCE_EGRESS=<the site's public IPv4> CREW_CONFORMANCE_KIND=1 \
+  CREW_CONFORMANCE_CACHE_MGMT=http://127.0.0.1:17780 CREW_CONFORMANCE_CACHE_TOKEN=<token> \
+  CREW_CONFORMANCE_CACHE_ADDR=<cache VM address> \
+  mix test test/conformance --only conformance
+```
+
+One test: `--only "test:test <name>"` instead of `--only conformance`.
+
+**The vz cache:** crew-vz forwards a guest's `10.199.0.1:{53,80,443}`
+to `cache_addr`, which can't be loopback, and the helper's sandbox
+refuses the Mac's own addresses, so the cache can't run on the Mac
+without serving its network. The mac-vz cache VM (§12.3) isn't built,
+so the Flatcar dev VM stood in for it: `sudo
+native/crew-vmctl/kvm/cache.sh up --vmnet` runs crew_cache there as a
+box does (10.199.0.1 on `crew0`, management on loopback) and DNATs
+`<VM>:{53,80,443}` from the vmnet host only to it; management reached
+the Mac through an SSH tunnel (`-L 127.0.0.1:17780:127.0.0.1:7780`).
+Nothing listened on the Mac's network interfaces.
+
+**firecracker,** on a Flatcar box (an XFS `/srv/crew`):
+
+```sh
+sudo CREW_REAL_IMAGE_DIR=/srv/crew/conformance-image \
+  CREW_CONFORMANCE_TARGETS=... CREW_CONFORMANCE_EGRESS=... CREW_CONFORMANCE_KIND=1 \
+  native/crew-vmctl/kvm/run.sh --conformance
+```
+
+`--conformance` runs the suite instead of `:kvm`, with crew_cache up
+on 10.199.0.1 (`cache.sh`), and takes it all down after;
+`CREW_CONFORMANCE_ONLY=<name>` runs one test.
+
+**Targets:** each must-not-reach target was checked open from the host
+first (a refusal only means something against an open port): the
+Mac's AirPlay (7000) and epmd (4369) on its LAN, vmnet and tailnet
+addresses, the LAN router's 53 and 80, the Flatcar VM's sshd, and the
+site's public address on 443. The script adds its own: the service
+address's other ports, the gateway, metadata, MagicDNS, CGNAT and
+private, benchmark and test ranges, another VM's listener, UDP DNS to
+blocked resolvers, IPv6 (re-enabled by root in the guest: multicast,
+link-local and global), spoofed sources (another VM's lease and an
+unused one) and 2100 connections at once.
+
+### Results (2026-11-04)
+
+**vz** on the M4 Max (macOS 27.2, crew-vz from this tree, sandboxed);
+**firecracker** 1.17.0 on the M4 Max's Flatcar dev VM (arm64, 8 vCPUs,
+16 GiB, nested). Guest image 0.1.0-dev arm64 (Linux 6.18.60) from this
+tree. Times are from `vm.start` as the agent took it.
+
+| # | vz | firecracker |
+|---|---|---|
+| 1 | **Pass.** Payload 0.93 to 0.97 s after `vm.start` (item 11's 20 at once: below) | **Pass.** 2.2 s |
+| 2 | **Fail**, MemTotal only. `nproc` matches at 1, 2 and 4 vCPUs. MemTotal is short by 60, 80, 182 and 260 MiB at 1, 2, 4 and 8 GiB | **Fail**, the same: 62, 82, 184 and 262 MiB short |
+| 3 | **Pass** at 10, 20 and 40 GiB: `vda` is `disk_gib`, ext4 grown to all of it, 256 MiB written and synced | **Pass**, the same |
+| 4 | **Pass** but the private GHCR pull (skipped). DNS through 10.199.0.1 and `https://github.com` (200); `public.ecr.aws/docker/library/alpine:3.22` twice through the cache (its stats: 9 misses, then 9 hits for the second); `docker run --rm alpine true`; buildx on `docker-container` (5.2 s); `kind create cluster` v0.33.0 Ready in 32 s; Node 24 `fetch` and Python `requests` to `ghcr.io/v2/` (401) with the runner's environment | **Pass**, the same but the private pull. The cache served both pulls (18 hits: its store was warm from the vz runs); buildx 6.2 s; kind Ready in 38 s |
+| 5 | **Pass.** Every target refused (the helper's RST or ICMP), every open one included: the Mac on its LAN, vmnet and tailnet addresses, the LAN router, the Flatcar VM, the site's public address, another VM's listener, the gateway, the service address's other ports, metadata, MagicDNS. IPv6 turned back on by root reaches nothing and learns no neighbour; spoofed sources (another VM's lease, an unused one) get nothing; 1022 of 2100 connections at once (the cap is the agent's `max_conns`, 1024) | **Pass.** Every target timed out (dropped; a refusal would have meant something answered); IPv6 and spoofing as on vz; 2046 of 2100 connections (the 2048 cap, two of them crew-guest's) |
+| 6 | **Pass.** A second fetch from inside is 410 (and the agent reports `payload_refetch`); another VM's token is 401 for the payload and for a forged `job_finished`, from inside and on the other VM's socket from the host | **Pass**, the same inside; from the host's own address the VM's token is 401 (the source isn't its lease) |
+| 7 | **Pass.** Graceful through the guest API 255 to 311 ms; forced 11 to 13 ms. arm64 only | **Pass.** Graceful 306 ms; forced 75 ms. arm64 only |
+| 8 | **Pass.** No helper, no disk or `vz.json`, no sockets; crew-vzd reports it exited. The VM's directory keeps the agent's record (`vm.json`, `exited.json`, `guest.json`, `console.log`) and the helper's (`vz.pid`, `vz.log`, `vz-exited.json`) for the inventory until the hourly sweep, which the suite runs to see it go | **Pass.** No unit (crew-vmctl `status` "gone", and run.sh lists none), no tap, no `vm_pairs` element, no jail, no clone, kernel or `fc.json`; the record (with `fc.log` and `fc.stderr`) until the sweep, as on vz |
+| 9 | **Pass** (after the fix below). The agent stopped for 5 s and started again: the VM adopted, a new epoch, all 400 numbered lines, numbering unbroken | **Pass**, the same |
+| 10 | **Pass.** Killed by the helper at its deadline 42.9 s into the agent's absence; `vm.exited` `killed_deadline` on its return | **Pass.** systemd's `RuntimeMaxSec`, 40.4 s in |
+| 11 | **Pass.** 20 at once (1 vCPU, 1 GiB): to payload p50 4.8 s, p95 4.8 s, max 5.9 s (earlier runs: 3.8/5.1 s and 4.1/5.8 s); to ready p50 5.9 s, p95 5.9 s | **Pass.** To payload p50 8.6 s, p95 27.6 s, max 32.2 s; to ready p50 80 s, p95 101 s (Docker starting in 20 one-vCPU guests on 8 nested vCPUs) |
+| 12 | **Pass.** 100 MiB written to `/dev/console` in 12 to 24 s; `console.log` 8,388,608 bytes after, and never larger. API flood (4 MiB log limit): 3,976,353 bytes in 107 `vm.log` and one marker; 3 `vm.steps` over 3 s; 4 `vm.state`; the guest got 429 for ~27,000 steps posts and 422 for ~26,000 repeated states | **Pass.** The nested 8250 UART takes about 12.6 KB/s: in the 15 minutes the check allows, the guest wrote 11.3 MB (100 MiB would take over two hours); `console.log` 8,388,608 bytes after, and at most 8,403,133 between the agent's once-a-second passes. API flood: the same bytes and marker, 4 `vm.steps` over 4 s, 4 `vm.state` |
+
+"Ready" in item 11 is where the runner would start: crew-guest reports
+`runner_listening` (detail `conformance`) once the guest is set up as for
+a job, Docker started. The real runner can't listen without GitHub.
+
+### Findings, and what changed
+
+- **vz: one guest could cut every VM off the guest API** (fixed,
+  e777e0c). Each vz VM's socket has no peer address, so all of them
+  shared the rate-limit source "local": eleven bad tokens in a minute
+  from one guest dropped every VM's guest API for 60 s, payload fetches
+  included. A pinned socket's source is now its VM.
+- **An agent restart lost the guest's last lines** (fixed, 7f3bc71).
+  Item 9's first run on vz lost 3 of 400: the guest had a 204 for them,
+  and the agent held them only in the VM's server for its 250 ms batch.
+  `prep_stop` now has every VM send what it holds and refuse new lines
+  (503, which crew-guest retries for the next agent), and waits up to
+  3 s for the control plane's acks. A crash still loses up to a second
+  or so of lines.
+- **MemTotal (item 2) is short by more than 64 MiB above 1 GiB, on both
+  drivers.** Not a Crew bug: it's what the guest kernel reserves, per
+  its boot log 72, 93, 198 and 278 MiB at 1, 2, 4 and 8 GiB (its image
+  is about 51 MiB of that, and the struct page array 1/64 of memory),
+  the same under both drivers. Not changed: §11.6's bound needs to
+  grow with the size (128 MiB plus 2% holds at every size measured), or
+  sizes need the overhead added on top.
+- **Tooling:** the development image path took the build's `kernel/`
+  directory for the kernel (01a67b4), and the `:kvm` runner still built
+  crew-vmctl with Go 1.24.5 after the move to 1.25.14 (92d3bd0).
+- **vz answers pings to the gateway** as well as to 10.199.0.1 (the
+  helper replies itself; nothing is forwarded). Firecracker answers only
+  10.199.0.1, as §14.4 says. Harmless, but the drivers differ.
+
+### Not covered
+
+- **Item 4's private GHCR pull:** no test registry or token here. A
+  private repository under an allowlisted glob is a 404 from the cache,
+  and nothing stored, in crew_cache's own tests (against a fake
+  registry), not against GHCR.
+- **Item 5's "port the test router forwards":** no forwarded port on
+  this network; the site's public address was probed on 443 instead.
+  The tailnet was probed through the Mac's tailnet address and MagicDNS
+  only.
+- **x86_64** (item 7 asks for both): no x86_64 host here.
+- **Spoofed packets are dropped before conntrack:** the guest sees
+  nothing come back; where they were dropped isn't inspected.
