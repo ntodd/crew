@@ -3,6 +3,7 @@ defmodule Crew.LogsTest do
   use Crew.VMCase
 
   alias Crew.Logs
+  alias Crew.VMs.VM
 
   @epoch "0123456789abcdef"
 
@@ -53,6 +54,11 @@ defmodule Crew.LogsTest do
     do: eventually(fn -> Logs.last_n(:vm, vm_id) end) && Logs.lines(:vm, vm_id, 1, 100_000)
 
   defp texts(vm_id), do: Enum.map(stored(vm_id), & &1.text)
+
+  defp stop_stream(vm_id) do
+    [{pid, _}] = Registry.lookup(Crew.Registry, {:log_stream, vm_id})
+    DynamicSupervisor.terminate_child(Crew.Logs.Supervisor, pid)
+  end
 
   defp await_texts(vm_id, expected) do
     eventually(fn -> Logs.lines(:vm, vm_id, 1, 100_000) |> Enum.map(& &1.text) == expected end)
@@ -111,6 +117,84 @@ defmodule Crew.LogsTest do
     assert_command("vm.log.resend")
     agent_event(box, "vm.log.gone", %{"vm_id" => id, "epoch" => @epoch, "up_to_seq" => 3})
     await_texts(id, ["line 1", "line 2", "[6 lines lost]", "line 9"])
+  end
+
+  test "gone past a batch that's already here takes it, and never moves back", %{
+    box: box,
+    vm_id: id
+  } do
+    log(box, id, 1, lines(1..1))
+    log(box, id, 3, lines(5..5))
+    assert_command("vm.log.resend")
+    # The agent's buffer expired through seq 4: 2 is gone, 3 is here, 4 too.
+    log(box, id, 4, lines(6..6))
+    agent_event(box, "vm.log.gone", %{"vm_id" => id, "epoch" => @epoch, "up_to_seq" => 2})
+    await_texts(id, ["line 1", "[3 lines lost]", "line 5", "line 6"])
+    log(box, id, 5, lines(7..7))
+    await_texts(id, ["line 1", "[3 lines lost]", "line 5", "line 6", "line 7"])
+    # A late timeout for the old gap changes nothing.
+    Process.sleep(200)
+    assert length(stored(id)) == 5
+  end
+
+  test "gone through a range holding a batch that's here: that batch goes in, the rest is marked",
+       %{box: box, vm_id: id} do
+    log(box, id, 1, lines(1..1))
+    log(box, id, 3, lines(5..5))
+    assert_command("vm.log.resend")
+    agent_event(box, "vm.log.gone", %{"vm_id" => id, "epoch" => @epoch, "up_to_seq" => 4})
+    log(box, id, 5, lines(9..9))
+    # How many were in seq 4 is unknown: the next batch hadn't come.
+    await_texts(id, ["line 1", "[3 lines lost]", "line 5", "[some lines lost]", "line 9"])
+    Process.sleep(200)
+
+    assert Enum.map(stored(id), & &1.text) == [
+             "line 1",
+             "[3 lines lost]",
+             "line 5",
+             "[some lines lost]",
+             "line 9"
+           ]
+  end
+
+  test "a batch sent again after a reconnect is acked again", %{box: box, vm_id: id} do
+    log(box, id, 1, lines(1..2))
+    assert assert_command("vm.log.ack").payload.seq == 1
+    # The ack was lost: the agent sends the batch again.
+    log(box, id, 1, lines(1..2))
+    assert assert_command("vm.log.ack").payload.seq == 1
+    assert length(stored(id)) == 2
+  end
+
+  test "a write the row didn't record is undone at restart, so the replay isn't stored twice", %{
+    box: box,
+    vm_id: id
+  } do
+    log(box, id, 1, lines(1..2))
+    await_texts(id, ["line 1", "line 2"])
+    eventually(fn -> VMs.get!(id).last_log_seq == 1 end)
+    stop_stream(id)
+
+    # As if seq 2's append landed and then the row's update failed.
+    committed = VMs.get!(id).log_bytes
+
+    File.write!(Logs.path(:vm, id), ~s({"n":3,"t":1,"step_ref":"s1","text":"line 3"}\n), [:append])
+
+    # The agent never got an ack for seq 2, so it sends it again.
+    log(box, id, 2, lines(3..3))
+    await_texts(id, ["line 1", "line 2", "line 3"])
+    assert Enum.map(stored(id), & &1.n) == [1, 2, 3]
+    assert File.stat!(Logs.path(:vm, id)).size > committed
+  end
+
+  test "a torn record at the end of the file is cut off at restart", %{box: box, vm_id: id} do
+    log(box, id, 1, lines(1..1))
+    await_texts(id, ["line 1"])
+    stop_stream(id)
+    File.write!(Logs.path(:vm, id), ~s({"n":2,"t":1,"te), [:append])
+
+    log(box, id, 2, lines(2..2))
+    await_texts(id, ["line 1", "line 2"])
   end
 
   test "a duplicate batch is dropped", %{box: box, vm_id: id} do

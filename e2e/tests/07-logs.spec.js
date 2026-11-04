@@ -148,6 +148,17 @@ test("a finished job shows GitHub's log, and its first error", async ({page, req
   await expect(viewer.locator(".lv-line.lv-error")).toContainText("Process completed with exit code 1.")
   await shot(page, layer, "job-github-log")
 
+  // The VM's capture stays a click away.
+  await page.locator("#show-live").click()
+  await expect(page.locator("#log-source")).toContainText("Reported by the VM")
+  await page.locator(".lv-scroller").focus()
+  await page.keyboard.press("g")
+  await expect(viewer.locator(".lv-line", {hasText: "hello from the null driver"})).toBeVisible()
+  await expect(page.locator("#download-raw")).toHaveAttribute("href", /source=live$/)
+  await page.locator("#show-github").click()
+  await expect(page.locator("#download-raw")).toHaveAttribute("href", /source=github$/)
+  await expect(viewer.locator(".lv-line", {hasText: "Current runner version"})).toBeVisible()
+
   // Steps scroll the log.
   await page.locator("#steps button", {hasText: "Set up job"}).click()
   await expect(viewer.locator(".lv-line[data-n='1']")).toBeVisible()

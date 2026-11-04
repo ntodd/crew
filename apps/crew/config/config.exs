@@ -56,7 +56,9 @@ config :crew, Oban,
        # §6.2: missed deliveries.
        {"*/5 * * * *", Crew.GitHub.Redeliver},
        # §6.3: runners left behind.
-       {"*/10 * * * *", Crew.GitHub.RunnerGC}
+       {"*/10 * * * *", Crew.GitHub.RunnerGC},
+       # §9.4: log retention and the total cap.
+       {"17 * * * *", Crew.Logs.Prune}
      ]}
   ]
 

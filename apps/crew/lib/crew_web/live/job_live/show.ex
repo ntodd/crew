@@ -29,16 +29,24 @@ defmodule CrewWeb.JobLive.Show do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Crew.PubSub, "job:#{job.id}")
       if job.vm_id, do: Logs.subscribe(job.vm_id)
-      if job.gh_state == "in_progress", do: Process.send_after(self(), :poll_steps, 0)
     end
 
     {:ok,
      socket
      |> assign(:page_title, job.name)
      |> assign(attempt: attempt, pending: [], flush: nil, reload: false, index_due: false)
-     |> assign(now: DateTime.utc_now())
-     |> load(job)}
+     |> assign(now: DateTime.utc_now(), shown: nil, polling: false)
+     |> load(job)
+     |> start_polling()}
   end
+
+  # The API's live steps while the job runs and the page is open (§16.2).
+  defp start_polling(%{assigns: %{polling: false, job: %{gh_state: "in_progress"}}} = socket) do
+    if connected?(socket), do: send(self(), :poll_steps)
+    assign(socket, polling: connected?(socket))
+  end
+
+  defp start_polling(socket), do: socket
 
   defp int!(text) do
     {n, ""} = Integer.parse(text)
@@ -47,7 +55,10 @@ defmodule CrewWeb.JobLive.Show do
 
   defp load(socket, job) do
     vm = job.vm_id && VMs.get(job.vm_id)
-    source = if job.log_source == "github", do: "github", else: "live"
+    # GitHub's log once it's there, unless the reader picked the VM's.
+    available = Enum.filter(["github", "live"], &available?(&1, job, vm))
+    default = if "github" in available, do: "github", else: "live"
+    source = if socket.assigns[:shown] in available, do: socket.assigns.shown, else: default
 
     assign(socket,
       job: job,
@@ -56,6 +67,7 @@ defmodule CrewWeb.JobLive.Show do
       image: vm && vm.image_id && Images.get(vm.image_id),
       size: vm && Sizes.get(vm.size_id),
       source: source,
+      sources: available,
       total: total(source, job, vm) || 0,
       index: index(source, job, vm),
       steps: steps(source, job, vm),
@@ -64,6 +76,9 @@ defmodule CrewWeb.JobLive.Show do
       status: JobStatus.of(job, DateTime.utc_now())
     )
   end
+
+  defp available?("github", job, _vm), do: job.log_source == "github"
+  defp available?("live", _job, vm), do: vm != nil
 
   defp owner("github", job, _vm), do: job.id
   defp owner("live", _job, %{id: id}), do: id
@@ -152,7 +167,9 @@ defmodule CrewWeb.JobLive.Show do
     with :ok <- allowed(socket),
          id when is_binary(id) <- owner(source, socket.assigns.job, socket.assigns.vm) do
       lines = Logs.lines(kind(source), id, from, to)
-      {:reply, %{lines: lines}, socket}
+      # The total too: a log retention deleted has none, and the viewer
+      # shrinks to what's there rather than asking again.
+      {:reply, %{lines: lines, total: Logs.last_n(kind(source), id) || 0}, socket}
     else
       {:error, message} -> {:reply, %{error: message}, socket}
       _ -> {:reply, %{lines: []}, socket}
@@ -180,6 +197,14 @@ defmodule CrewWeb.JobLive.Show do
     else
       {:error, message} -> {:reply, %{error: message}, socket}
       _ -> {:reply, %{hits: []}, socket}
+    end
+  end
+
+  def handle_event("show_source", %{"source" => source}, socket)
+      when source in ["github", "live"] do
+    case allowed(socket) do
+      :ok -> {:noreply, socket |> assign(shown: source) |> reload()}
+      {:error, _} -> {:noreply, push_navigate(socket, to: ~p"/runs")}
     end
   end
 
@@ -220,8 +245,22 @@ defmodule CrewWeb.JobLive.Show do
 
   def handle_info(:flush, socket) do
     socket = assign(socket, flush: nil)
-    socket = if socket.assigns.reload, do: reload(socket), else: socket
-    {:noreply, socket |> push_pending() |> push_index()}
+
+    # Access can lapse with no notice (six hours without a refresh): what
+    # goes out is checked first (§18.3).
+    case allowed(socket) do
+      :ok ->
+        socket = if socket.assigns.reload, do: reload(socket), else: socket
+        {:noreply, socket |> push_pending() |> push_index()}
+
+      {:error, _} ->
+        if socket.assigns.vm, do: Logs.unsubscribe(socket.assigns.vm.id)
+
+        {:noreply,
+         socket
+         |> put_flash(:error, "You no longer have access to that repo.")
+         |> push_navigate(to: ~p"/runs")}
+    end
   end
 
   def handle_info(:poll_steps, socket) do
@@ -237,9 +276,10 @@ defmodule CrewWeb.JobLive.Show do
       end)
 
       Process.send_after(self(), :poll_steps, @steps_poll_ms)
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, polling: false)}
     end
-
-    {:noreply, socket}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -250,20 +290,30 @@ defmodule CrewWeb.JobLive.Show do
   defp schedule(socket), do: socket
 
   defp reload(socket) do
-    before = socket.assigns.source
+    before =
+      {socket.assigns.source, owner(socket.assigns.source, socket.assigns.job, socket.assigns.vm)}
+
     job = Jobs.get_job!(socket.assigns.job.id)
     if job.vm_id && job.vm_id != socket.assigns.job.vm_id, do: Logs.subscribe(job.vm_id)
-    socket = socket |> assign(reload: false, now: DateTime.utc_now()) |> load(job)
 
     socket =
-      if before != socket.assigns.source do
+      socket |> assign(reload: false, now: DateTime.utc_now()) |> load(job) |> start_polling()
+
+    now =
+      {socket.assigns.source, owner(socket.assigns.source, socket.assigns.job, socket.assigns.vm)}
+
+    # A new source, or a new owner for it (the VM was linked after the
+    # page opened): the viewer starts over.
+    socket =
+      if before != now do
         socket
         |> assign(pending: [])
         |> push_event("source", %{
           source: socket.assigns.source,
           total: socket.assigns.total,
           index: viewer_index(socket.assigns.index),
-          steps: viewer_steps(socket.assigns.steps)
+          steps: viewer_steps(socket.assigns.steps),
+          running: running?(socket.assigns.job) and socket.assigns.source == "live"
         })
       else
         push_event(socket, "steps", %{
@@ -415,8 +465,32 @@ defmodule CrewWeb.JobLive.Show do
 
         <section class="min-w-0">
           <div class="mb-2 flex items-center justify-between gap-2 text-xs text-ink-3">
-            <span id="log-source">
-              {if @source == "github", do: "GitHub's log (authoritative)", else: "Reported by the VM"}
+            <span id="log-source" class="flex items-center gap-2">
+              <span :if={length(@sources) > 1} class="segmented" role="group" aria-label="Which log">
+                <a
+                  id="show-github"
+                  href="#"
+                  phx-click="show_source"
+                  phx-value-source="github"
+                  aria-current={to_string(@source == "github")}
+                >
+                  GitHub's log
+                </a>
+                <a
+                  id="show-live"
+                  href="#"
+                  phx-click="show_source"
+                  phx-value-source="live"
+                  aria-current={to_string(@source == "live")}
+                >
+                  Reported by the VM
+                </a>
+              </span>
+              <span>
+                {if @source == "github",
+                  do: "GitHub's log (authoritative)",
+                  else: "Reported by the VM"}
+              </span>
               <span :if={@job.log_source == "live" and @job.gh_state == "completed"}>
                 · GitHub's log wasn't available
               </span>

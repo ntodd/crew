@@ -153,7 +153,7 @@ defmodule CrewWeb.JobLiveTest do
     {:ok, view, _} = live(conn, path)
 
     render_hook(view, "lines", %{"source" => "live", "from" => 3, "to" => 5})
-    assert_reply(view, %{lines: [%{n: 3, text: "line 3"}, %{n: 4}, %{n: 5}]})
+    assert_reply(view, %{lines: [%{n: 3, text: "line 3"}, %{n: 4}, %{n: 5}], total: 10})
 
     render_hook(view, "lines", %{"source" => "live", "from" => 1, "to" => 1_000_000})
     assert_reply(view, %{lines: lines})
@@ -201,7 +201,66 @@ defmodule CrewWeb.JobLiveTest do
     assert has_element?(view, "#log-source", "GitHub")
   end
 
+  test "both logs stay readable once GitHub's arrives: a toggle", %{
+    conn: conn,
+    path: path,
+    job: job,
+    vm: vm
+  } do
+    write_live(vm, 1, [{1, "from the VM", "s1"}])
+    Logs.store_github(job, "2026-11-03T10:00:05.000Z from GitHub\n", false)
+    {:ok, _} = Jobs.set_log_source(job, "github")
+    {:ok, view, _} = live(conn, path)
+
+    assert has_element?(view, "#log-source", "GitHub")
+    assert has_element?(view, ~s(#download-raw[href$="source=github"]))
+    view |> element("#show-live") |> render_click()
+    assert_push_event(view, "source", %{source: "live", total: 1})
+    assert has_element?(view, ~s(#download-raw[href$="source=live"]))
+    view |> element("#show-github") |> render_click()
+    assert_push_event(view, "source", %{source: "github", total: 1})
+  end
+
+  test "a VM linked after the page opened: the viewer starts over with its log", %{
+    conn: conn,
+    repo: repo,
+    box: box
+  } do
+    {:ok, _} =
+      Jobs.handle_workflow_job(
+        workflow_job_payload(repo, id: 78, run_id: 4242, name: "later", status: "queued")
+      )
+
+    {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/78")
+    job = Jobs.get_job_by_github_id(78)
+    vm = vm_for(job, box, repo)
+    write_live(vm, 1, [{1, "setup", "s1"}])
+    {:ok, _} = Jobs.link_vm(job.id, vm)
+    assert_push_event(view, "source", %{source: "live", total: 1}, 1_000)
+  end
+
   describe "access (§18.3)" do
+    test "an open page whose access lapses stops getting lines, and goes", %{
+      repo: repo,
+      path: path,
+      vm: vm
+    } do
+      member = user_fixture()
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), path)
+
+      # Lapsed (6 hours without a refresh), with no notice sent.
+      Repo.delete_all(Crew.Repos.Access)
+      write_live(vm, 1, [{1, "secret", "s1"}])
+      assert_redirect(view, ~p"/runs", 1_000)
+    end
+
     test "a member who can't read the repo can't open it", %{repo: repo, path: path} do
       member = user_fixture()
       _ = repo
