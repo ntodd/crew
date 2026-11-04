@@ -41,6 +41,9 @@ defmodule CrewGuest.System.Local do
   end
 
   @impl true
+  def prepare_conformance(cfg, files), do: CrewGuest.System.write_run_files(cfg.run_dir, files)
+
+  @impl true
   def runner_command(cfg), do: cfg.runner_cmd
 
   @impl true

@@ -38,6 +38,13 @@ defmodule CrewGuest.FakeSystem do
   end
 
   @impl true
+  def prepare_conformance(cfg, files) do
+    with :ok <- record({:prepare_conformance, Enum.map(files, &elem(&1, 0))}) do
+      Local.prepare_conformance(cfg, files)
+    end
+  end
+
+  @impl true
   def runner_command(cfg), do: Local.runner_command(cfg)
 
   @impl true

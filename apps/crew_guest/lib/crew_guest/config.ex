@@ -30,6 +30,10 @@ defmodule CrewGuest.Config do
     :runner_cmd,
     :run_dir,
     runner_user: nil,
+    # Conformance mode (§11.6): the image's fixed check script, run
+    # instead of the runner when the payload has a `conformance` object.
+    # Deliberately not read from the environment or the command line.
+    conformance_cmd: "/opt/crew/conformance/check",
     # Extra environment for the runner. Tests use it to drive the stub.
     runner_env: [],
     payload_timeout_ms: 60_000,

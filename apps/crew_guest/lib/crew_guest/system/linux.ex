@@ -120,6 +120,10 @@ defmodule CrewGuest.System.Linux do
   end
 
   @impl true
+  def prepare_conformance(cfg, files, opts \\ []),
+    do: CrewGuest.System.write_run_files(path(opts, cfg.run_dir), files)
+
+  @impl true
   def runner_command(cfg) do
     user = cfg.runner_user
 

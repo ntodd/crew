@@ -37,6 +37,9 @@ defmodule CrewGuest.System do
   @doc "Writes the run dir's files and makes the runner's `_diag/pages`."
   @callback prepare_runner(Config.t(), [file()]) :: result()
 
+  @doc "Writes the run dir's files for the conformance check (§11.6), instead of the runner's."
+  @callback prepare_conformance(Config.t(), [file()]) :: result()
+
   @doc "The command that runs the runner (`--jitconfig` is appended to it)."
   @callback runner_command(Config.t()) :: [String.t()]
 
