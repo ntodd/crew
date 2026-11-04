@@ -1,12 +1,21 @@
 #!/bin/bash
-# Signs a guest image manifest (docs/crew_spec.md §13.1) with openssl and
-# nothing else, for CI's sign job, which runs no third-party actions
-# (§20.1). It makes exactly the signature CrewProtocol.Auth.sign_manifest
-# makes (ed25519 is deterministic): over "crew-manifest-v1\n" followed by
-# the manifest's exact bytes, written base64 with no newline to
-# <name>.manifest.sig. `mix crew_image.sign` does the same in Elixir.
+# Signs a release (docs/crew_spec.md §13.1, §20.1 item 6) with openssl and
+# nothing else, for the release workflow's sign job, which runs no
+# third-party actions. It makes exactly the signatures CrewProtocol.Auth
+# makes (ed25519 is deterministic), and a test holds it to them:
 #
-#   sign.sh [--release] [--key-file F] <name>.manifest.json
+#   <name>.manifest.json   a guest image manifest: <name>.manifest.sig, over
+#                          "crew-manifest-v1\n" and the manifest's exact
+#                          bytes (`mix crew_image.sign` in Elixir)
+#   crew-<agent|cache>-<version>-<target>.tar.gz
+#                          an agent or cache tarball: <file>.sha256 as
+#                          sha256sum writes it, and <file>.sig over
+#                          "crew-release-v1\n<version>\n<target>\n<sha256>"
+#                          (`mix crew.sign` in Elixir)
+#
+# Signatures are base64 with no newline.
+#
+#   sign.sh [--release] [--key-file F] FILE...
 #
 # The key is the base64 32-byte ed25519 seed, from CREW_RELEASE_SIGNING_KEY
 # or --key-file (which may have # comments). --release refuses the
@@ -14,18 +23,35 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
+usage="usage: sign.sh [--release] [--key-file F] FILE..."
 release=0 key_file=""
-while [ $# -gt 1 ]; do
+while [ $# -gt 0 ]; do
   case "$1" in
     --release) release=1; shift ;;
-    --key-file) key_file=$2; shift 2 ;;
+    --key-file) key_file=${2:?$usage}; shift 2 ;;
+    --) shift; break ;;
+    -*) echo "sign: unknown option $1" >&2; exit 1 ;;
     *) break ;;
   esac
 done
-manifest=${1:?usage: sign.sh [--release] [--key-file F] <name>.manifest.json}
-case "$manifest" in *.manifest.json) ;; *) echo "sign: $manifest isn't a .manifest.json" >&2; exit 1 ;; esac
-[ -f "$manifest" ] || { echo "sign: no $manifest" >&2; exit 1; }
-sig=${manifest%.manifest.json}.manifest.sig
+[ $# -gt 0 ] || { echo "$usage" >&2; exit 1; }
+
+# What each file is, before the key is touched: a manifest, or a tarball
+# named as CrewImage.Release names them.
+tarball_re='^crew-(agent|cache)-([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)-(linux-amd64|linux-arm64|darwin-arm64)\.tar\.gz$'
+for f in "$@"; do
+  base=$(basename -- "$f")
+  case "$base" in
+    *[!A-Za-z0-9._-]*) echo "sign: $f: not a name sign.sh signs" >&2; exit 1 ;;
+    *.manifest.json) ;;
+    *.tar.gz)
+      printf '%s\n' "$base" | grep -Eq "$tarball_re" ||
+        { echo "sign: $f isn't crew-<agent|cache>-<version>-<target>.tar.gz" >&2; exit 1; }
+      ;;
+    *) echo "sign: $f isn't a .manifest.json or a release .tar.gz" >&2; exit 1 ;;
+  esac
+  [ -f "$f" ] || { echo "sign: no $f" >&2; exit 1; }
+done
 
 key_lines() { grep -v '^[[:space:]]*#' | tr -d ' \t\r' | grep -v '^$' || true; }
 if [ -n "$key_file" ]; then
@@ -59,10 +85,34 @@ if [ "$public" = "$test_public" ]; then
   echo "sign: signing with the TEST KEY (development only)" >&2
 fi
 
-{ printf 'crew-manifest-v1\n'; cat "$manifest"; } > "$tmp/message"
-openssl pkeyutl -sign -inkey "$tmp/key.pem" -rawin -in "$tmp/message" -out "$tmp/sig"
-openssl base64 -A < "$tmp/sig" > "$sig.part"
-# The umask kept the key material private; the signature is public.
-chmod 0644 "$sig.part"
-mv "$sig.part" "$sig"
-echo "sign: wrote $sig (public key $public)"
+# sign MESSAGE_FILE OUT: the base64 signature, written whole or not at all.
+# The umask kept the key material private; what's written here is public.
+sign() {
+  openssl pkeyutl -sign -inkey "$tmp/key.pem" -rawin -in "$1" -out "$tmp/sig"
+  openssl base64 -A < "$tmp/sig" > "$2.part"
+  chmod 0644 "$2.part"
+  mv "$2.part" "$2"
+}
+
+for f in "$@"; do
+  base=$(basename -- "$f")
+  case "$base" in
+    *.manifest.json)
+      sig=${f%.manifest.json}.manifest.sig
+      { printf 'crew-manifest-v1\n'; cat "$f"; } > "$tmp/message"
+      sign "$tmp/message" "$sig"
+      ;;
+    *)
+      version=$(printf '%s\n' "$base" | sed -E "s/$tarball_re/\\2/")
+      target=$(printf '%s\n' "$base" | sed -E "s/$tarball_re/\\4/")
+      sha=$(openssl dgst -sha256 -r "$f" | cut -d ' ' -f 1)
+      printf '%s  %s\n' "$sha" "$base" > "$f.sha256.part"
+      chmod 0644 "$f.sha256.part"
+      mv "$f.sha256.part" "$f.sha256"
+      printf 'crew-release-v1\n%s\n%s\n%s' "$version" "$target" "$sha" > "$tmp/message"
+      sig=$f.sig
+      sign "$tmp/message" "$sig"
+      ;;
+  esac
+  echo "sign: wrote $sig (public key $public)"
+done
