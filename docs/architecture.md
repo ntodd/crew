@@ -824,14 +824,35 @@ The other spikes are recorded here as they run.
     their signed manifests. The restore keeps the directory. With
     Postgres there's no volume backup, as in Foreman (the logs would
     no longer match a database that isn't restored).
+  - **Every failure after the stop recovers,** not only a failed `up`
+    or health check as in Foreman, where `set -e` would leave the
+    control plane stopped if, say, the backup filled the disk and the
+    new `.env` couldn't be written. `run.state` (in `/var/lib/crew-update`,
+    root's) records the step about to start (stopping, backing up,
+    pinning the image, starting the new one), and an EXIT trap (with
+    INT, TERM and HUP turned into an exit) undoes what that step may
+    have done: it removes a partial backup, puts the `.env` back,
+    restores the backup only if the new version may have started, and
+    starts the previous version. The old `.env` is renamed aside, not
+    copied, so putting it back needs no space. A run killed outright
+    leaves `run.state`; the next run finishes the recovery first, and
+    the path unit also watches `run.state`, so that happens at boot.
+    The service gets `TimeoutStopSec=10min`, so a timeout's SIGTERM
+    leaves time for a health check of the previous version. An existing
+    install picks up the new units by running `install` again.
   - **It can be sourced** (`CREW_UPDATE_SOURCED=1`) by
     `docker/test/crew-update-test.sh`, which runs its decisions against
-    a fake docker in CI: request parsing (symlinks, FIFOs, extra lines,
-    32 bytes), version comparison, refused requests, a healthy update, a
-    rollback with the backup restored, a crash loop, Postgres, a
-    registry with a port. The backup's tar, the units and a real pull
-    and recreate need a Docker host; Foreman's DinD run
-    (`e2e/updater/run.sh` there) isn't copied yet.
+    a fake docker (`docker/test/crew-update-fakes.sh`) in CI: request
+    parsing (symlinks, FIFOs, extra lines, 32 bytes), version
+    comparison, refused requests, a healthy update, a rollback with the
+    backup restored, a crash loop, Postgres, a registry with a port, and
+    a fault at each step after the stop (the backup failing, the new
+    `.env` unwritable or not renamed into place, SIGTERM during the
+    backup and while the new version starts, SIGKILL then the next
+    run). Each run is its own `sh`, so a fault can signal it. The
+    backup's tar, the units and a real pull and recreate need a Docker
+    host; Foreman's DinD run (`e2e/updater/run.sh` there) isn't copied
+    yet.
 - **The update check** (`Crew.Updates`) is Foreman's, checked daily
   (`Crew.Updates.Check` at 05:11 UTC) rather than every five minutes,
   and at boot when there's never been a check. The result is kept in

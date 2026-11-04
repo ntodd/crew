@@ -39,6 +39,15 @@ into the container, and the updater:
    version, so the database is as it was.
 5. replaces itself with the copy the new image carries.
 
+Anything else that goes wrong once the control plane is stopped (the
+backup fails or fills the disk, systemd's 30-minute timeout stops the
+run) also starts the previous version again, with its `.env`, and with
+the backup restored if the new version had started. If the host goes
+down mid-update, the updater finishes putting the previous version back
+when it comes up: it keeps its progress in
+`/var/lib/crew-update/run.state`, and the path unit starts it whenever
+that file exists.
+
 The page follows along and reconnects once the new version is up. Read
 the release notes first all the same: they say whether the protocol
 changed and which migrations run.

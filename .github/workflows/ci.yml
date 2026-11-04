@@ -142,7 +142,7 @@ jobs:
       - name: ShellCheck the release and update scripts
         run: |
           sc="$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck"
-          "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh \
+          "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh docker/test/crew-update-fakes.sh \
             packaging/release/check.sh packaging/release/test/check-test.sh \
             packaging/release/smoke.sh packaging/release/test/smoke-test.sh
           "$sc" -x images/guest/sign.sh packaging/release/build-linux.sh
