@@ -32,4 +32,14 @@ defmodule Crew.ObanConfigTest do
     for {module, period} <- periods,
         do: assert(period <= pruner_max_age(), "#{inspect(module)} is unique for #{period}s")
   end
+
+  test "metrics and cache stats are pruned on a schedule" do
+    crontab =
+      Enum.find_value(@plugins, fn
+        {Oban.Plugins.Cron, opts} -> Keyword.fetch!(opts, :crontab)
+        _ -> nil
+      end)
+
+    assert Enum.any?(crontab, &match?({_, Crew.Metrics.Prune}, &1))
+  end
 end

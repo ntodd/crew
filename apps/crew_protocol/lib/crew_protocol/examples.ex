@@ -210,6 +210,9 @@ defmodule CrewProtocol.Examples do
             "bytes_stored" => 20
           }
         ],
+        "top" => [
+          %{"host" => "ghcr.io", "repo" => "actions/runner", "hits" => 4, "bytes_served" => 100}
+        ],
         "evictions" => 0,
         "digest_mismatches" => 0
       }

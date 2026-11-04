@@ -63,6 +63,9 @@ defmodule Crew.Agents do
   @doc "After a join: the box is online, and what depends on that is told."
   def joined(box, join, _remote_ip) do
     VMs.agent_joined(box, join)
+    # Its cache gets the deployment's config (§15.8), rotating its CA if
+    # a rotation happened while it was away.
+    Crew.Caches.push(box.id)
     :ok
   end
 

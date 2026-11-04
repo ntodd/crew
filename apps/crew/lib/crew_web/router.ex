@@ -114,6 +114,7 @@ defmodule CrewWeb.Router do
       live "/audit", AdminLive.Audit, :index
       live "/sizes", AdminLive.Sizes, :index
       live "/images", AdminLive.Images, :index
+      live "/caches", AdminLive.Caches, :index
     end
   end
 

@@ -145,7 +145,8 @@ defmodule Crew.VMs do
     :ok
   end
 
-  def handle_agent_event(_box_id, %CrewProtocol.Event{type: "cache.stats"}), do: :ok
+  def handle_agent_event(box_id, %CrewProtocol.Event{type: "cache.stats", payload: p}),
+    do: Crew.Caches.record_stats(box_id, p)
 
   def handle_agent_event(box_id, %CrewProtocol.Event{
         type: "vm." <> _ = type,
