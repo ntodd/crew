@@ -2,7 +2,7 @@
 # Makes rootfs.ext4 from the rootfs build's tar on stdin (docs/crew_spec.md
 # §13.1): `mkfs.ext4 -L crewroot -O ^has_journal -d <tree>`, then
 # `e2fsck -f`. Runs in the builder image:
-#   /work   a Docker volume, for the unpacked tree and the image
+#   /work   a Docker volume, for the unpacked tree (kept for inspection)
 #   /out    where rootfs.ext4 goes
 #
 # The filesystem's UUID and hash seed come from SOURCE_DATE_EPOCH and the
@@ -13,7 +13,7 @@ set -euo pipefail
 arch=${CREW_ARCH:?}
 epoch=${SOURCE_DATE_EPOCH:?}
 tree=/work/tree
-img=/work/rootfs.ext4
+img=/out/rootfs.ext4.part
 
 t0=$(date +%s)
 rm -rf "$tree" "$img"
@@ -51,8 +51,6 @@ E2FSPROGS_FAKE_TIME=$epoch mkfs.ext4 -q -F -L crewroot -O ^has_journal \
 e2fsck -fn "$img" >/dev/null || { echo "assemble: e2fsck -f found problems" >&2; e2fsck -fn "$img" >&2; exit 1; }
 t2=$(date +%s)
 
-cp --sparse=always "$img" /out/rootfs.ext4.part
-mv /out/rootfs.ext4.part /out/rootfs.ext4
-rm -f "$img"
+mv "$img" /out/rootfs.ext4
 echo "assemble: rootfs.ext4 ${size} MiB (${used} MiB used), uuid $uuid;" \
   "unpack $((t1 - t0))s, mkfs and e2fsck $((t2 - t1))s"

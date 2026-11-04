@@ -1,0 +1,223 @@
+name: Guest image
+
+# The job VM guest image (spec §13.1, §20.1): built per arch on a runner of
+# that arch, checked, signed in the release-signing environment, and
+# verified the way a box will. A release tag builds, signs and uploads it;
+# a pull request that touches the image builds and checks it, unsigned.
+# release.yml calls this workflow and publishes what it uploads.
+#
+# arm64 only for now. x64 needs images/guest/kernel/x64.fragment and its
+# config, x64 lines in packages.lock (`make -C images/guest lock ARCH=x64`)
+# and Playwright's x64 SHA-256s in versions.env; then add it to the
+# matrix with runner ubuntu-24.04.
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - images/guest/**
+      - apps/crew_guest/**
+      - apps/crew_protocol/**
+      - .github/workflows/guest-image.yml
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: The image version (the release tag without its v)
+        type: string
+        required: true
+
+concurrency:
+  group: guest-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  ELIXIR_VERSION: "1.20.4"
+  OTP_VERSION: "29.1.1"
+
+jobs:
+  # The quick checks: the committed kernel config (moby's check-config.sh
+  # and the Crew list), the checks' own tests, and the image tools.
+  check:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: images/guest/build.sh kernel-check
+      - run: images/guest/build.sh kernel-check-test
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            images/guest/tools/deps
+            images/guest/tools/_build
+          key: guest-tools-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('images/guest/tools/mix.lock') }}
+      - name: Image tools
+        working-directory: images/guest/tools
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get --check-locked
+          mix format --check-formatted
+          mix compile --warnings-as-errors
+          mix credo --strict
+          mix test
+      # The release notes carry the lock's diff since the last release (§13.1).
+      - name: packages.lock diff
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_SHA}^" 2>/dev/null || true)
+          mkdir -p lock-diff
+          if [ -n "$prev" ]; then
+            git diff "$prev" "$GITHUB_SHA" -- images/guest/packages.lock > lock-diff/packages.lock.diff
+          else
+            echo "No earlier release: every package is new." > lock-diff/packages.lock.diff
+          fi
+          wc -l lock-diff/packages.lock.diff
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-packages-lock-diff
+          path: lock-diff/packages.lock.diff
+
+  # The build fails if a package resolves to anything but packages.lock, if
+  # the built kernel's config fails the checks, if the rootfs fails e2fsck,
+  # or if the compressed rootfs is 2 GiB or more.
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      ARCH: ${{ matrix.arch }}
+      MIX: mix
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) v=${GITHUB_REF_NAME#v} ;;
+            *) v=${INPUT_VERSION:-0.0.0-ci.$GITHUB_RUN_NUMBER} ;;
+          esac
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "version $v"
+      # The kernel tree, the BuildKit cache and the image need room.
+      - name: Make room
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - run: make -C images/guest kernel
+      - name: The built kernel's config
+        run: images/guest/build.sh kernel-check "images/guest/out/$ARCH/kernel/config"
+      # Hosted runners have little disk: the kernel's trees go once it's
+      # built, the unpacked rootfs tree and BuildKit's cache once the
+      # image is assembled.
+      - run: docker volume rm crew-guest-kernel && df -h /
+      - run: make -C images/guest rootfs
+      - run: docker volume rm crew-guest-rootfs && docker builder prune -af >/dev/null && df -h /
+      - name: Release files (unsigned)
+        run: make -C images/guest artifacts SIGN=none
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-${{ matrix.arch }}
+          path: images/guest/out/${{ matrix.arch }}/release/
+          compression-level: 0
+          if-no-files-found: error
+
+  # Signs each manifest's exact bytes with the release key. Only this job
+  # sees the key, and it runs nothing but GitHub's own actions and openssl.
+  sign:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    environment: release-signing
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            images/guest/sign.sh
+            images/guest/keys
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: guest-*
+          path: manifests
+      - name: Sign
+        env:
+          CREW_RELEASE_SIGNING_KEY: ${{ secrets.CREW_RELEASE_SIGNING_KEY }}
+        run: |
+          mkdir -p signatures
+          for m in manifests/guest-*/*.manifest.json; do
+            images/guest/sign.sh --release "$m"
+            cp "${m%.manifest.json}.manifest.sig" signatures/
+          done
+          ls -l signatures
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-signatures
+          path: signatures/
+          if-no-files-found: error
+
+  # Checks the signed release as a box will: the signature against the
+  # release key (never the test key), then every file against the manifest.
+  verify:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: guest-*
+          path: release
+          merge-multiple: true
+      - name: Verify
+        env:
+          CREW_RELEASE_PUBLIC_KEY: ${{ vars.CREW_RELEASE_PUBLIC_KEY }}
+        run: |
+          [ -n "$CREW_RELEASE_PUBLIC_KEY" ] || { echo "set the CREW_RELEASE_PUBLIC_KEY repository variable"; exit 1; }
+          cd images/guest/tools
+          mix deps.get --check-locked
+          for m in "$GITHUB_WORKSPACE"/release/*.manifest.json; do
+            mix crew_image.verify --release --public-key "$CREW_RELEASE_PUBLIC_KEY" "$m"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: guest-release
+          path: |
+            release/*.manifest.json
+            release/*.manifest.sig
+            release/*.kernel
+            release/*.rootfs.ext4.zst
+            release/packages.lock.diff
+          compression-level: 0
+          if-no-files-found: error

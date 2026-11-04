@@ -62,5 +62,7 @@ fi
 { printf 'crew-manifest-v1\n'; cat "$manifest"; } > "$tmp/message"
 openssl pkeyutl -sign -inkey "$tmp/key.pem" -rawin -in "$tmp/message" -out "$tmp/sig"
 openssl base64 -A < "$tmp/sig" > "$sig.part"
+# The umask kept the key material private; the signature is public.
+chmod 0644 "$sig.part"
 mv "$sig.part" "$sig"
 echo "sign: wrote $sig (public key $public)"
