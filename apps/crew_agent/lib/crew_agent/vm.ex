@@ -580,6 +580,11 @@ defmodule CrewAgent.VM do
     {:reply, :ok, state}
   end
 
+  # Booted but without its payload yet: the JIT config is only in this
+  # process's memory, so an agent restart now loses it (§10.7).
+  def handle_call(:starting?, _from, state),
+    do: {:reply, not state.exited and not state.payload_fetched, state}
+
   def handle_call(:info, _from, state) do
     {:reply, %{vm_id: state.vm_id, alive: true, since: state.started_ms, epoch: state.epoch},
      state}

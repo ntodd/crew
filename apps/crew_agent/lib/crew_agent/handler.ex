@@ -4,9 +4,11 @@ defmodule CrewAgent.Handler do
   every payload has already been validated by `CrewProtocol.Command`.
   """
 
-  alias CrewAgent.{Cache, Config, Images, Reporter, VMs}
+  alias CrewAgent.{Cache, Config, Images, Outbox, Reporter, Updater, VMs}
   alias CrewAgent.Driver.Firecracker
   alias CrewProtocol.Command
+
+  require Logger
 
   @spec handle(Command.t()) :: :ok | {:ok, map()} | {:error, String.t(), String.t()}
   def handle(%Command{type: "vm.start"} = cmd), do: VMs.start(cmd)
@@ -40,6 +42,38 @@ defmodule CrewAgent.Handler do
     end
   end
 
+  # §20.2: installs the release, then exits once the result is out, for
+  # the service manager to start the new one.
+  def handle(%Command{type: "agent.update", payload: p, op_id: op_id}) do
+    case Updater.run(p, Config.get(), op_id: op_id) do
+      {:ok, %{"restart" => true} = result} ->
+        restart_after_result()
+        {:ok, result}
+
+      other ->
+        other
+    end
+  end
+
   def handle(%Command{type: type}),
     do: {:error, "unsupported", "#{type} isn't supported by this agent yet"}
+
+  # Exits once every result (this update's among them) has been
+  # acknowledged, or after 30 s regardless: a result that doesn't get
+  # through is settled by the version the agent comes back on.
+  defp restart_after_result do
+    if Application.get_env(:crew_agent, :exit_after_update, true) do
+      spawn(fn ->
+        Process.sleep(500)
+
+        if Updater.await(fn -> not Outbox.settled?() end, 200, 30_000) == :timeout,
+          do: Logger.warning("restarting for the update before its result was acknowledged")
+
+        Logger.info("exiting for the new release")
+        System.stop(0)
+      end)
+    end
+
+    :ok
+  end
 end

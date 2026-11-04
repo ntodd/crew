@@ -14,7 +14,7 @@ defmodule CrewAgent.Connection do
   """
   use Slipstream, restart: :permanent
 
-  alias CrewAgent.{Config, Identity, Ops, Outbox, Reporter, VMs}
+  alias CrewAgent.{Config, Identity, Ops, Outbox, Reporter, Updater, VMs}
   alias CrewProtocol.{Auth, Command, Event}
 
   require Logger
@@ -24,11 +24,14 @@ defmodule CrewAgent.Connection do
   # a refusal (say, an unsupported protocol version) isn't retried 10 times
   # a second.
   @rejoin_backoff [500, 1_000, 2_000, 5_000, 10_000, 30_000]
+  @watchdog_ms 30_000
 
   def start_link(opts), do: Slipstream.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl Slipstream
   def init(_opts) do
+    Process.send_after(self(), :update_watchdog, @watchdog_ms)
+
     socket =
       new_socket()
       |> assign(
@@ -142,9 +145,27 @@ defmodule CrewAgent.Connection do
   def handle_join(topic, _reply, socket) do
     Logger.info("joined #{topic}")
     Outbox.attach(self())
+    # Joining is what makes a newly installed release good (§20.2).
+    after_update(socket.assigns.config)
     Reporter.report_now()
     VMs.connected()
     {:ok, assign(socket, joined: true)}
+  end
+
+  defp after_update(config) do
+    case Updater.confirm(config, keep: Updater.keep(config)) do
+      {:rolled_back, %{op_id: op_id, message: message}} ->
+        Logger.error(message)
+        # The update's operation fails with why, for the control plane's
+        # two-failures rule.
+        if CrewProtocol.uuid?(op_id),
+          do: Outbox.push(Ops.result_event(op_id, {:error, "rolled_back", message}))
+
+      _ ->
+        :ok
+    end
+  rescue
+    e -> Logger.error("checking the last update failed: #{Exception.message(e)}")
   end
 
   @impl Slipstream
@@ -200,6 +221,21 @@ defmodule CrewAgent.Connection do
   end
 
   def handle_info(:identify, socket), do: handle_continue(:identify, socket)
+
+  # A release that hasn't joined within 5 minutes of an update goes back
+  # to the one before it, whether it can't reach the control plane or is
+  # refused (§20.2). The service manager catches the crash loops.
+  def handle_info(:update_watchdog, socket) do
+    unless socket.assigns.joined do
+      case Updater.watchdog(socket.assigns.config, running_since(), System.os_time(:second)) do
+        {:stop, status} -> System.stop(status)
+        :ok -> :ok
+      end
+    end
+
+    Process.send_after(self(), :update_watchdog, @watchdog_ms)
+    {:noreply, socket}
+  end
 
   def handle_info(:reconnect, socket), do: {:noreply, open(socket)}
 
@@ -260,6 +296,12 @@ defmodule CrewAgent.Connection do
   catch
     kind, reason ->
       {:error, {:push_failed, Exception.format_banner(kind, reason)}}
+  end
+
+  # When this agent (the BEAM) started, in Unix seconds.
+  defp running_since do
+    {uptime_ms, _} = :erlang.statistics(:wall_clock)
+    System.os_time(:second) - div(uptime_ms, 1000)
   end
 
   defp describe({:upgrade_failure, %{status_code: status}}), do: "refused with HTTP #{status}"
