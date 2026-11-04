@@ -41,6 +41,8 @@ defmodule CrewAgent.Application do
         CrewAgent.VMs,
         CrewAgent.Ops,
         if(config.cache_mgmt_url, do: CrewAgent.Cache.Stats),
+        # crew-vzd onto the release an update installed, once idle (§20.2).
+        if(config.driver == "vz", do: CrewAgent.Driver.VZ.Upgrade),
         # Adoption, then cleanups left pending or never recorded (§10.7).
         CrewAgent.VMs.Janitor
       ]

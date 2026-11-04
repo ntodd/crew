@@ -147,6 +147,12 @@ defmodule CrewAgent.VMs do
   @doc "VMs whose VMM is running: a VM that exited keeps its server while its logs drain."
   def running_count, do: length(running_ids())
 
+  @doc """
+  VMs in `starting`: running, but their guest hasn't fetched its payload,
+  which only this process holds. The updater waits for none (§10.7).
+  """
+  def starting_count, do: Enum.count(vm_ids(), &(VM.call(&1, :starting?) == true))
+
   # box.inventory carries at most this many VMs (CrewProtocol.Event).
   @inventory_max 1000
 
