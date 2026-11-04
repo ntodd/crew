@@ -72,6 +72,8 @@ export function startAgent(token, { name, dataDir, env = {} } = {}) {
       MIX_ENV: "dev",
       CREW_DEV: "1",
       CREW_DRIVER: "null",
+      // The suite (and its screenshots) assume an arm64 box.
+      CREW_NULL_GUEST_ARCH: "arm64",
       CREW_URL: "ws://localhost:4100/agent/websocket",
       CREW_JOIN_TOKEN: token,
       CREW_BOX_NAME: name,
