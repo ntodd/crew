@@ -208,6 +208,45 @@ defmodule CrewAgent.VM do
     end
   end
 
+  # A VM that can't be adopted (a crash between writing vm.json and
+  # guest.json, say) ends as any other does: a terminal exit record, so
+  # it's never taken for live again, then its cleanup, which releases
+  # the lease, the clone and its kernel when it works and is retried
+  # when it doesn't, and vm.exited.
+  defp abandon_adoption(driver, vm_id, dir) do
+    exited = %{
+      "code" => 0,
+      "reason" => "boot_failed",
+      "at" => now_ms(),
+      "detail" => "adopt_failed"
+    }
+
+    if File.dir?(dir),
+      do: _ = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
+
+    cleanup =
+      case driver.cleanup(vm_id) do
+        :ok ->
+          Cleanup.done(vm_id)
+          "ok"
+
+        {:error, why} ->
+          Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+          "error"
+      end
+
+    emit(
+      Event.new("vm.exited", %{
+        vm_id: vm_id,
+        reason: "boot_failed",
+        exit_status: 0,
+        uptime_ms: 0,
+        cleanup: cleanup,
+        detail: "adopt_failed"
+      })
+    )
+  end
+
   # vz guests reach the API through their own socket (§13.4).
   defp start_guest_socket(%Config{driver: "vz"}, vm_id, path) do
     {:ok, _} = CrewAgent.GuestAPI.start_socket(vm_id, path)
@@ -327,10 +366,7 @@ defmodule CrewAgent.VM do
     else
       error ->
         Logger.error("couldn't adopt VM #{vm_id}: #{inspect(error)}")
-
-        with {:error, why} <- driver.cleanup(vm_id),
-             do: Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
-
+        abandon_adoption(driver, vm_id, dir)
         :ignore
     end
   end
