@@ -68,8 +68,9 @@ defmodule Crew.Application do
     if dir = present(Application.get_env(:crew, :image_release_dir)),
       do: Crew.Images.register_bundle(dir)
 
-    if dir = present(Application.get_env(:crew, :agent_release_dir)),
-      do: Crew.Agents.Releases.register_bundle(dir)
+    # The image's agent tarballs, copied onto the data volume, and the
+    # copies kept there for boxes pinned to older versions (§20.2).
+    Crew.Agents.Releases.register_at_boot(present(Application.get_env(:crew, :agent_release_dir)))
 
     Crew.Images.check_mirrors()
     # The runner's freshness (§13.1) is checked daily; a new deployment

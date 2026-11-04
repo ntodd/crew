@@ -327,6 +327,22 @@ defmodule Crew.Agents.UpdatesTest do
       refute_receive {:dispatch, _}, 50
     end
 
+    # The files can go (a lost data volume, a copy that changed); the box
+    # page says so rather than waiting forever.
+    test "a pin whose files aren't here any more says so, and nothing is sent", ctx do
+      # Pinned while it's away; the files go before it's back.
+      away = linux_box(agent_version: "0.3.0")
+      {:ok, away} = Boxes.pin_agent_version(ctx.admin, away, "0.2.0")
+      assert %{state: :pending} = Updates.status(away)
+      for c <- ["agent", "cache"], do: File.rm!(Releases.get(c, "0.2.0", "linux-arm64").path)
+
+      away |> online() |> rejoin("0.3.0")
+      refute_receive {:dispatch, _}, 50
+
+      assert %{state: :missing, version: "0.2.0", pinned: true} =
+               Updates.status(Repo.reload!(away))
+    end
+
     test "only by an admin", ctx do
       member = Scope.for_user(user_fixture())
       assert {:error, :unauthorized} = Boxes.pin_agent_version(member, ctx.box, "0.2.0")

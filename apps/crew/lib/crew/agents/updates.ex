@@ -288,6 +288,8 @@ defmodule Crew.Agents.Updates do
   - `:pending`, behind, and it's sent when the box is next online;
   - `:updating`, sent; `:restarting`, installed and restarting into it;
   - `:blocked`, it failed twice here;
+  - `:missing`, the version's files aren't on this control plane (a pin
+    to a version whose copies are gone), so it can't be sent;
   - `:none`, nothing to run (no release for the box's target).
 
   `last` is the box's latest update, and `error` its failure if it failed.
@@ -303,23 +305,26 @@ defmodule Crew.Agents.Updates do
           limit: 1
       )
 
-    state =
-      cond do
-        is_nil(version) -> :none
-        last && last.status == "dispatched" -> :updating
-        last && last.status == "running" -> :restarting
-        version == box.agent_version -> :current
-        version == box.failed_agent_version -> :blocked
-        true -> :pending
-      end
-
     %{
       version: version,
       pinned: is_binary(box.desired_agent_version),
       target: target(box),
-      state: state,
+      state: state(box, version, last),
       last: last,
       error: if(last && last.status == "failed", do: last.error)
     }
+  end
+
+  defp state(_box, nil, _last), do: :none
+  defp state(_box, _version, %Operation{status: "dispatched"}), do: :updating
+  defp state(_box, _version, %Operation{status: "running"}), do: :restarting
+  defp state(%Box{agent_version: version}, version, _last), do: :current
+
+  defp state(box, version, _last) do
+    cond do
+      version not in Releases.versions(target(box)) -> :missing
+      version == box.failed_agent_version -> :blocked
+      true -> :pending
+    end
   end
 end

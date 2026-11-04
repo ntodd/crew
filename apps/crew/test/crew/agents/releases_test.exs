@@ -28,7 +28,9 @@ defmodule Crew.Agents.ReleasesTest do
     assert %Release{sha256: sha, signature: sig, path: path, size: size} = agent
     assert sha == files["agent"].sha256
     assert sig == files["agent"].signature
-    assert path == files["agent"].path
+    # The control plane's own copy, on its data volume.
+    assert path == Path.join(Releases.store_dir(), files["agent"].file)
+    assert File.read!(path) == files["agent"].bytes
     assert size == byte_size(files["agent"].bytes)
 
     assert %Release{} = Releases.get("cache", "0.3.0", "linux-amd64")
@@ -130,6 +132,7 @@ defmodule Crew.Agents.ReleasesTest do
       files = write_release(dir, key, "0.4.0", "linux-amd64")
       Releases.register_bundle(dir)
       File.rm!(files["cache"].path)
+      File.rm!(Releases.get("cache", "0.4.0", "linux-amd64").path)
 
       assert {:ok, %{version: "0.3.0"}} = Releases.install_set("linux-amd64")
     end
@@ -165,6 +168,68 @@ defmodule Crew.Agents.ReleasesTest do
       Application.put_env(:crew, :dev, true)
       File.rm!(release.path)
       assert Releases.url(release) =~ "/releases/download/v0.3.0/"
+    end
+  end
+
+  # A control plane image carries only its own release's tarballs; a box
+  # pinned to an older version still needs that version's after an
+  # upgrade (§20.2).
+  describe "the control plane's own copies" do
+    test "outlive the image's directory", %{key: key, dir: dir} do
+      write_release(dir, key, "0.2.0", "linux-arm64")
+      Releases.register_bundle(dir)
+      File.rm_rf!(dir)
+
+      assert "0.2.0" in Releases.versions("linux-arm64")
+      assert %{agent: %{path: path}, cache: %{}} = Releases.update_set("linux-arm64", "0.2.0")
+      assert String.starts_with?(path, Releases.store_dir())
+    end
+
+    test "are registered again from the data volume at boot", %{key: key, dir: dir} do
+      files = write_release(dir, key, "0.2.0", "linux-arm64")
+      store = Releases.store_dir()
+      File.mkdir_p!(store)
+
+      for {_, f} <- files,
+          ext <- ["", ".sha256", ".sig"],
+          do: File.cp!(f.path <> ext, Path.join(store, f.file <> ext))
+
+      assert %{registered: 2} = Releases.register_bundle(store)
+
+      assert Releases.get("agent", "0.2.0", "linux-arm64").path ==
+               Path.join(store, files["agent"].file)
+    end
+
+    test "a copy that's changed since isn't sent, and goes", %{key: key, dir: dir} do
+      write_release(dir, key, "0.2.0", "linux-arm64")
+      Releases.register_bundle(dir)
+      path = Releases.get("agent", "0.2.0", "linux-arm64").path
+      size = File.stat!(path).size
+      File.write!(path, :binary.copy(<<0>>, size))
+
+      assert Releases.update_set("linux-arm64", "0.2.0") == nil
+      refute File.exists?(path)
+      refute "0.2.0" in Releases.versions("linux-arm64")
+    end
+
+    test "are kept for the newest three, pins and what boxes run; the rest go",
+         %{key: key, dir: dir} do
+      versions = ~w(0.1.0 0.2.0 0.3.0 0.4.0 0.5.0 0.6.0)
+      for v <- versions, do: write_release(dir, key, v, "linux-arm64")
+
+      box_fixture() |> Ecto.Changeset.change(desired_agent_version: "0.1.0") |> Repo.update!()
+
+      box_fixture()
+      |> Ecto.Changeset.change(agent_version: "0.2.0", os: "linux", arch: "arm64")
+      |> Repo.update!()
+
+      Releases.register_bundle(dir)
+      File.rm_rf!(dir)
+      Releases.prune()
+
+      assert Releases.versions("linux-arm64") == ~w(0.6.0 0.5.0 0.4.0 0.2.0 0.1.0)
+      refute Releases.get("agent", "0.3.0", "linux-arm64")
+      refute File.exists?(Path.join(Releases.store_dir(), "crew-agent-0.3.0-linux-arm64.tar.gz"))
     end
   end
 

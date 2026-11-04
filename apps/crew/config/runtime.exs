@@ -106,6 +106,16 @@ if config_env() != :test do
     # §13.1, §20.1: the release's signed image manifests the control
     # plane's image carries, and where it keeps the files it mirrors.
     image_release_dir: System.get_env("CREW_IMAGE_RELEASE_DIR"),
+    # §20.2: the control plane's own copies of the agent tarballs it has
+    # registered, so a box pinned to an older version still gets it.
+    agent_store_dir:
+      System.get_env(
+        "CREW_AGENT_STORE_DIR",
+        if(config_env() == :dev,
+          do: Path.expand("../../../tmp/agent-store", __DIR__),
+          else: "/var/lib/crew/agent-releases"
+        )
+      ),
     image_dir:
       System.get_env(
         "CREW_IMAGE_DIR",

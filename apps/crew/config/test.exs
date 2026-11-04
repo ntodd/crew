@@ -63,3 +63,4 @@ config :phoenix, sort_verified_routes_query_params: true
 config :crew, sync_dispatch: true
 config :crew, log_dir: Path.expand("../tmp/test-logs", __DIR__)
 config :crew, image_dir: Path.expand("../tmp/test-images", __DIR__)
+config :crew, agent_store_dir: Path.expand("../tmp/test-agent-store", __DIR__)
