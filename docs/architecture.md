@@ -353,3 +353,125 @@ The other spikes are recorded here as they run.
   error), and while working at most every 2 s as the percentage moves
   (bytes of both downloads, then compressed bytes decompressed), or
   every 30 s when it doesn't.
+
+## Registry cache notes
+
+- **Design A only** (spike S8): dockerd's containerd store and BuildKit
+  reach the cache through per-registry mirrors, as
+  `https://10.199.0.1/v2/<prefix>/<repo>/…` (`?ns=` is ignored). One
+  leaf for the listen IP, no DNS interception and no SNI or `Host`
+  matching; `CrewCache.CA.Certs.name_constraints/1` and the TLS options
+  are where Design B would go.
+- **`GET /v2/`** (and `/v2/<prefix>/`) answers 200 with
+  `Docker-Distribution-API-Version: registry/2.0`, as a registry does an
+  anonymous client. §15.3 passes it through, but under Design A there's
+  no single upstream to pass it to, and the mirror never sees
+  credentials anyway.
+- **Anything the cache doesn't serve is a 404, never a pass-through.**
+  The mirror only gets anonymous requests (dockerd keeps credentials
+  for the real registry) and containerd goes to the upstream itself on
+  any status of 400 or more. So repositories outside the allowlist,
+  hosts that aren't enabled, private repositories under an allowlisted
+  glob (the anonymous fetch is denied), tag lists, referrers and the
+  rest get 404, and the cache can't be used as an open anonymous proxy
+  to seven registries. Upstream failures are 502. No error carries a
+  `WWW-Authenticate`, so containerd doesn't try to log in to the
+  mirror. Writes of any kind are 405 and go nowhere.
+- **Name Constraints, Design A:** the intermediate's critical extension
+  permits `iPAddress` listen-IP/255.255.255.255 and excludes a `dNSName`
+  of "" (RFC 5280: a DNS constraint matches any name made by adding
+  labels on its left, so the empty one matches all names). Tests check
+  it with `openssl verify` and Go's crypto/x509, and Go's TLS client and
+  `openssl s_client` against the running listener. Leaves have an IP SAN
+  and no hostname-like CN: OpenSSL checks a CN as a DNS name when there's
+  no DNS SAN, and would refuse it.
+- **OTP can't verify the cache's chain.** `pubkey_cert` (OTP 29) spells
+  its `iPAddress` constraint clause `ipAdress` and crashes, so an Erlang
+  TLS client verifying the chain fails. Nothing in Crew needs to: guests
+  verify through dockerd, containerd and BuildKit (Go).
+- **The chain** is regenerated on `rotate_ca` and when the listen IP
+  changes, not when enabled hosts change: under Design A the constraints
+  name the IP. Leaves are replaced when a day old (checked hourly)
+  through OTP's PEM cache, so the listener serves the new one at the next
+  handshake. `cache/ca/root.pem` is the guests' anchor (also `GET
+  /ca.pem`).
+- **Every upstream connection is dialled through `CrewCache.Dial`,** a
+  `gen_tcp` `tcp_module`: names resolve over `CREW_DNS_UPSTREAMS` (A
+  records only; the cache dials IPv4 only) and blocked4 and site4
+  answers are dropped, for upstreams, token realms and redirect targets
+  alike. Finch's per-host pools and Mint's TLS verification work
+  unchanged above it. Redirects are followed to https only, without the
+  token once the origin changes. Tokens come from the compiled realm;
+  the challenge's realm is ignored, its `service` used.
+- **site4** in the cache is its own connected subnets (every 10
+  minutes), `CREW_EXTRA_BLOCKED`, and a `site4` list the agent can push
+  in `POST /config` (the egress address it learns). The agent doesn't
+  push it yet.
+- **Tags:** a HEAD or GET by tag asks the upstream (HEAD, with the
+  client's `Accept`), then fetches and stores the manifest if it's new,
+  so the GET by digest that follows is a hit. An upstream HEAD without
+  `Docker-Content-Digest` is a 404. The micro-cache key normalises
+  `Accept` to its types without parameters, sorted.
+- **Coalescing:** one fetch per kind and digest. It runs in its own
+  process into a temporary file in the store, so it finishes if its
+  clients leave; clients tail the file, through a shared counter and a
+  single wake-up when they've caught up, so a slow reader never piles up
+  messages. The last byte is held back until the SHA-256 matches, so a
+  mismatch never completes a response: clients already streaming are cut
+  short, and for 30 s after, requests for that digest get 502 without
+  asking the upstream again. Other failures end the fetch at once.
+  Manifests (at most 4 MiB) are verified before they're served, and
+  stored with their own `mediaType` when they have one; bytes first
+  stored through `/blobs/` become a manifest when fetched as one.
+- **Space and load:** a download with a `Content-Length` reserves it in
+  the store before it writes, so downloads in flight count against the
+  quota, and one that can't fit is a 404 (containerd goes upstream). One
+  object may take at most half the quota. At most 512 fetches run at
+  once (`max_fetches`); past that a miss is a 503. Files are synced
+  before the rename that commits them; at start, rows whose file is
+  missing or the wrong size are dropped, files no row knows are removed,
+  and temporary files older than an hour are swept every 10 minutes.
+  The directory isn't fsynced after the rename (OTP can't open one): a
+  power cut can lose the newest objects, which the start-up check drops.
+- **The store** keeps each object once, under the host and repository
+  that first fetched it: a purge by repository removes those, and
+  another repository sharing one fetches it again. `Range` is served for
+  stored blobs only; a miss is served whole (containerd skips to its
+  offset). Touches are written in batches every 2 s. `CREW_CACHE_MAX_GIB`
+  defaults to a quarter of the disk holding the cache directory, from
+  `df` at start.
+- **Counters** (`GET /stats`) run from the cache's start. A hit is an
+  object served from the store, a miss one fetched; a tag request counts
+  as its manifest. `bytes_stored` is what the store holds now, per host;
+  `top` is the 10 repositories that served the most bytes. Per-host
+  `mismatches` are there for `cache_stats`.
+- **Management** updates are partial (what isn't sent is unchanged) and
+  unknown fields are refused; `POST /purge` takes `cache.purge`'s scope
+  strings. A token, when set, guards every endpoint.
+- **DNS:** each client gets 100 queries a second (a token bucket): over
+  it, UDP queries are dropped without a reply or a task, and TCP ones
+  answered REFUSED. A client has at most 16 TCP connections, all clients
+  256. REFUSED for `ANY`/`AXFR`/`IXFR`, the private suffixes and the
+  names themselves, reverse zones that overlap blocked4 or site4
+  (`10.in-addr.arpa` too),
+  IPv6 reverse lookups in loopback, link-local, ULA and mapped space, and
+  malformed reverse names. Stripped from every section: A records in
+  blocked4 or site4, AAAA records that are loopback, link-local, ULA or
+  a mapped form of a refused IPv4 address, and SVCB/HTTPS records, whose
+  address hints would carry what the A records can't. TTLs are capped at
+  300 s in the answer as in the cache. Over UDP an answer is cut to the
+  client's EDNS size (512 without) and marked truncated.
+- **The parent (box side):** by-digest fetches ask the parent first, and
+  fall back to the upstream within the same fetch if it can't be
+  reached, answers anything but 2xx, or takes over 5 s to the first byte.
+  A parent that fails after it started sending, or sends wrong bytes,
+  cuts that fetch short and is skipped for the digest for 10 minutes. It
+  is the one connection outside the address policy: it lives on the
+  tailnet (in blocked4) and resolves the system's way, pinned by its CA
+  and token. Parent serving mode and `parent_tokens` aren't built;
+  `CREW_CACHE_MODE=parent` refuses to start.
+- **Tests** run a fake registry and storage host over TLS in-process,
+  with names resolved from a fixed map and loopback the only address the
+  policy lets through. Those settings (`net_except`, `resolve`,
+  `origins`, `upstream_cacerts`) have no environment variables, and
+  `net_except` can only ever open loopback.
