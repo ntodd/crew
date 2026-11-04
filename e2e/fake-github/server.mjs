@@ -355,7 +355,7 @@ route("GET", /^\/__fake\/runners\/([^/]+)\/job$/, async (req, res, url, [, name]
     runner.listening = true
     if (runner.job_id) return send(res, 200, jobJson(state.jobs.find(j => j.id === runner.job_id)))
     const job = await assign(runner)
-    if (job) return send(res, 200, { ...jobJson(job), seconds: job.seconds ?? null, exit: job.exit ?? 0 })
+    if (job) return send(res, 200, { ...jobJson(job), seconds: job.seconds ?? null, exit: job.exit ?? 0, log: job.log ?? null, log_lines: job.log_lines ?? 0 })
     if (Date.now() > until) { res.writeHead(204); return res.end() }
     await new Promise(r => setTimeout(r, 100))
   }
@@ -368,8 +368,47 @@ route("POST", /^\/__fake\/runners\/([^/]+)\/done$/, async (req, res, url, [, nam
   if (!runner || !runner.job_id) return send(res, 404, { message: "no job" })
   const job = state.jobs.find(j => j.id === runner.job_id)
   state.runners = state.runners.filter(x => x !== runner)
+  finalLog(job, b.conclusion || "success")
   await moveJob(job, { status: "completed", conclusion: b.conclusion || "success" })
   send(res, 200, jobJson(job))
+})
+
+// The job's steps and the plain-text log GitHub would have once it's done:
+// timestamped lines, with the rich log's groups, colours and annotations.
+function finalLog(job, conclusion) {
+  const start = Date.parse(job.started_at || new Date().toISOString())
+  const iso = ms => new Date(ms).toISOString().replace("Z", "0000Z")
+  const setupEnd = start + 1000
+  const end = Date.now()
+  job.steps = [
+    { name: "Set up job", number: 1, status: "completed", conclusion: "success", started_at: new Date(start).toISOString(), completed_at: new Date(setupEnd).toISOString() },
+    { name: "Run tests", number: 2, status: "completed", conclusion, started_at: new Date(setupEnd).toISOString(), completed_at: new Date(end).toISOString() },
+  ]
+  const lines = [[start + 10, "Current runner version: '2.330.0'"], [start + 20, "##[group]Operating System"], [start + 30, "Ubuntu 24.04"], [start + 40, "##[endgroup]"]]
+  const t = setupEnd + 10
+  lines.push([t, "\u001b[32mgreen\u001b[0m from GitHub's log"])
+  if (job.log === "rich") {
+    lines.push([t, "a needle in the haystack"])
+    for (let i = 1; i <= (job.log_lines || 0); i++) lines.push([t, `filler line ${i} of GitHub's log`])
+    if (conclusion !== "success") lines.push([t, "##[error]Process completed with exit code 1."])
+  }
+  lines.push([end - 10, "Cleaning up orphan processes"])
+  job.log_text = lines.map(([ms, text]) => `${iso(ms)} ${text}`).join("\n") + "\n"
+}
+
+route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/jobs\/(\d+)\/logs$/, (req, res, url, [, o, r, id]) => {
+  const job = state.jobs.find(j => j.id === Number(id))
+  if (!job || !job.log_text) return send(res, 404, { message: "Not Found" })
+  res.writeHead(302, { location: `${self}/__fake/blobs/${job.id}?sig=${randomBytes(8).toString("hex")}` })
+  res.end()
+})
+
+route("GET", /^\/__fake\/blobs\/(\d+)$/, (req, res, url, [, id]) => {
+  const job = state.jobs.find(j => j.id === Number(id))
+  if (!job || !job.log_text) return send(res, 404, { message: "Not Found" })
+  if (req.headers.authorization) return send(res, 400, { message: "the blob host got a token" })
+  res.writeHead(200, { "content-type": "text/plain" })
+  res.end(job.log_text)
 })
 
 // -- webhook deliveries ----------------------------------------------------------------
@@ -458,7 +497,7 @@ route("POST", /^\/__fake\/runs$/, async (req, res) => {
       id: id(), run_id: run.id, run_attempt: run.run_attempt, name: j.name, workflow_name: run.name, labels: j.labels,
       status: "queued", conclusion: null, created_at: now, started_at: now, completed_at: null, runner_name: null,
       runner_id: null, head_branch: run.head_branch, head_sha: run.head_sha,
-      seconds: j.seconds, exit: j.exit, hold: j.hold || false,
+      seconds: j.seconds, exit: j.exit, hold: j.hold || false, log: j.log, log_lines: j.log_lines,
     }
     state.jobs.push(job)
     return job

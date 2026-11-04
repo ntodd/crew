@@ -123,6 +123,9 @@ jobs:
         working-directory: apps/crew_agent
         env:
           MIX_ENV: dev
+      # The log viewer's pure parts (assets/js/log_core.js).
+      - run: node --test js/test/*.test.mjs
+        working-directory: apps/crew/assets
       - run: npm ci && npx playwright install --with-deps chromium
         working-directory: e2e
       - run: npx playwright test

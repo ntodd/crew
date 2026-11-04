@@ -152,6 +152,7 @@ defmodule Crew.Logs.Stream do
 
   defp save_index(state) do
     File.write!(Logs.index_path(:vm, state.vm_id), Index.encode(state.index))
+    Phoenix.PubSub.broadcast(Crew.PubSub, Logs.topic(state.vm_id), {:log_index, state.vm_id})
     %{state | index_dirty: false}
   end
 

@@ -38,6 +38,79 @@ defmodule CrewWeb.CrewComponents do
     |> Enum.filter(& &1)
   end
 
+  @doc """
+  A small line chart of a series against its ceiling (a VM's CPU or
+  memory against its size), as an inline SVG, with the last value.
+  """
+  attr :id, :string, required: true
+  attr :label, :string, required: true
+  attr :values, :list, required: true
+  attr :max, :any, required: true
+  attr :unit, :string, default: ""
+
+  def sparkline(assigns) do
+    values = Enum.take(assigns.values, -120)
+
+    max =
+      if is_number(assigns.max) and assigns.max > 0,
+        do: assigns.max,
+        else: Enum.max(values, fn -> 1 end)
+
+    n = length(values)
+
+    points =
+      values
+      |> Enum.with_index()
+      |> Enum.map_join(" ", fn {v, i} ->
+        x = if n > 1, do: i * 100 / (n - 1), else: 100
+        y = 30 - min(v / max, 1) * 28
+        "#{Float.round(x * 1.0, 2)},#{Float.round(y * 1.0, 2)}"
+      end)
+
+    assigns = assign(assigns, points: points, last: List.last(values))
+
+    ~H"""
+    <figure id={@id} class="space-y-1">
+      <figcaption class="flex items-baseline justify-between text-xs">
+        <span class="text-ink-2">{@label}</span>
+        <span class="tabular-nums text-ink-3">
+          <%= if @last do %>
+            {round(@last)}{@unit}<span :if={@unit != "%"}> / {round(@max)}{@unit}</span>
+          <% else %>
+            –
+          <% end %>
+        </span>
+      </figcaption>
+      <svg
+        viewBox="0 0 100 32"
+        preserveAspectRatio="none"
+        class="h-10 w-full text-accent"
+        role="img"
+        aria-label={@label}
+      >
+        <line
+          x1="0"
+          y1="2"
+          x2="100"
+          y2="2"
+          class="stroke-line"
+          stroke-width="0.5"
+          stroke-dasharray="2 2"
+          vector-effect="non-scaling-stroke"
+        />
+        <polyline
+          :if={@points != ""}
+          points={@points}
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          vector-effect="non-scaling-stroke"
+        />
+      </svg>
+    </figure>
+    """
+  end
+
   @doc "A used-of-total bar, amber past `threshold`."
   attr :label, :string, required: true
   attr :value, :any, required: true
