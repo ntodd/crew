@@ -47,6 +47,9 @@ if config_env() != :test do
     vz_cache_addr: System.get_env("CREW_VZ_CACHE_ADDR"),
     vz_dns_fallback: System.get_env("CREW_VZ_DNS_FALLBACK"),
     vz_mtu: int.("CREW_VZ_MTU", 1500),
+    vz_max_conns: int.("CREW_VZ_MAX_CONNS", 1024),
+    # §14.2 site4: the site's public egress address (spike S12).
+    egress_echo_url: System.get_env("CREW_EGRESS_ECHO_URL", "https://checkip.amazonaws.com"),
     crew_vz_bin: System.get_env("CREW_VZ_BIN", "crew-vz"),
     # Development: image.prepare clones kernel and rootfs.ext4 from here
     # instead of downloading (the download comes with the guest image).

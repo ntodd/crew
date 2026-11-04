@@ -49,7 +49,7 @@ func newEnv(t *testing.T) *env {
 		ConsoleLog:  filepath.Join(vmDir, "console.log"),
 		GuestSocket: filepath.Join(vmDir, "guest.sock"),
 		CtlSocket:   filepath.Join(vmDir, "ctl.sock"),
-		ExitedPath:  filepath.Join(vmDir, "exited.json"),
+		ExitedPath:  filepath.Join(vmDir, "vz-exited.json"),
 		Lease:       config.Lease{Gateway: "10.200.0.1/30", Guest: "10.200.0.2/30", MAC: "02:00:0a:c8:00:02"},
 	}
 	e := &env{dataDir: data, vmDir: vmDir, cfgPath: filepath.Join(vmDir, "vz.json"), cfg: cfg}

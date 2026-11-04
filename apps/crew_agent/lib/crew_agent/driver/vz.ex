@@ -190,12 +190,32 @@ defmodule CrewAgent.Driver.VZ do
         "mac" => lease.mac
       },
       "service_ip" => config.service_ip,
-      "cache_addr" => config.vz_cache_addr || "",
+      "cache_addr" => cache_addr(config),
       "dns_fallback" => config.vz_dns_fallback || "",
-      "site4" => config.extra_blocked,
-      "max_conns" => 2048,
+      "site4" => CrewAgent.Site.current(config),
+      # Each connection can hold up to 2 MiB in the helper, outside the
+      # guest's memory (native/crew-vz/netstack): 1024 bounds it at 2 GiB.
+      "max_conns" => config.vz_max_conns,
       "mtu" => config.vz_mtu
     }
+  end
+
+  # The cache VM (§12.3) writes its address to hostvm/cachevm.ip;
+  # CREW_VZ_CACHE_ADDR overrides it. Anything that isn't an IPv4 address
+  # is ignored.
+  defp cache_addr(config) do
+    from_file =
+      case File.read(Path.join([config.data_dir, "hostvm", "cachevm.ip"])) do
+        {:ok, body} -> String.trim(body)
+        _ -> nil
+      end
+
+    with ip when is_binary(ip) <- config.vz_cache_addr || from_file,
+         {:ok, _} <- :inet.parse_ipv4strict_address(String.to_charlist(ip)) do
+      ip
+    else
+      _ -> ""
+    end
   end
 
   defp write_config(config, spec) do

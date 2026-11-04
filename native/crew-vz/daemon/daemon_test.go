@@ -140,7 +140,7 @@ func (e *env) addVM(id string) *config.Config {
 		ConsoleLog:  filepath.Join(vmDir, "console.log"),
 		GuestSocket: filepath.Join(vmDir, "guest.sock"),
 		CtlSocket:   filepath.Join(vmDir, "ctl.sock"),
-		ExitedPath:  filepath.Join(vmDir, "exited.json"),
+		ExitedPath:  filepath.Join(vmDir, "vz-exited.json"),
 		Lease:       config.Lease{Gateway: "10.200.0.1/30", Guest: "10.200.0.2/30", MAC: "02:00:0a:c8:00:02"},
 	}
 	e.writeConfig(cfg)
@@ -426,6 +426,51 @@ func TestSocketMode(t *testing.T) {
 	}
 	if st.Mode().Perm() != 0o660 {
 		t.Fatalf("vzd.sock mode %v, want 0660", st.Mode().Perm())
+	}
+}
+
+func TestRecordsGoWhereTheHelperWritesThem(t *testing.T) {
+	e := newEnv(t)
+	e.addVM("vm1")
+	e.startDaemon()
+	pid := e.start("vm1").VM.PID
+	syscall.Kill(pid, syscall.SIGKILL)
+	e.waitExited("vm1")
+	dir := filepath.Join(e.dataDir, "vms", "vm1")
+	if _, err := exitrec.Read(filepath.Join(dir, exitrec.FileName)); err != nil {
+		t.Fatalf("no record at %s: %v", exitrec.FileName, err)
+	}
+	// exited.json is the agent's.
+	if _, err := os.Lstat(filepath.Join(dir, "exited.json")); err == nil {
+		t.Fatal("the daemon wrote exited.json")
+	}
+}
+
+func TestADeadLaunchFoundAtStartupGetsARecord(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.addVM("vm1")
+	// Launched once (vz.pid), helper long gone, no record: a power loss.
+	os.WriteFile(filepath.Join(filepath.Dir(cfg.ExitedPath), "vz.pid"), []byte("999999\n"), 0o640)
+	e.startDaemon()
+	resp := e.call(ctlproto.Request{Op: "status", VMID: "vm1"})
+	if !resp.OK || resp.VM.State != "exited" || resp.VM.Exited == nil || resp.VM.Exited.Reason != exitrec.ReasonHelperDied {
+		t.Fatalf("status: %+v", resp)
+	}
+}
+
+func TestHelperLogDoesntWriteThroughAHardLink(t *testing.T) {
+	e := newEnv(t)
+	cfg := e.addVM("vm1")
+	outside := filepath.Join(e.dataDir, "outside")
+	os.WriteFile(outside, []byte("precious"), 0o640)
+	os.Link(outside, filepath.Join(filepath.Dir(cfg.ExitedPath), HelperLog))
+	e.startDaemon()
+	if resp := e.start("vm1"); !resp.OK {
+		t.Fatalf("start: %+v", resp)
+	}
+	e.call(ctlproto.Request{Op: "stop", VMID: "vm1", Force: true})
+	if b, _ := os.ReadFile(outside); string(b) != "precious" {
+		t.Fatalf("the linked file was written: %q", b)
 	}
 }
 

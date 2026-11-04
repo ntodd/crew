@@ -147,7 +147,7 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-func TestOpenTruncatesAndRefusesSymlinks(t *testing.T) {
+func TestOpenTruncatesAndReplacesSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "console.log")
 	os.WriteFile(p, []byte("old boot"), 0o640)
@@ -165,11 +165,40 @@ func TestOpenTruncatesAndRefusesSymlinks(t *testing.T) {
 	os.WriteFile(target, []byte("precious"), 0o640)
 	link := filepath.Join(dir, "link.log")
 	os.Symlink(target, link)
-	if _, err := Open(link, Options{HeadMax: head, TailMax: tail}); err == nil {
-		t.Fatal("followed a symlink")
+	// A symlink at the path is replaced by a fresh file, never followed.
+	w, err = Open(link, Options{HeadMax: head, TailMax: tail})
+	if err != nil {
+		t.Fatal(err)
 	}
+	w.Write([]byte("boot"))
+	w.Close()
 	if got := read(t, target); string(got) != "precious" {
 		t.Fatal("symlink target modified")
+	}
+	if st, err := os.Lstat(link); err != nil || !st.Mode().IsRegular() {
+		t.Fatalf("console.log isn't a fresh regular file: %v %v", st, err)
+	}
+}
+
+func TestOpenDoesntWriteThroughAHardLink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "outside")
+	os.WriteFile(outside, []byte("precious"), 0o640)
+	p := filepath.Join(dir, "console.log")
+	if err := os.Link(outside, p); err != nil {
+		t.Fatal(err)
+	}
+	w, err := Open(p, Options{HeadMax: head, TailMax: tail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Write([]byte("boot"))
+	w.Close()
+	if got := read(t, outside); string(got) != "precious" {
+		t.Fatalf("the linked file was written: %q", got)
+	}
+	if got := read(t, p); string(got) != "boot" {
+		t.Fatalf("console.log: %q", got)
 	}
 }
 
