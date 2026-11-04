@@ -56,6 +56,9 @@ defmodule CrewAgent.Driver do
   @callback cleanup(vm_id :: String.t()) :: :ok
   @doc "How the VM ended, once it's not alive: `{:ok, %{code: integer, reason: atom | nil}}`."
   @callback exit_status(vm_id :: String.t()) :: {:ok, map()} | :unknown
+  @doc "Free MiB in the VM area, for a driver whose VMs don't use the host's disk."
+  @callback vm_area_free_mib() :: non_neg_integer
+  @optional_callbacks vm_area_free_mib: 0
 
   @doc "The configured driver module."
   def impl, do: CrewAgent.Config.driver_module(CrewAgent.Config.get())
