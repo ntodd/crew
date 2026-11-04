@@ -600,6 +600,55 @@ defmodule Crew.Jobs do
 
   # -- helpers -----------------------------------------------------------------
 
+  @doc """
+  Queue depth and booting VMs over the last `hours`, in 5-minute steps
+  (the Queue page's chart): from jobs' `queued_at`/`started_at` and VMs'
+  `requested_at`/`idle_at`, so nothing needs sampling. Times are Unix
+  seconds.
+  """
+  def queue_series(now \\ DateTime.utc_now(), hours \\ 6) do
+    since = DateTime.add(now, -hours * 3600)
+    step = 300
+    ticks = for t <- 0..div(hours * 3600, step), do: DateTime.to_unix(since) + t * step
+
+    jobs =
+      Repo.all(
+        from j in Job,
+          where:
+            j.classification == "ours" and
+              (j.queued_at > ^since or j.gh_state == "queued" or j.started_at > ^since),
+          select: {j.queued_at, [j.started_at, j.completed_at]}
+      )
+
+    vms =
+      Repo.all(
+        from v in Crew.VMs.VM,
+          where: v.requested_at > ^since or v.state in ["requested", "starting", "booted"],
+          select: {v.requested_at, [v.idle_at, v.busy_at, v.failed_at, v.destroyed_at]}
+      )
+
+    %{
+      since: DateTime.to_unix(since),
+      until: DateTime.to_unix(now),
+      depth: count_open(ticks, jobs),
+      booting: count_open(ticks, vms)
+    }
+  end
+
+  # How many {from, [ends]} intervals were open at each tick.
+  defp count_open(ticks, intervals) do
+    spans =
+      for {from, ends} <- intervals, from do
+        {DateTime.to_unix(from),
+         ends
+         |> Enum.reject(&is_nil/1)
+         |> Enum.map(&DateTime.to_unix/1)
+         |> Enum.min(fn -> nil end)}
+      end
+
+    for t <- ticks, do: {t, Enum.count(spans, fn {a, b} -> a <= t and (is_nil(b) or b > t) end)}
+  end
+
   @doc "The last `n` successful completions of the same job (repo, workflow, name), for \"usually X\"."
   def recent_successes(%Job{} = job, n) do
     Repo.all(

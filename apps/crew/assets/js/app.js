@@ -48,11 +48,29 @@ const Copy = {
   },
 }
 
+// Sizes flex children from data-grow (and data-min) through the CSSOM:
+// production's CSP allows no inline style attributes (§17.1).
+const Grow = {
+  mounted() {
+    this.apply()
+  },
+  updated() {
+    this.apply()
+  },
+  apply() {
+    for (const child of this.el.querySelectorAll("[data-grow]")) {
+      child.style.flexGrow = child.dataset.grow
+      child.style.flexBasis = "0"
+      if (child.dataset.min) child.style.minWidth = child.dataset.min
+    }
+  },
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, LogTail, Copy, LogViewer},
+  hooks: {...colocatedHooks, LogTail, Copy, LogViewer, Grow},
 })
 
 topbar.config({barColors: {0: "#5b50e8"}, shadowColor: "rgba(0, 0, 0, .15)"})

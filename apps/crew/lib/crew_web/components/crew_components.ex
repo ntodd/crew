@@ -343,6 +343,7 @@ defmodule CrewWeb.CrewComponents do
   defp tone(:muted), do: "text-ink-3"
 
   @doc "One segment per job, each with its state: the per-job state bar of the Runs page."
+  attr :id, :string, required: true
   attr :jobs, :list, required: true
   attr :now, :any, default: nil
 
@@ -353,14 +354,20 @@ defmodule CrewWeb.CrewComponents do
     assigns = assign(assigns, statuses: statuses, groups: groups(statuses))
 
     ~H"""
-    <span class="flex h-2 w-28 gap-0.5 overflow-hidden" role="img" aria-label={bar_label(@statuses)}>
+    <span
+      id={@id}
+      phx-hook={@groups && "Grow"}
+      class="flex h-2 w-28 gap-0.5 overflow-hidden"
+      role="img"
+      aria-label={bar_label(@statuses)}
+    >
       <%= if @groups do %>
         <span
           :for={{state, n} <- @groups}
           data-job-state={state}
           data-count={n}
           title={"#{n} #{String.replace(state, "_", " ")}"}
-          style={"flex-grow: #{n}"}
+          data-grow={n}
           class={["h-full min-w-1 basis-0 rounded-sm", segment(state)]}
         ></span>
       <% else %>

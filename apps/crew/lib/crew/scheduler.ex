@@ -100,6 +100,22 @@ defmodule Crew.Scheduler do
     }
   end
 
+  @doc """
+  The Queue page (§17.3): a pass's units in placement order, the blocked
+  jobs, and each class, with the jobs and repos they're about. Jobs in
+  repos the scope can't read are masked by the page.
+  """
+  def queue_view do
+    snap = snapshot()
+    queue = Plan.queue(snap)
+
+    ids =
+      Enum.map(queue.units, & &1.job_id) ++ Enum.map(queue.blocked, &elem(&1, 0)) ++ queue.covered
+
+    jobs = Repo.all(from j in Job, where: j.id in ^ids, preload: [:size]) |> Map.new(&{&1.id, &1})
+    %{queue: queue, jobs: jobs, repos: Map.new(Repos.list(), &{&1.id, &1})}
+  end
+
   @doc "What a box offers job VMs (overcommit included), or nil before it reports."
   def capacity(box) do
     case snapshot_box(box) do

@@ -47,6 +47,9 @@ defmodule CrewWeb.Layouts do
           <.sidebar_link navigate={~p"/runs"} icon="hero-play-circle" current_path={@current_path}>
             Runs
           </.sidebar_link>
+          <.sidebar_link navigate={~p"/queue"} icon="hero-queue-list" current_path={@current_path}>
+            Queue
+          </.sidebar_link>
           <.sidebar_link navigate={~p"/repos"} icon="hero-code-bracket" current_path={@current_path}>
             Repos
           </.sidebar_link>
