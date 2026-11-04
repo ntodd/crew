@@ -310,6 +310,40 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     assert [%{"verb" => "cleanup"}] = FakeVmctl.requests()
   end
 
+  test "a cleanup that doesn't finish says so", ctx do
+    spec = spec(ctx.config)
+    File.write!(Path.join(spec.vm_dir, "fc.json"), "{}")
+
+    # crew-vmctl can't be reached.
+    assert {:error, "unreachable: " <> _} = Firecracker.cleanup(spec.vm_id)
+    # The token's file goes anyway.
+    refute File.exists?(Path.join(spec.vm_dir, "fc.json"))
+
+    for failing <- ["cleanup", "pair-del", "tap-del"] do
+      stop_supervised(FakeVmctl)
+
+      vmctl(ctx, fn
+        %{"verb" => ^failing} ->
+          %{"ok" => false, "error" => "failed", "detail" => "#{failing} broke"}
+
+        _ ->
+          %{"ok" => true}
+      end)
+
+      assert {:error, "failed: " <> why} = Firecracker.cleanup(spec.vm_id)
+      assert why =~ failing
+      FakeVmctl.requests()
+    end
+  end
+
+  test "leftovers are every unit and jail crew-vmctl holds", ctx do
+    vmctl(ctx, fn %{"verb" => "list"} ->
+      %{"ok" => true, "vms" => ["a", "b"], "jails" => ["b", "c"]}
+    end)
+
+    assert {:ok, ["a", "b", "c"]} = Firecracker.leftovers()
+  end
+
   describe "capabilities" do
     defp healthy(systemd \\ 260) do
       fn

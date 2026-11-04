@@ -17,6 +17,7 @@ defmodule CrewAgent.VM do
   require Logger
 
   alias CrewAgent.{Config, Driver, Net, Outbox, SafeFS}
+  alias CrewAgent.VMs.Cleanup
   alias CrewProtocol.{Event, Guest, Text}
 
   @registry CrewAgent.Registry
@@ -176,14 +177,34 @@ defmodule CrewAgent.VM do
           Logger.error("starting VM #{p.vm_id} failed: #{Exception.message(e)}")
           :ets.delete(@sessions, state.token_hash)
           CrewAgent.GuestAPI.stop_socket(p.vm_id)
-          driver.cleanup(p.vm_id)
-          Net.release(p.vm_id)
-          File.rm_rf(dir)
+          abandon_start(driver, p.vm_id, dir)
           {:error, Exception.message(e)}
       end
     else
       {:error, :image_not_ready} -> {:error, :image_not_ready}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A start that failed leaves nothing, unless its cleanup fails too: then
+  # its directory stays (vm.json and an exit record, so the inventory has
+  # it), with its lease, for the cleanup to be retried.
+  defp abandon_start(driver, vm_id, dir) do
+    case driver.cleanup(vm_id) do
+      :ok ->
+        Net.release(vm_id)
+        File.rm_rf(dir)
+
+      {:error, why} ->
+        exited = %{
+          "code" => 0,
+          "reason" => "boot_failed",
+          "at" => now_ms(),
+          "detail" => "start_failed"
+        }
+
+        _ = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
+        Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
     end
   end
 
@@ -306,7 +327,10 @@ defmodule CrewAgent.VM do
     else
       error ->
         Logger.error("couldn't adopt VM #{vm_id}: #{inspect(error)}")
-        driver.cleanup(vm_id)
+
+        with {:error, why} <- driver.cleanup(vm_id),
+             do: Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+
         :ignore
     end
   end
@@ -696,14 +720,22 @@ defmodule CrewAgent.VM do
     end
   end
 
+  # Keep only what the next inventory reports (vm.json and exited.json).
+  # A cleanup that fails keeps the lease and the clone, and is retried
+  # (CrewAgent.VMs.Cleanup).
   defp cleanup(state) do
     :ets.delete(@sessions, state.token_hash)
     CrewAgent.GuestAPI.stop_socket(state.vm_id)
-    result = state.driver.cleanup(state.vm_id)
-    Net.release(state.vm_id)
-    # Keep only what the next inventory reports (vm.json and exited.json).
-    for f <- ["rootfs.ext4", "guest.sock", "ctl.sock"], do: File.rm(Path.join(state.dir, f))
-    result
+    for f <- ["guest.sock", "ctl.sock"], do: File.rm(Path.join(state.dir, f))
+
+    case state.driver.cleanup(state.vm_id) do
+      :ok ->
+        Cleanup.done(state.vm_id)
+
+      {:error, why} ->
+        Cleanup.failed(state.vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        {:error, why}
+    end
   end
 
   # -- logs (§16.2) ------------------------------------------------------------------------

@@ -41,11 +41,8 @@ defmodule CrewAgent.Application do
         CrewAgent.VMs,
         CrewAgent.Ops,
         if(config.cache_mgmt_url, do: CrewAgent.Cache.Stats),
-        %{
-          id: :adopt,
-          start: {Task, :start_link, [&CrewAgent.VMs.adopt_all/0]},
-          restart: :temporary
-        }
+        # Adoption, then cleanups left pending or never recorded (§10.7).
+        CrewAgent.VMs.Janitor
       ]
       |> Enum.reject(&is_nil/1)
       |> Kernel.++(if config.connect, do: [link], else: [])

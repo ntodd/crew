@@ -213,6 +213,35 @@ The other spikes are recorded here as they run.
   once, pairs for taps that exist, site4), `site4` every 10 minutes. The
   egress address reaches it as `agent/egress4`, which `CrewAgent.Site`
   writes on Firecracker boxes.
+- **A cleanup that fails isn't forgotten** (`CrewAgent.VMs.Cleanup`).
+  `driver.cleanup/1` may now return an error (the behaviour's spec said
+  `:ok` only). When it does, `vm.exited` says `cleanup: "error"`,
+  `vms/<id>/cleanup-pending` records it, and the VM keeps its lease (its
+  tap may still be there) and its clone (the jail's hard link keeps the
+  space anyway, and the disk watchdog sees it); its directory isn't
+  swept. A start whose cleanup fails keeps its directory the same way,
+  with an exit record. `CrewAgent.VMs.Janitor`, which replaced the
+  adoption task, retries at start (after taking the pending leases back,
+  before anything can start) and every minute. At start it also cleans
+  up whatever crew-vmctl holds (`list`: units and jails) for VMs with no
+  live or pending record here.
+- **When the filter stops verifying:** crew-vmctl's `start` checks it
+  itself (about 50 ms a start on the M3's VM), and the agent kills every
+  VM on the box when crew-vmctl says it doesn't verify twice in a row
+  (`killed_stop`, detail `firewall_not_verified`), and starts nothing
+  until it does. An unreachable crew-vmctl or an egress address not yet
+  learned holds starts back without killing anything.
+- **site4's egress address:** the agent asks crew-vmctl to refill site4
+  the moment it learns a new one, and reads its last one back at start;
+  crew-vmctl keeps the last valid one in `/run/crew/egress4` when the
+  agent's file is missing or broken. `nft-verify` checks site4 holds
+  what crew-net puts there. With an echo service configured no VM starts
+  until site4 holds the address; without one the capabilities carry
+  `no_egress_echo`.
+- **VM ids are checked:** crew-vmctl refuses a lease whose uid or gid
+  (200000 + the lease) is in `/etc/passwd`, `/etc/group`, Flatcar's
+  `/usr/share/baselayout` copies, or an `/etc/subuid`/`/etc/subgid`
+  range.
 - **`alive?` and `stats`** read the unit's cgroup
   (`/sys/fs/cgroup/system.slice/crew-vm-<id>.service`): alive while it
   exists, which is until systemd is done with the unit, exit record

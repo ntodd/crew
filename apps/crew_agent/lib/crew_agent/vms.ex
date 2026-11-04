@@ -7,6 +7,7 @@ defmodule CrewAgent.VMs do
   require Logger
 
   alias CrewAgent.{Config, Driver, VM}
+  alias CrewAgent.VMs.Cleanup
 
   @sup CrewAgent.VMs.Supervisor
 
@@ -177,7 +178,9 @@ defmodule CrewAgent.VMs do
   def sweep_exited(max_age_ms \\ 3_600_000) do
     now = System.os_time(:millisecond)
 
+    # A VM whose cleanup is still to finish keeps its record (and lease).
     for vm_id <- vm_ids(),
+        not Cleanup.pending?(vm_id),
         exited = read_json(vm_id, "exited.json"),
         now - (exited["at"] || now) > max_age_ms do
       File.rm_rf(Config.vm_dir(Config.get(), vm_id))

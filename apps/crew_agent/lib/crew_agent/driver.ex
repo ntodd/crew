@@ -52,8 +52,17 @@ defmodule CrewAgent.Driver do
   @callback list() :: {:ok, [String.t()]}
   @callback stats(vm_id :: String.t()) ::
               {:ok, %{cpu_pct: float, rss_mib: integer}} | {:error, term}
-  @doc "Idempotent; safe if never started."
-  @callback cleanup(vm_id :: String.t()) :: :ok
+  @doc """
+  Idempotent; safe if never started. An error means something of the VM
+  is still there: the agent keeps its lease and calls it again.
+  """
+  @callback cleanup(vm_id :: String.t()) :: :ok | {:error, term}
+  @doc """
+  The VMs the driver holds something for (a process, a unit, a jail),
+  for the agent to hold against its records at start. Optional.
+  """
+  @callback leftovers() :: {:ok, [String.t()]} | {:error, term}
+  @optional_callbacks leftovers: 0
   @doc "How the VM ended, once it's not alive: `{:ok, %{code: integer, reason: atom | nil}}`."
   @callback exit_status(vm_id :: String.t()) :: {:ok, map()} | :unknown
   @doc "Free MiB in the VM area, for a driver whose VMs don't use the host's disk."
