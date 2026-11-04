@@ -82,6 +82,9 @@ defmodule Crew.BoxesTest do
     test "a bad public key is refused", %{admin: admin} do
       {:ok, raw} = Boxes.create_join_token(admin, %{"box_name" => "k", "box_type" => "mac-vz"})
       assert {:error, :bad_key} = Boxes.enroll(raw, %{"public_key" => "short"})
+      # And doesn't spend the token.
+      {public, _} = CrewProtocol.Auth.generate_keypair()
+      assert {:ok, _} = Boxes.enroll(raw, enroll_attrs(public))
     end
 
     test "a revoked box's name can't be enrolled again", %{admin: admin} do

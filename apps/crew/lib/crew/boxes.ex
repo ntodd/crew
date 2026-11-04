@@ -135,19 +135,21 @@ defmodule Crew.Boxes do
   Enrolls an agent: spends the join token and records the agent's public
   key. Re-enrolling a live box's name replaces its key; a revoked name
   stays revoked.
+
+  The token is claimed with one update that only matches it unused and
+  unexpired, in the same transaction as the box's key: of enrollments
+  racing for one token, exactly one gets it (the others wait on the
+  row, then match nothing). Anything that fails after the claim rolls it
+  back, so a bad key doesn't spend the token.
   """
   def enroll(raw_token, attrs) when is_binary(raw_token) do
     now = DateTime.utc_now()
 
     Repo.transact(fn ->
-      with %JoinToken{} = token <- Repo.get_by(JoinToken, token_hash: hash(raw_token)),
-           true <- is_nil(token.used_at) and DateTime.compare(token.expires_at, now) == :gt,
+      with {:ok, token} <- claim_token(raw_token, now),
            {:ok, public_key} <- decode_key(attrs["public_key"]),
            {:ok, box} <- upsert_enrolled_box(token, public_key, attrs) do
-        # The Tailscale key was for this box's first boot, which this is.
-        token
-        |> Ecto.Changeset.change(used_at: now, box_id: box.id, tailscale_auth_key: nil)
-        |> Repo.update!()
+        token |> Ecto.Changeset.change(box_id: box.id) |> Repo.update!()
 
         Audit.log(nil, "box.enroll", box, %{"agent_version" => attrs["agent_version"]})
         disconnect(box)
@@ -161,6 +163,20 @@ defmodule Crew.Boxes do
   end
 
   def enroll(_, _), do: {:error, :invalid_token}
+
+  # Marks the token used if, and only if, it's unused and unexpired, and
+  # forgets its Tailscale key, which was for this box's first boot.
+  defp claim_token(raw, now) do
+    query =
+      from t in JoinToken,
+        where: t.token_hash == ^hash(raw) and is_nil(t.used_at) and t.expires_at > ^now,
+        select: t
+
+    case Repo.update_all(query, set: [used_at: now, tailscale_auth_key: nil]) do
+      {1, [token]} -> {:ok, token}
+      _ -> {:error, :invalid_token}
+    end
+  end
 
   # -- Flatcar boxes (§12.2) -------------------------------------------------------
 
