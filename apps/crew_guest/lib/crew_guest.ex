@@ -6,13 +6,14 @@ defmodule CrewGuest do
   (DNS, the cache CA, Docker), starts the runner with its JIT config, and
   reports back: states, steps, live log lines and metrics. When the runner
   exits, or the agent asks it to stop, it flushes what it holds and powers
-  the VM off.
+  the VM off. On SIGTERM (systemd stopping the VM) it does the same within
+  6 s, then exits.
 
   The pieces: `CrewGuest.Main` runs the sequence, `CrewGuest.Outbox`
   delivers (and buffers) what's reported, `CrewGuest.Runner` supervises the
   runner, `CrewGuest.Pages` and `CrewGuest.Steps` turn the runner's
-  `_diag` files into log lines and steps, and every OS step goes through
-  `CrewGuest.System`.
+  `_diag` files into log lines and steps, `CrewGuest.Signals` handles
+  SIGTERM, and every OS step goes through `CrewGuest.System`.
 
   ## Local mode (the null driver, §11.5)
 

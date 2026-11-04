@@ -35,6 +35,15 @@ defmodule CrewGuest.Session do
   end
 
   @doc """
+  What SIGTERM does (`CrewGuest.Signals`): the boot sequence stops in
+  order. Without one (no usable config, or between restarts), crew-guest
+  just stops.
+  """
+  def sigterm do
+    if Process.whereis(Main), do: Main.sigterm(), else: System.stop(0)
+  end
+
+  @doc """
   What to do when there's no usable config: nothing can be reported
   without one, so in a VM, power off (the agent sees `boot_failed`), and
   locally, exit non-zero.

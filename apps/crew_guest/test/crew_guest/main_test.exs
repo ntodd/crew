@@ -14,6 +14,7 @@ defmodule CrewGuest.MainTest do
     on_exit(fn ->
       Application.delete_env(:crew_guest, :fake_system)
       Application.delete_env(:crew_guest, :fake_system_fail)
+      Application.delete_env(:crew_guest, :fake_system_delay)
     end)
 
     %{dir: dir}
@@ -28,14 +29,20 @@ defmodule CrewGuest.MainTest do
       runner_dir: Path.join(dir, "runner"),
       run_dir: Path.join(dir, "run"),
       runner_cmd: [fixture("stub-runner")],
+      # `env` wins over these.
       runner_env:
-        [
-          {"STUB_DELAY", "0.3"},
-          {"STUB_WORKER_LOG", fixture("worker/Worker_20261103-101500-utc.log")}
-        ] ++ env,
+        Enum.uniq_by(
+          env ++
+            [
+              {"STUB_DELAY", "0.3"},
+              {"STUB_WORKER_LOG", fixture("worker/Worker_20261103-101500-utc.log")}
+            ],
+          &elem(&1, 0)
+        ),
       payload_timeout_ms: 1_000,
       payload_retry_ms: 50,
       flush_timeout_ms: 3_000,
+      sigterm_timeout_ms: 1_000,
       metrics_interval_ms: 200
     }
   end
@@ -183,4 +190,165 @@ defmodule CrewGuest.MainTest do
     assert first =~ "starting Docker failed"
     assert FakeAPI.states(api) == ~w(runner_listening job_started job_finished)
   end
+
+  describe "SIGTERM (systemd stopping the VM)" do
+    test "while it waits for its payload, it stops at once", %{dir: dir} do
+      api = start_api()
+      # The agent holds each request a while, then says to come back.
+      FakeAPI.respond(api, "/v1/payload", [{:delay, 2_000, {503, nil}}])
+      main = boot(%{config(api, dir) | payload_timeout_ms: 60_000})
+      eventually(fn -> FakeAPI.requests(api, "/v1/payload") != [] end)
+
+      assert sigterm(main) < 200
+      refute_received {:system, :poweroff}
+      refute_received {:system, {:prepare_runner, _}}
+    end
+
+    test "while Docker starts, it stops at once", %{dir: dir} do
+      Application.put_env(:crew_guest, :fake_system_delay, %{start_docker: 5_000})
+      api = start_api()
+      main = boot(config(api, dir))
+      assert_receive {:system, :start_docker}, 2_000
+
+      assert sigterm(main) < 200
+      refute_received {:system, {:prepare_runner, _}}
+    end
+
+    test "as the runner starts, it's stopped and job_finished is reported", %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "1"))
+      eventually(fn -> :sys.get_state(main).phase == :running end)
+
+      assert sigterm(main) < 1_000
+      assert "job_finished" in FakeAPI.states(api)
+      assert last_state(api).detail == "exit_code=143"
+    end
+
+    test "mid-job: SIGTERM to the runner, job_finished and the last lines, then a stop",
+         %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "1"))
+      await_job(api)
+
+      assert sigterm(main) < 1_000
+      refute_received {:system, :poweroff}
+      assert FakeAPI.states(api) == ~w(runner_listening job_started job_finished)
+      assert last_state(api).detail == "exit_code=143"
+      assert "stub-runner: got SIGTERM" in FakeAPI.log_texts(api)
+    end
+
+    test "a runner that ignores SIGTERM gets half the budget; job_finished goes anyway",
+         %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "ignore"))
+      await_job(api)
+      kill_runner_on_exit(main)
+
+      # Half of 1 s for the runner; the flush then waits on the steps
+      # snapshot (2 a second at most), within the rest.
+      ms = sigterm(main)
+      assert ms >= 500 and ms < 1_300
+      assert last_state(api).state == "job_finished"
+      assert last_state(api).detail == "runner_stop_timeout"
+      assert "stub-runner: ignoring SIGTERM" in FakeAPI.log_texts(api)
+    end
+
+    test "with the agent unreachable, it still stops within the budget", %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "1"))
+      await_job(api)
+      FakeAPI.set_down(api, true)
+
+      ms = sigterm(main)
+      assert ms >= 900 and ms < 1_300
+      refute_received {:system, :poweroff}
+    end
+
+    test "with the agent not answering, it still stops within the budget", %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "1"))
+      await_job(api)
+
+      for path <- ~w(/v1/state /v1/log /v1/steps),
+          do: FakeAPI.respond(api, path, [{:delay, 10_000, {204, nil}}])
+
+      ms = sigterm(main)
+      assert ms >= 900 and ms < 1_300
+      # job_finished was on its way when the budget ran out.
+      assert "job_finished" in attempted_states(api)
+    end
+
+    test "if the runner exits first (systemd signals it too), the flush keeps to the budget",
+         %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "1"))
+      await_job(api)
+      FakeAPI.respond(api, "/v1/state", [{:delay, 10_000, {204, nil}}])
+
+      # The runner's exit starts the agent-stop flush (3 s); SIGTERM cuts
+      # it to its own budget (1 s).
+      System.cmd("kill", ["-TERM", runner_os_pid(main)])
+      eventually(fn -> "job_finished" in attempted_states(api) end)
+
+      assert sigterm(main) < 1_300
+      refute_received {:system, :poweroff}
+    end
+
+    test "during a stop the agent asked for, it keeps to SIGTERM's budget and stops",
+         %{dir: dir} do
+      api = start_api()
+      main = boot(%{hanging(api, dir, "ignore") | flush_timeout_ms: 6_000})
+      await_job(api)
+      kill_runner_on_exit(main)
+
+      # The agent's stop gives the runner 3 s; SIGTERM leaves it 0.5 s.
+      Main.request_stop(main)
+      eventually(fn -> "stub-runner: ignoring SIGTERM" in FakeAPI.log_texts(api) end)
+
+      assert sigterm(main) < 1_300
+      refute_received {:system, :poweroff}
+      assert last_state(api).detail == "runner_stop_timeout"
+    end
+
+    test "after a poweroff, the SIGTERM that carries it out stops crew-guest", %{dir: dir} do
+      api = start_api(nil)
+      main = boot(config(api, dir))
+      assert_receive {:system, :poweroff}, 1_000
+
+      assert sigterm(main) < 100
+    end
+  end
+
+  # A stub that gets through its steps quickly, then waits for SIGTERM
+  # ("1") or ignores it ("ignore").
+  defp hanging(api, dir, hang),
+    do: config(api, dir, [{"STUB_HANG", hang}, {"STUB_DELAY", "0.1"}])
+
+  # How long from Main.sigterm/1 until crew-guest stops itself.
+  defp sigterm(main) do
+    t0 = System.monotonic_time(:millisecond)
+    Main.sigterm(main)
+    assert_receive {:system, :stop}, 3_000
+    System.monotonic_time(:millisecond) - t0
+  end
+
+  defp await_job(api),
+    do: eventually(fn -> "ok 2 - second" in FakeAPI.log_texts(api) end, 10_000)
+
+  defp runner_os_pid(main) do
+    %{runner: runner} = :sys.get_state(main)
+    Integer.to_string(:sys.get_state(runner).os_pid)
+  end
+
+  # A stub that ignores SIGTERM would outlive the test.
+  defp kill_runner_on_exit(main) do
+    os_pid = runner_os_pid(main)
+    on_exit(fn -> System.cmd("kill", ["-KILL", os_pid], stderr_to_stdout: true) end)
+  end
+
+  defp last_state(api), do: List.last(FakeAPI.delivered(api, "/v1/state")).cast
+
+  # States sent, delivered or not.
+  defp attempted_states(api),
+    do: Enum.map(FakeAPI.requests(api, "/v1/state"), & &1.cast.state)
 end

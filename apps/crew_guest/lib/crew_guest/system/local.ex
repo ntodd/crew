@@ -48,4 +48,7 @@ defmodule CrewGuest.System.Local do
     System.stop(0)
     :ok
   end
+
+  @impl true
+  def stop(cfg), do: poweroff(cfg)
 end

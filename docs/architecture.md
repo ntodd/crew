@@ -171,6 +171,29 @@ The other spikes are recorded here as they run.
   the API every 10 s (rate-limited per job, however many are watching),
   as an optional call.
 
+## crew-guest notes
+
+- **SIGTERM** is how a graceful stop (`requestStop`, the power button,
+  ctrl-alt-del) reaches crew-guest. The BEAM's own handler calls
+  `init:stop`, which stopped the release without stopping the runner or
+  reporting anything. While crew-guest waited for its payload it also sat
+  out the supervisor's 5 s shutdown timeout: the boot ran in `Main`'s
+  `handle_continue`, so `Main`, which traps exits, never saw the shutdown.
+  That was the 5.3 s measured below.
+- **crew-guest now replaces that handler** on `erl_signal_server`
+  (`CrewGuest.Signals`), and the boot and the final flush run in tasks, so
+  `Main` acts on a stop in every phase. SIGTERM takes the agent's stop
+  path within 6 s: SIGTERM to the runner, half the budget for it to exit
+  (otherwise `job_finished` with detail `runner_stop_timeout`), the flush
+  in the rest, then an exit rather than a poweroff, since systemd is
+  already powering off. If the BEAM is still up 8 s after SIGTERM, the
+  handler halts it. §13.5 gives no budget for SIGTERM; both stay under
+  systemd's stop timeout (15 s for this unit, 10 s for the image's
+  others).
+- **In local mode** a real SIGTERM ends crew-guest in about 25 ms while it
+  waits for its payload, and in about 0.5 s mid-job, most of it the steps
+  lane's 2-a-second limit on the last snapshot.
+
 ## Guest image notes
 
 - **The build** is `images/guest` (`make -C images/guest`). Every step

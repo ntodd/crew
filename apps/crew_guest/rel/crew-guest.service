@@ -24,6 +24,8 @@ Environment=HOME=/root
 Environment=LANG=C.UTF-8
 # The payload fetch alone may take 60 s.
 TimeoutStartSec=180
+# On SIGTERM crew-guest stops the runner and flushes within 6 s, and halts
+# itself at 8 s if it's still up (CrewGuest.Signals): keep this above that.
 TimeoutStopSec=15
 Restart=no
 # The runner and the job are crew-guest's children and inherit this.

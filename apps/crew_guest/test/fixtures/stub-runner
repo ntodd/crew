@@ -10,6 +10,7 @@
 # Environment:
 #   STUB_EXIT=<n>           exit code (default 0)
 #   STUB_HANG=1             after the job's steps, wait for SIGTERM (exit 143)
+#   STUB_HANG=ignore        after the job's steps, ignore SIGTERM and keep going
 #   STUB_WORKER_LOG=<file>  a worker log to copy to _diag/Worker_<time>-utc.log
 #   STUB_JIT_OUT=<file>     write the JIT config it was given here
 #   STUB_DELAY=<seconds>    pause between phases (default 0.2)
@@ -85,6 +86,11 @@ rm -f "$checkout_page" "$tests_page"
 
 if [ "${STUB_HANG:-}" = 1 ]; then
   trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; exit 143' TERM
+  while :; do sleep 0.1; done
+fi
+
+if [ "${STUB_HANG:-}" = ignore ]; then
+  trap 'line "$tests_page2" "stub-runner: ignoring SIGTERM"' TERM
   while :; do sleep 0.1; done
 fi
 
