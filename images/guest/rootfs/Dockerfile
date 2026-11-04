@@ -79,6 +79,7 @@ RUN --mount=type=bind,source=versions.env,target=/crew/versions.env \
 COPY --from=crew-guest /opt/crew-guest /opt/crew-guest
 RUN --mount=type=bind,source=rootfs,target=/crew/rootfs \
     --mount=type=bind,source=hooks,target=/crew/hooks \
+    --mount=type=bind,source=conformance,target=/crew/conformance \
     --mount=type=bind,source=scripts,target=/crew/scripts \
     --mount=type=bind,from=crew_guest,source=rel/crew-guest.service,target=/crew-guest-unit \
     bash /crew/rootfs/configure.sh
