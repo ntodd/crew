@@ -174,7 +174,7 @@ defmodule CrewWeb.AdminLive.Caches do
         </ul>
       </.panel>
 
-      <div class="mt-4 grid gap-4 xl:grid-cols-2">
+      <div class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
         <.panel id="hosts-panel" title="Hosts">
           <:subtitle>
             The registries box caches serve.
