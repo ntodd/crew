@@ -4,7 +4,7 @@ defmodule CrewAgent.Handler do
   every payload has already been validated by `CrewProtocol.Command`.
   """
 
-  alias CrewAgent.{Images, Reporter, VMs}
+  alias CrewAgent.{Cache, Config, Images, Reporter, VMs}
   alias CrewProtocol.Command
 
   @spec handle(Command.t()) :: :ok | {:ok, map()} | {:error, String.t(), String.t()}
@@ -25,8 +25,11 @@ defmodule CrewAgent.Handler do
     :ok
   end
 
-  def handle(%Command{type: type}) when type in ["cache.config", "cache.purge"],
-    do: {:error, "no_cache", "this box has no registry cache configured"}
+  def handle(%Command{type: "cache.config", payload: p}),
+    do: Cache.configure(Config.get(), p)
+
+  def handle(%Command{type: "cache.purge", payload: %{scope: s}}),
+    do: Cache.purge(Config.get(), s)
 
   def handle(%Command{type: type}),
     do: {:error, "unsupported", "#{type} isn't supported by this agent yet"}

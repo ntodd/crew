@@ -39,6 +39,7 @@ defmodule CrewAgent.Application do
         null_supervisor(config),
         CrewAgent.VMs,
         CrewAgent.Ops,
+        if(config.cache_mgmt_url, do: CrewAgent.Cache.Stats),
         %{
           id: :adopt,
           start: {Task, :start_link, [&CrewAgent.VMs.adopt_all/0]},
