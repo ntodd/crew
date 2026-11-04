@@ -541,8 +541,6 @@ defmodule Crew.Boxes.Flatcar do
     PrivateTmp=true
     ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images
     ProtectKernelModules=true
-    ProtectKernelLogs=true
-    ProtectClock=true
     RestrictSUIDSGID=true
     LockPersonality=true
     CapabilityBoundingSet=
