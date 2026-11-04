@@ -24,7 +24,7 @@ defmodule Crew.Images do
   # A prepare quiet this long is sent again.
   @quiet_s 30 * 60
 
-  def list, do: Repo.all(from i in Image, order_by: [desc: i.registered_at])
+  def list, do: Repo.all(from i in Image, order_by: [desc: i.registered_at, desc: i.id])
   def get(id), do: Repo.get(Image, id)
 
   @doc """
@@ -164,6 +164,84 @@ defmodule Crew.Images do
 
       changed()
       Crew.Scheduler.poke()
+      {:ok, image}
+    else
+      {:error, :unauthorized}
+    end
+  end
+
+  # How many of an arch's newest releases keep their files, besides the
+  # default and a pinned one: the rollback window (§20.4).
+  @keep_mirrored 3
+
+  @doc """
+  A mirrored image whose files have gone (a restored database, a moved
+  `CREW_IMAGE_DIR`, a release directory that changed) is fetched again;
+  until then it can't be a default. Checked at boot and daily.
+  """
+  def check_mirrors do
+    for %Image{mirror_state: "ready", kernel_path: k, rootfs_path: r} = image <- list(),
+        is_binary(k) and is_binary(r),
+        not (size?(k, image.kernel_size) and size?(r, image.rootfs_size)) do
+      Logger.warning(
+        "guest image #{image.version} #{image.arch}: its files are gone; fetching again"
+      )
+
+      image |> Ecto.Changeset.change(mirror_state: "pending") |> Repo.update!() |> ensure_mirror()
+    end
+
+    changed()
+    :ok
+  end
+
+  defp size?(path, size), do: match?({:ok, %{size: ^size}}, File.stat(path))
+
+  @doc """
+  Lets go of old releases' files in the control plane's store, keeping
+  each arch's newest #{@keep_mirrored}, its default and any pinned image.
+  The signed manifests stay, so an evicted image can be fetched again.
+  """
+  # sobelow_skip ["Traversal.FileModule"]
+  # Only directories under CREW_IMAGE_DIR named by image ids are removed.
+  def evict_mirrors do
+    store = Path.expand(store_dir())
+    defaults = defaults()
+
+    for arch <- ["arm64", "x64"],
+        images = Enum.filter(list(), &(&1.arch == arch)),
+        {image, i} <- Enum.with_index(images),
+        i >= @keep_mirrored,
+        not image.pinned,
+        image.id != defaults[arch].default,
+        image.mirror_state == "ready",
+        is_binary(image.rootfs_path),
+        String.starts_with?(Path.expand(image.rootfs_path), store <> "/") do
+      File.rm_rf(Path.join(store, image.id))
+
+      image
+      |> Ecto.Changeset.change(mirror_state: "evicted", kernel_path: nil, rootfs_path: nil)
+      |> Repo.update!()
+    end
+
+    changed()
+    :ok
+  end
+
+  @doc "Fetches an evicted (or failed) image's files again. Admins only; audited."
+  def fetch_again(%Crew.Scope{} = scope, %Image{} = image) do
+    if Crew.Scope.admin?(scope) do
+      image =
+        image
+        |> Ecto.Changeset.change(mirror_state: "pending", mirror_error: nil)
+        |> Repo.update!()
+        |> ensure_mirror()
+
+      Crew.Audit.log(scope, "image.fetch", image, %{
+        "version" => image.version,
+        "arch" => image.arch
+      })
+
+      changed()
       {:ok, image}
     else
       {:error, :unauthorized}

@@ -137,6 +137,87 @@ defmodule Crew.Images.ReleaseTest do
     end
   end
 
+  describe "keeping the mirror right" do
+    test "a redirect's body never ends up in the file", %{key: key} do
+      r = release(key)
+      {:ok, image} = Images.register_signed(r.manifest, r.signature)
+
+      Req.Test.stub(Mirror, fn conn ->
+        cond do
+          conn.query_string == "final=1" and String.ends_with?(conn.request_path, ".kernel") ->
+            Plug.Conn.send_resp(conn, 200, r.kernel)
+
+          conn.query_string == "final=1" ->
+            Plug.Conn.send_resp(conn, 200, r.rootfs)
+
+          true ->
+            conn
+            |> Plug.Conn.put_resp_header("location", conn.request_path <> "?final=1")
+            |> Plug.Conn.send_resp(302, "<html>You are being redirected.</html>")
+        end
+      end)
+
+      assert :ok = perform_job(Mirror, %{"image_id" => image.id})
+      image = Repo.reload!(image)
+      assert File.read!(image.kernel_path) == r.kernel
+      assert File.read!(image.rootfs_path) == r.rootfs
+    end
+
+    test "a ready image whose files have gone is fetched again", %{key: key} do
+      r = release(key)
+      {:ok, image} = Images.register_signed(r.manifest, r.signature)
+      serve(r)
+      :ok = perform_job(Mirror, %{"image_id" => image.id})
+      File.rm!(Repo.reload!(image).rootfs_path)
+
+      Images.check_mirrors()
+      assert Repo.reload!(image).mirror_state == "pending"
+      assert_enqueued(worker: Mirror, args: %{"image_id" => image.id})
+      refute Images.defaults()["arm64"].default == image.id
+    end
+
+    test "old releases' files are let go, keeping the newest, the default and the pinned",
+         %{key: key, store: store} do
+      releases =
+        for {v, i} <- Enum.with_index(~w(1.0.0 1.1.0 1.2.0 1.3.0 1.4.0)) do
+          r = release(key, version: v)
+          {:ok, image} = Images.register_signed(r.manifest, r.signature)
+          at = DateTime.add(DateTime.utc_now(), i * 60)
+          {Repo.update!(Ecto.Changeset.change(image, registered_at: at, pinned: v == "1.1.0")), r}
+        end
+
+      # Each mirror lets go of what's past the window once it's done.
+      for {image, r} <- releases do
+        serve(r)
+        :ok = perform_job(Mirror, %{"image_id" => image.id})
+      end
+
+      [{oldest, _}, {pinned, _} | _] = releases
+      Images.evict_mirrors()
+      assert Repo.reload!(oldest).mirror_state == "evicted"
+      refute File.exists?(Path.join(store, oldest.id))
+      assert Repo.reload!(pinned).mirror_state == "ready"
+      assert Enum.count(releases, fn {i, _} -> Repo.reload!(i).mirror_state == "ready" end) == 4
+
+      # Fetching an evicted image again is a mirror like any other.
+      assert {:ok, _} = Images.fetch_again(admin_scope(), Repo.reload!(oldest))
+      assert_enqueued(worker: Mirror, args: %{"image_id" => oldest.id})
+    end
+
+    test "a mirror without room fails before downloading", %{key: key} do
+      r = release(key)
+      {:ok, image} = Images.register_signed(r.manifest, r.signature)
+      Req.Test.stub(Mirror, fn _ -> raise "no download expected" end)
+      Application.put_env(:crew, :image_free_bytes, 10)
+      on_exit(fn -> Application.delete_env(:crew, :image_free_bytes) end)
+
+      assert {:error, reason} = perform_job(Mirror, %{"image_id" => image.id})
+      assert reason =~ "room"
+    end
+  end
+
+  defp admin_scope, do: Crew.Scope.for_user(user_fixture(role: "admin"))
+
   defp register(key, version) do
     r = release(key, version: version)
     Images.register_signed(r.manifest, r.signature)

@@ -89,4 +89,19 @@ defmodule CrewWeb.ImagesLiveTest do
   test "members can't see it" do
     assert get(log_in(build_conn(), user_fixture()), ~p"/admin/images").status == 404
   end
+
+  test "an evicted image can be fetched again", %{conn: conn} do
+    old =
+      image("0.9.0",
+        mirror_state: "evicted",
+        registered_at: DateTime.add(DateTime.utc_now(), -9 * 86_400)
+      )
+
+    {:ok, view, _} = live(conn, ~p"/admin/images")
+    assert has_element?(view, "#image-#{old.id}", "files let go")
+
+    view |> element("#fetch-#{old.id}") |> render_click()
+    assert Repo.reload!(old).mirror_state == "pending"
+    assert has_element?(view, "#image-#{old.id}", "fetching")
+  end
 end

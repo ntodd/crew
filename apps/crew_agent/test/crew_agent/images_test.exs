@@ -287,6 +287,19 @@ defmodule CrewAgent.ImagesTest do
     end
   end
 
+  test "a prepare sweeps other images' abandoned temp dirs, not a live one", ctx do
+    stale = Images.tmp_dir(ctx.config, CrewProtocol.uuid7())
+    live = Images.tmp_dir(ctx.config, CrewProtocol.uuid7())
+    for d <- [stale, live], do: File.mkdir_p!(d) && File.write!(Path.join(d, "rootfs.part"), "x")
+    old = System.os_time(:second) - 3600
+    File.touch!(Path.join(stale, "rootfs.part"), old)
+    File.touch!(stale, old)
+
+    Images.sweep(ctx.config, CrewProtocol.uuid7())
+    refute File.exists?(stale)
+    assert File.exists?(live)
+  end
+
   test "the inventory and ready? never see a prepare in progress", ctx do
     id = CrewProtocol.uuid7()
     tmp = Images.tmp_dir(ctx.config, id)

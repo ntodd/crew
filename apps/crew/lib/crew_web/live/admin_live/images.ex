@@ -47,12 +47,11 @@ defmodule CrewWeb.AdminLive.Images do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event(action, %{"id" => id}, socket) when action in ["pin", "unpin"] do
+  def handle_event(action, %{"id" => id}, socket) when action in ["pin", "unpin", "fetch"] do
     scope = socket.assigns.current_scope
 
     with %{} = image <- Images.get(id),
-         {:ok, _} <-
-           if(action == "pin", do: Images.pin(scope, image), else: Images.unpin(scope, image)) do
+         {:ok, _} <- act(action, scope, image) do
       {:noreply, load(socket)}
     else
       {:error, :not_mirrored} ->
@@ -66,6 +65,10 @@ defmodule CrewWeb.AdminLive.Images do
         {:noreply, socket}
     end
   end
+
+  defp act("pin", scope, image), do: Images.pin(scope, image)
+  defp act("unpin", scope, image), do: Images.unpin(scope, image)
+  defp act("fetch", scope, image), do: Images.fetch_again(scope, image)
 
   # One warning per runner version, naming the arches whose default has it.
   defp stale(arches) do
@@ -165,6 +168,9 @@ defmodule CrewWeb.AdminLive.Images do
                     <.badge :if={image.mirror_state == "failed"} color="rose" size="sm">
                       fetch failed
                     </.badge>
+                    <.badge :if={image.mirror_state == "evicted"} size="sm" variant="outline">
+                      files let go
+                    </.badge>
                   </p>
                   <p class="mt-0.5 text-xs text-ink-3">
                     Runner {image.runner_version} · registered {registered(image.registered_at)}
@@ -184,6 +190,16 @@ defmodule CrewWeb.AdminLive.Images do
                     class="underline-offset-2 hover:underline"
                   >
                     Pin
+                  </button>
+                  <button
+                    :if={image.mirror_state in ["evicted", "failed"]}
+                    id={"fetch-#{image.id}"}
+                    type="button"
+                    phx-click="fetch"
+                    phx-value-id={image.id}
+                    class="underline-offset-2 hover:underline"
+                  >
+                    Fetch again
                   </button>
                   <button
                     :if={image.pinned}

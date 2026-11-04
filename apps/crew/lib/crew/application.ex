@@ -66,6 +66,7 @@ defmodule Crew.Application do
   # placeholder images.
   defp boot_vms do
     if dir = Application.get_env(:crew, :image_release_dir), do: Crew.Images.register_bundle(dir)
+    Crew.Images.check_mirrors()
     # The runner's freshness (§13.1) is checked daily; a new deployment
     # checks at once rather than show nothing for a day.
     if Crew.Images.Runner.releases() == [], do: Oban.insert(Crew.Images.Runner.new(%{}))

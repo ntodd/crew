@@ -102,9 +102,10 @@ defmodule CrewAgent.ReviewFixesTest do
     assert length(vms) <= 1000
     assert {:ok, _} = CrewProtocol.Event.new("box.inventory", %{vms: vms, images: []})
     :ok = VMs.sweep_exited(-1)
-    # (An earlier test's VM can record its exit after the sweep.)
-    left = MapSet.new(VMs.inventory(), & &1.vm_id)
-    refute Enum.any?(ids, &MapSet.member?(left, &1))
+
+    # Only this test's: VMs in other tests can exit meanwhile.
+    ours = MapSet.new(ids)
+    refute Enum.any?(VMs.inventory(), &MapSet.member?(ours, &1.vm_id))
   end
 
   test "on vz, each VM gets its own guest.sock, and it only answers for that VM" do

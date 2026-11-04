@@ -44,7 +44,13 @@ defmodule Crew.ImagesTest do
   test "a box's image.state is recorded, and one for an image the control plane doesn't have is ignored",
        %{box: box, image: image} do
     online(box)
-    agent_event(box, "image.state", %{"image_id" => image.id, "state" => "downloading", "progress" => 40})
+
+    agent_event(box, "image.state", %{
+      "image_id" => image.id,
+      "state" => "downloading",
+      "progress" => 40
+    })
+
     assert Images.box_states()[{box.id, image.id}] == "downloading"
 
     gone = CrewProtocol.uuid7()
