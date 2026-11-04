@@ -169,6 +169,9 @@ defmodule CrewProtocol.LabelsTest do
       assert Labels.parse_runs_on("[self-hosted, crew-m]") == ["self-hosted", "crew-m"]
       assert Labels.parse_runs_on(" [ 'self-hosted', \"crew-l\" ] ") == ["self-hosted", "crew-l"]
       assert Labels.parse_runs_on("") == []
+      assert Labels.parse_runs_on(~s(["self-hosted", "crew-m"])) == ["self-hosted", "crew-m"]
+      assert Labels.parse_runs_on("runs-on: [ 'crew-m' ]") == ["crew-m"]
+      assert Labels.parse_runs_on("runs-on:\n  - crew-m\n  - \"linux\"") == ["crew-m", "linux"]
     end
   end
 end

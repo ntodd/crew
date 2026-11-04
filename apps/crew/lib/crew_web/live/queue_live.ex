@@ -12,6 +12,8 @@ defmodule CrewWeb.QueueLive do
   use CrewWeb, :live_view
 
   alias Crew.{Jobs, Repos, Scheduler, Scope}
+  import Bitwise, only: [<<<: 2]
+
   alias CrewWeb.{Charts, JobStatus}
 
   @refresh_ms 2_000
@@ -30,7 +32,7 @@ defmodule CrewWeb.QueueLive do
       jobs: view.jobs,
       repos: view.repos,
       readable: Repos.readable_ids(socket.assigns.current_scope),
-      series: Jobs.queue_series(),
+      series: Crew.Cache.fetch(:queue_series, chart_cache_ms(), &Jobs.queue_series/0),
       now: DateTime.utc_now()
     )
   end
@@ -55,6 +57,9 @@ defmodule CrewWeb.QueueLive do
     end
   end
 
+  # Every viewer sees the same six hours: read them once per interval.
+  defp chart_cache_ms, do: Application.get_env(:crew, :chart_cache_ms, 30_000)
+
   defp readable?(:all, _repo_id), do: true
   defp readable?(ids, repo_id), do: repo_id in ids
 
@@ -63,6 +68,13 @@ defmodule CrewWeb.QueueLive do
       do: (assigns.repos[repo_id] && assigns.repos[repo_id].full_name) || "–",
       else: "another repo"
   end
+
+  defp reason(assigns, job, reason) do
+    if readable?(assigns.readable, job.repo_id), do: reason, else: JobStatus.masked_reason(reason)
+  end
+
+  # Ids don't carry labels: a repo's custom labels can name it.
+  defp class_id({repo_id, key}), do: "class-#{:erlang.phash2({repo_id, key}, 1 <<< 32)}"
 
   defp wait(job, now), do: JobStatus.format(JobStatus.duration(job.queued_at || job.seen_at, now))
 
@@ -104,7 +116,7 @@ defmodule CrewWeb.QueueLive do
                   <span class="block text-xs text-ink-3">{job.size && job.size.name}</span>
                 <% end %>
                 <span :if={unit.wait_reason || unit.blocked_reason} class="block text-xs text-warning">
-                  {unit.blocked_reason || unit.wait_reason}
+                  {reason(assigns, job, unit.blocked_reason || unit.wait_reason)}
                 </span>
                 <span :if={unit.placed} class="block text-xs text-success">placing now</span>
               </span>
@@ -127,14 +139,41 @@ defmodule CrewWeb.QueueLive do
                 <% else %>
                   <span class="block truncate text-ink-2">a job in another repo</span>
                 <% end %>
-                <span class="block text-xs text-warning">Blocked: {reason}</span>
+                <span class="block text-xs text-warning">Blocked: {reason(assigns, job, reason)}</span>
               </span>
               <span class="tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
             </li>
-            <li :if={@queue.units == [] and @queue.blocked == []} class="px-5 py-4 text-ink-3">
+            <li
+              :if={@queue.units == [] and @queue.blocked == [] and @queue.covered == []}
+              class="px-5 py-4 text-ink-3"
+            >
               Nothing is waiting.
             </li>
           </ol>
+          <div :if={@queue.covered != []} id="covered" class="border-t border-line">
+            <p class="px-5 pt-3 text-xs font-medium text-ink-3">
+              A runner is booting or idle for these; GitHub hands them over.
+            </p>
+            <ul class="divide-y divide-line text-sm">
+              <li
+                :for={id <- @queue.covered}
+                :if={job = @jobs[id]}
+                id={"covered-#{id}"}
+                class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 px-5 py-2.5"
+              >
+                <.icon name="hero-arrow-path" class="size-4 text-ink-3" />
+                <span class="min-w-0">
+                  <%= if readable?(@readable, job.repo_id) do %>
+                    <span class="block truncate text-ink">{job.name}</span>
+                    <span class="block truncate text-xs text-ink-3">{repo_label(assigns, job.repo_id)}</span>
+                  <% else %>
+                    <span class="block truncate text-ink-2">a job in another repo</span>
+                  <% end %>
+                </span>
+                <span class="tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
+              </li>
+            </ul>
+          </div>
         </.panel>
 
         <div class="space-y-4">
@@ -157,21 +196,25 @@ defmodule CrewWeb.QueueLive do
                     {{repo_id, key} = class, c} <-
                       Enum.sort_by(@queue.classes, fn {_, c} -> -c.deficit end)
                   }
-                  id={"class-#{repo_id}-#{Enum.join(key, "-")}"}
+                  id={class_id(class)}
                 >
                   <td class="px-5 py-2">
                     <span class="block truncate text-ink">{repo_label(assigns, repo_id)}</span>
-                    <span class="font-mono text-xs text-ink-3">{Enum.join(key, ", ")}</span>
+                    <span :if={readable?(@readable, repo_id)} class="font-mono text-xs text-ink-3">
+                      {Enum.join(key, ", ")}
+                    </span>
                     <span :if={c.blocked > 0} class="block text-xs text-ink-3">
                       {c.blocked} blocked
                     </span>
                     <span :if={c.stalled} class="block text-xs text-warning">Stalled: GitHub isn't assigning these runners</span>
-                    <span :if={c.backoff} class="block text-xs text-danger">Backing off: {c.last_error}</span>
+                    <span :if={c.backoff} class="block text-xs text-danger">
+                      Backing off{if readable?(@readable, repo_id) and c.last_error,
+                        do: ": #{c.last_error}"}
+                    </span>
                   </td>
                   <td class="px-2 py-2 text-right tabular-nums">{c.demand}</td>
                   <td class="px-2 py-2 text-right tabular-nums">{c.supply}</td>
                   <td class="px-5 py-2 text-right tabular-nums">{c.deficit}</td>
-                  <% _ = class %>
                 </tr>
                 <tr :if={@queue.classes == %{}}>
                   <td colspan="4" class="px-5 py-3 text-ink-3">No demand.</td>

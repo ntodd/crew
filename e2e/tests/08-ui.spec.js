@@ -62,7 +62,7 @@ test("runs by branch, and a run's actions and jobs", async ({page, request}) => 
   await page.goto("/runs")
   await page.locator("#view-stack").click()
   await expect(page).toHaveURL(/view=stack/)
-  const feat = page.locator("#stack-feat-one")
+  const feat = page.locator("[data-branch=\"feat/one\"]")
   await expect(feat.locator("details[data-superseded] summary")).toContainText("1 superseded")
   await shot(page, layer, "runs-stack")
 
@@ -102,5 +102,14 @@ test("Sizes & labels, and the label tester", async ({page}) => {
   await page.locator("input[name=runs_on]").fill("[self-hosted, crew-l-arm64]")
   await expect(page.locator("#tested")).toContainText("Crew job")
   await expect(page.locator("#tested")).toContainText("null-ui")
+  await page.locator("input[name=runs_on]").fill('["self-hosted", "crew-m"]')
+  await expect(page.locator("#tested")).toContainText("Crew job: size m")
   await shot(page, layer, "sizes")
+
+  // Phone-wide, the sizes fit without scrolling sideways.
+  await page.setViewportSize({width: 360, height: 800})
+  await page.goto("/admin/sizes")
+  await expect(page.locator("#sizes")).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+  await shot(page, layer, "sizes-mobile")
 })

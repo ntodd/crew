@@ -62,4 +62,11 @@ defmodule Crew.Scheduler.QueueTest do
     queue = Plan.queue(snapshot(jobs: [job(1), job(2)], class_state: cs))
     assert %{demand: 0, blocked: 2, stalled: true} = queue.classes[{"repo-a", ["crew-m"]}]
   end
+
+  test "jobs held for the fork check show as blocked, though they're not demand" do
+    queue = Plan.queue(snapshot(jobs: [job(1, blocked_reason: "checking fork status")]))
+    assert queue.units == []
+    assert [{"job-1", "checking fork status"}] = queue.blocked
+    assert queue.classes == %{}
+  end
 end

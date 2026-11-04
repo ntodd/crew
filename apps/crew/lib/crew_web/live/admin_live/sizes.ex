@@ -164,7 +164,25 @@ defmodule CrewWeb.AdminLive.Sizes do
 
       <div class="mt-4 grid gap-4 xl:grid-cols-2">
         <.panel id="sizes" title="Sizes" padded={false}>
-          <table class="w-full text-sm">
+          <%!-- Phone-wide, each size is a card; the table needs more room. --%>
+          <ul class="divide-y divide-line text-sm sm:hidden">
+            <li
+              :for={size <- @sizes}
+              id={"size-card-#{size.name}"}
+              class={["px-5 py-3", Size.retired?(size) && "text-ink-3"]}
+            >
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span class="font-mono">crew-{size.name}</span>
+                <.badge :if={size.is_default} color="brand" size="sm">default</.badge>
+                <.badge :if={Size.retired?(size)} size="sm">retired</.badge>
+              </div>
+              <p class="mt-0.5 tabular-nums text-ink-2">
+                {size.vcpus} vCPUs · {gib(size.memory_mib)} GiB · {size.disk_gib} GiB disk
+              </p>
+              <div class="mt-1.5 space-x-3 text-xs"><.size_actions size={size} /></div>
+            </li>
+          </ul>
+          <table class="hidden w-full text-sm sm:table">
             <thead class="text-left text-xs text-ink-3">
               <tr>
                 <th class="px-5 py-2 font-medium">Name</th>
@@ -193,28 +211,7 @@ defmodule CrewWeb.AdminLive.Sizes do
                   {size.disk_gib} GiB
                 </td>
                 <td class="space-x-2 whitespace-nowrap px-5 py-2 text-right text-xs">
-                  <button
-                    :if={!size.is_default and !Size.retired?(size)}
-                    type="button"
-                    phx-click="default"
-                    phx-value-id={size.id}
-                    class="underline-offset-2 hover:underline"
-                  >Make default</button>
-                  <button
-                    :if={!size.is_default and !Size.retired?(size)}
-                    type="button"
-                    phx-click="retire"
-                    phx-value-id={size.id}
-                    data-confirm={"Retire #{size.name}? Jobs asking for it can't run."}
-                    class="text-danger underline-offset-2 hover:underline"
-                  >Retire</button>
-                  <button
-                    :if={Size.retired?(size)}
-                    type="button"
-                    phx-click="unretire"
-                    phx-value-id={size.id}
-                    class="underline-offset-2 hover:underline"
-                  >Unretire</button>
+                  <.size_actions size={size} />
                 </td>
               </tr>
             </tbody>
@@ -260,14 +257,16 @@ defmodule CrewWeb.AdminLive.Sizes do
             for={@new_alias}
             id="new-alias"
             phx-submit="create_alias"
-            class="grid grid-cols-3 gap-3 border-t border-line p-5"
+            class="grid grid-cols-2 gap-3 border-t border-line p-5 sm:grid-cols-3"
           >
-            <.input
-              field={@new_alias[:labels]}
-              label="Labels"
-              placeholder="self-hosted, linux"
-              value={labels_value(@new_alias[:labels].value)}
-            />
+            <div class="col-span-2 sm:col-span-1">
+              <.input
+                field={@new_alias[:labels]}
+                label="Labels"
+                placeholder="self-hosted, linux"
+                value={labels_value(@new_alias[:labels].value)}
+              />
+            </div>
             <.input
               field={@new_alias[:size_id]}
               type="select"
@@ -280,11 +279,42 @@ defmodule CrewWeb.AdminLive.Sizes do
               label="Arch"
               options={[{"any", "any"}, {"arm64", "arm64"}, {"x64", "x64"}]}
             />
-            <div class="col-span-3"><.button type="submit" size="sm">Add alias</.button></div>
+            <div class="col-span-2 sm:col-span-3">
+              <.button type="submit" size="sm">Add alias</.button>
+            </div>
           </.form>
         </.panel>
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :size, :map, required: true
+
+  defp size_actions(assigns) do
+    ~H"""
+    <button
+      :if={!@size.is_default and !Size.retired?(@size)}
+      type="button"
+      phx-click="default"
+      phx-value-id={@size.id}
+      class="underline-offset-2 hover:underline"
+    >Make default</button>
+    <button
+      :if={!@size.is_default and !Size.retired?(@size)}
+      type="button"
+      phx-click="retire"
+      phx-value-id={@size.id}
+      data-confirm={"Retire #{@size.name}? Jobs asking for it can't run."}
+      class="text-danger underline-offset-2 hover:underline"
+    >Retire</button>
+    <button
+      :if={Size.retired?(@size)}
+      type="button"
+      phx-click="unretire"
+      phx-value-id={@size.id}
+      class="underline-offset-2 hover:underline"
+    >Unretire</button>
     """
   end
 

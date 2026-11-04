@@ -611,19 +611,36 @@ defmodule Crew.Jobs do
     step = 300
     ticks = for t <- 0..div(hours * 3600, step), do: DateTime.to_unix(since) + t * step
 
-    jobs =
-      Repo.all(
-        from j in Job,
-          where:
-            j.classification == "ours" and
-              (j.queued_at > ^since or j.gh_state == "queued" or j.started_at > ^since),
-          select: {j.queued_at, [j.started_at, j.completed_at]}
+    # A job was waiting from queued_at until it started, or until it
+    # completed without starting (cancelled in the queue). Any job waiting
+    # inside the window is still queued, started in it, or completed in it
+    # without starting: three indexed reads instead of a scan.
+    ours =
+      from(j in Job,
+        where: j.classification == "ours",
+        select: {j.id, j.queued_at, [j.started_at, j.completed_at]}
       )
 
+    jobs =
+      [
+        where(ours, [j], j.gh_state == "queued"),
+        where(ours, [j], j.started_at > ^since),
+        where(
+          ours,
+          [j],
+          j.gh_state == "completed" and j.completed_at > ^since and is_nil(j.started_at)
+        )
+      ]
+      |> Enum.flat_map(&Repo.all/1)
+      |> Enum.uniq_by(&elem(&1, 0))
+      |> Enum.map(fn {_, from, ends} -> {from, ends} end)
+
+    # Boots are cut off within minutes (§9.2), so an hour's margin before
+    # the window catches every boot that overlaps it.
     vms =
       Repo.all(
         from v in Crew.VMs.VM,
-          where: v.requested_at > ^since or v.state in ["requested", "starting", "booted"],
+          where: v.requested_at > ^DateTime.add(since, -3600),
           select: {v.requested_at, [v.idle_at, v.busy_at, v.failed_at, v.destroyed_at]}
       )
 

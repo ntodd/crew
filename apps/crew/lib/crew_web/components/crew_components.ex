@@ -200,13 +200,14 @@ defmodule CrewWeb.CrewComponents do
   attr :id, :string, default: nil
   attr :class, :any, default: nil
   attr :padded, :boolean, default: true
+  attr :rest, :global
   slot :actions
   slot :subtitle
   slot :inner_block, required: true
 
   def panel(assigns) do
     ~H"""
-    <section id={@id} class={["rounded-xl border border-line bg-raised shadow-xs", @class]}>
+    <section id={@id} class={["rounded-xl border border-line bg-raised shadow-xs", @class]} {@rest}>
       <header
         :if={@title}
         class="flex items-start justify-between gap-4 border-b border-line px-5 py-3.5"

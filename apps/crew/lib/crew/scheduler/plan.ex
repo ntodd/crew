@@ -70,13 +70,20 @@ defmodule Crew.Scheduler.Plan do
   def queue(snap) do
     snap = Map.put(snap, :placements, [])
 
-    jobs =
+    # Jobs held for the fork check aren't demand, but they're waiting,
+    # so they show with the blocked ones.
+    {held, jobs} =
       snap.jobs
       |> Enum.sort_by(&{&1.queued_at, &1.github_id})
-      |> Enum.reject(&(&1.blocked_reason == @checking_fork))
+      |> Enum.split_with(&(&1.blocked_reason == @checking_fork))
 
     {blocked, open} =
       Enum.split_with(Enum.map(jobs, &{&1, static_reason(snap, &1)}), fn {_, r} -> r end)
+
+    shown_blocked =
+      Enum.sort_by(Enum.map(held, &{&1, @checking_fork}) ++ blocked, fn {j, _} ->
+        {j.queued_at, j.github_id}
+      end)
 
     open = Enum.map(open, &elem(&1, 0))
     {covered, units} = units(snap, open)
@@ -120,7 +127,7 @@ defmodule Crew.Scheduler.Plan do
     %{
       units: ordered,
       covered: Enum.map(covered, & &1.id),
-      blocked: for({job, reason} <- blocked, do: {job.id, reason}),
+      blocked: for({job, reason} <- shown_blocked, do: {job.id, reason}),
       classes: classes
     }
   end
