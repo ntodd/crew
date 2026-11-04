@@ -133,7 +133,9 @@ defmodule CrewAgent.VM do
           mirrors: if(ca == "", do: [], else: CrewAgent.Cache.mirrors(config)),
           policy: p.policy,
           size: Map.take(p.size, [:vcpus, :memory_mib, :disk_gib]),
-          labels: p.labels
+          labels: p.labels,
+          # §11.6: only with this box's CREW_CONFORMANCE=1.
+          conformance: CrewAgent.Conformance.payload(config, p.vm_id)
         },
         payload_fetched: false,
         started_ms: now

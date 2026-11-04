@@ -232,5 +232,95 @@ defmodule CrewProtocol.GuestTest do
 
       assert payload["mirrors"] == ["ghcr.io", "registry-1.docker.io"]
     end
+
+    test "carries a conformance object only when it's given one, and only a valid one" do
+      base = %{
+        jit_config: "abc",
+        ca_pem: "",
+        policy: %{fork_prs: "refuse", repo_full_name: "o/r"},
+        size: %{vcpus: 4, memory_mib: 8192, disk_gib: 60},
+        labels: ["crew-m"]
+      }
+
+      refute Map.has_key?(Guest.payload(base), "conformance")
+      refute Map.has_key?(Guest.payload(Map.put(base, :conformance, nil)), "conformance")
+
+      {:ok, c} = Guest.cast_conformance(%{"checks" => ["sizing"]})
+      assert Guest.payload(Map.put(base, :conformance, c))["conformance"] == c
+
+      assert_raise ArgumentError, fn ->
+        Guest.payload(Map.put(base, :conformance, %{"checks" => ["rm -rf /"]}))
+      end
+    end
+  end
+
+  describe "conformance (§11.6)" do
+    @good %{
+      "checks" => ["sizing", "isolation", "api_flood"],
+      "targets" => [%{"label" => "host-ssh", "ip" => "192.168.64.34", "port" => 22}],
+      "reach" => [%{"label" => "guest-api", "ip" => "10.199.0.1", "port" => 7777}],
+      "peers" => ["10.200.0.6"],
+      "foreign_tokens" => [String.duplicate("A", 43)],
+      "listen_port" => 9000,
+      "hold_s" => 30,
+      "ticks" => 50,
+      "console_mib" => 100,
+      "conntrack" => %{"ip" => "10.199.0.1", "port" => 7777, "count" => 2100}
+    }
+
+    test "a valid object comes back as it went in" do
+      assert Guest.cast_conformance(@good) == {:ok, @good}
+      assert {:ok, %{"checks" => []}} = Guest.cast_conformance(%{"checks" => []})
+    end
+
+    test "checks are names from a fixed list: nothing that could be a command" do
+      for bad <- ["rm -rf /", "sizing;id", "../check", "SIZING", "", 1] do
+        assert {:error, _} = Guest.cast_conformance(%{"checks" => [bad]}), inspect(bad)
+      end
+    end
+
+    test "unknown fields are refused, not dropped" do
+      for key <- ["script", "command", "cmd", "env", "args"] do
+        assert {:error, reasons} = Guest.cast_conformance(Map.put(@good, key, "/bin/sh"))
+        assert Enum.any?(reasons, &(&1 =~ key))
+      end
+
+      target = %{"label" => "x", "ip" => "1.2.3.4", "port" => 1, "proto" => "sh"}
+      assert {:error, _} = Guest.cast_conformance(%{"checks" => [], "targets" => [target]})
+    end
+
+    test "addresses must be IPv4, ports and counts in range, labels and tokens plain" do
+      bad = [
+        {"targets", [%{"label" => "x", "ip" => "1.2.3.4; id", "port" => 22}]},
+        {"targets", [%{"label" => "x", "ip" => "::1", "port" => 22}]},
+        {"targets", [%{"label" => "x", "ip" => "1.2.3.4", "port" => 0}]},
+        {"targets", [%{"label" => "x", "ip" => "1.2.3.4", "port" => 65_536}]},
+        {"targets", [%{"label" => "$(id)", "ip" => "1.2.3.4", "port" => 22}]},
+        {"targets", [%{"label" => "x y", "ip" => "1.2.3.4", "port" => 22}]},
+        {"targets", for(i <- 1..65, do: %{"label" => "t#{i}", "ip" => "1.2.3.4", "port" => 1})},
+        {"peers", ["10.200.0.6/30"]},
+        {"peers", ["010.200.0.6"]},
+        {"foreign_tokens", ["tok en"]},
+        {"foreign_tokens", ["short"]},
+        {"listen_port", 80},
+        {"hold_s", 3601},
+        {"hold_s", "30"},
+        {"ticks", -1},
+        {"console_mib", 101},
+        {"conntrack", %{"ip" => "10.199.0.1", "port" => 7777, "count" => 5000}},
+        {"conntrack", %{"ip" => "10.199.0.1", "port" => 7777}}
+      ]
+
+      for {key, value} <- bad do
+        assert {:error, _} = Guest.cast_conformance(Map.put(@good, key, value)),
+               "#{key}: #{inspect(value)}"
+      end
+    end
+
+    test "checks are required, and the object must be an object" do
+      assert {:error, _} = Guest.cast_conformance(%{})
+      assert {:error, _} = Guest.cast_conformance("sizing")
+      assert {:error, _} = Guest.cast_conformance(nil)
+    end
   end
 end
