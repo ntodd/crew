@@ -6,8 +6,6 @@ defmodule Crew.VMs do
   are accepted and the inventory is kept for the box page.
   """
 
-  require Logger
-
   @doc false
   def agent_joined(_box, _join), do: :ok
 

@@ -52,14 +52,20 @@ export async function ensureSetUp(page, host = "crew.tail1234.ts.net") {
 
 // Starts a null-driver agent (apps/crew_agent, dev) enrolled with `token`.
 // Returns the child process; call stopAgent() when done.
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
+
+function hasMise() {
+  return spawnSync("sh", ["-c", "command -v mise"], { stdio: "ignore" }).status === 0
+}
 import { rmSync } from "node:fs"
 
 export function startAgent(token, { name, dataDir, env = {} } = {}) {
   const root = resolve(import.meta.dirname, "../..")
   const dir = dataDir || resolve(root, "tmp/e2e/agent-" + name)
   rmSync(dir, { recursive: true, force: true })
-  const child = spawn("mise", ["exec", "--", "mix", "run", "--no-halt"], {
+  // mise pins the toolchain locally; CI sets it up directly.
+  const [cmd, args] = hasMise() ? ["mise", ["exec", "--", "mix", "run", "--no-halt"]] : ["mix", ["run", "--no-halt"]]
+  const child = spawn(cmd, args, {
     cwd: resolve(root, "apps/crew_agent"),
     env: {
       ...process.env,
