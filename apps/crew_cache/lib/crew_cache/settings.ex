@@ -167,8 +167,13 @@ defmodule CrewCache.Settings do
       {:error, :enoent} ->
         %{}
 
-      other ->
-        Logger.error("ignoring #{@file_name}: #{inspect(other) |> String.slice(0, 200)}")
+      # Never the file itself: it holds the parent's token.
+      {:error, message} when is_binary(message) ->
+        Logger.error("ignoring #{@file_name}: #{message}")
+        %{}
+
+      _ ->
+        Logger.error("ignoring #{@file_name}: it isn't a JSON object of settings")
         %{}
     end
   end
@@ -208,6 +213,31 @@ defmodule CrewCache.Settings do
     publish(state)
     {:noreply, state}
   end
+
+  # Crash reports and :sys.get_status print the state and the last
+  # message ({:apply, params}): neither may show the parent's token.
+  @impl true
+  def format_status(status) do
+    Enum.reduce([:state, :message, :log], status, fn key, status ->
+      if Map.has_key?(status, key), do: Map.update!(status, key, &redact/1), else: status
+    end)
+  end
+
+  defp redact(%_{} = struct), do: struct
+
+  defp redact(%{} = map) do
+    Map.new(map, fn
+      {k, _} when k in ["token", :token] -> {k, "**redacted**"}
+      {k, v} -> {k, redact(v)}
+    end)
+  end
+
+  defp redact(list) when is_list(list), do: Enum.map(list, &redact/1)
+
+  defp redact(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> redact() |> List.to_tuple()
+
+  defp redact(other), do: other
 
   defp save(%{config: config, saved: saved}) do
     path = Path.join(config.dir, @file_name)
