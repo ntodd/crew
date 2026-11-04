@@ -8,6 +8,7 @@
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=firecracker.env
 . "$here/firecracker.env"
 
 dir=${1:?usage: fetch-firecracker.sh DIR [x86_64|aarch64]}
