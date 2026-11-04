@@ -10,6 +10,7 @@
 #                       .manifest.json, .manifest.sig (SIGN=test|release|none)
 #   make check          the checks' and tools' own tests
 #   make lock           re-resolve packages.lock for $(ARCH) (then review the diff)
+#   make smoke          boot the built image on this Mac through crew-vz (macOS only)
 #
 # Variables: ARCH (arm64; x64 once kernel/x64.fragment exists), VERSION
 # (0.1.0-dev), MIX (how to run mix), SIGN, PUBLIC_KEY.
@@ -20,9 +21,10 @@ MIX ?= $(if $(shell command -v mise 2>/dev/null),mise exec -- mix,mix)
 export ARCH VERSION MIX SIGN PUBLIC_KEY
 
 OUT := out/$(ARCH)
+CREW_VZ := ../../native/crew-vz/bin/crew-vz
 
 .PHONY: all builder kernel-config kernel kernel-check kernel-check-test rootfs lock \
-	artifacts check tools tools-test clean
+	artifacts check tools tools-test smoke clean
 
 all: kernel kernel-check rootfs artifacts
 
@@ -39,6 +41,12 @@ tools:
 
 tools-test: tools
 	cd tools && $(MIX) test
+
+# The image as a box will run it: crew-vz daemon, a fake guest API on the
+# VM's guest.sock. Needs `make -C ../../native` (a signed crew-vz).
+smoke: tools
+	cd tools && $(MIX) crew_image.smoke --crew-vz $(abspath $(CREW_VZ)) \
+		--kernel $(abspath $(OUT)/kernel/Image) --rootfs $(abspath $(OUT)/rootfs.ext4) $(SMOKE_ARGS)
 
 clean:
 	rm -rf out work
