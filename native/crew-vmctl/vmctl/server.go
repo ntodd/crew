@@ -168,6 +168,9 @@ func (s *Server) start(ctx context.Context, vmID string, peer Peer) (Response, e
 	if err != nil {
 		return Response{}, err
 	}
+	if err := s.checkIDs(vm.Lease); err != nil {
+		return Response{}, err
+	}
 	st, err := s.status(ctx, vmID)
 	if err != nil {
 		return Response{}, err
@@ -322,6 +325,10 @@ func (s *Server) waitGone(ctx context.Context, vmID string, max time.Duration) e
 // -- the network ---------------------------------------------------------------
 
 func (s *Server) tapAdd(ctx context.Context, l Lease) error {
+	// The tap is the VM's uid's: never someone else's.
+	if err := s.checkIDs(l); err != nil {
+		return err
+	}
 	// A tap left by a VM that's gone (a crash mid-cleanup) is made again,
 	// so it's this lease's, owned by this uid.
 	if err := s.tapDel(ctx, l); err != nil {

@@ -87,7 +87,8 @@ range's capacity less one (16,383 for a /16). `force` is a boolean.
 | `info` | | crew-vmctl's version, Firecracker's (`firecracker --version`) and systemd's, for `driver_version` and the systemd ≥ 252 check. |
 
 Error codes: `bad_request`, `unknown_verb`, `invalid_config`,
-`already_launched`, `not_found`, `busy`, `nft_mismatch`, `failed`.
+`already_launched`, `not_found`, `busy`, `nft_mismatch`, `id_in_use`,
+`failed`.
 
 Two more commands aren't verbs, since no socket request reaches them:
 `crew-vmctl exited <vm_id>` (the unit's `ExecStopPost`) and
@@ -127,12 +128,21 @@ Files under the data directory are opened with
 `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`, so a symlink anywhere in
 `vms/` or `images/` is refused rather than followed.
 
-crew-vmctl then lays out `jail/firecracker/<vm_id>/` (every directory
-root's, 0755):
+Before it lays anything out, `start` (and `tap-add`) checks the VM's
+uid and gid, 200000 + the lease: a user's uid or primary gid or a
+group's gid in `/etc/passwd`, `/etc/group` or Flatcar's
+`/usr/share/baselayout/{passwd,group}`, or an id inside a range in
+`/etc/subuid` or `/etc/subgid`, is refused (`id_in_use`), and so is a
+box whose `/etc/passwd` or `/etc/group` can't be read.
+
+crew-vmctl then lays out `jail/firecracker/<vm_id>/`. `jail/`,
+`jail/firecracker/` and `<vm_id>/` are root's, 0755, and stay so;
+`root/` starts out root's too, and jailer gives it to the VM's uid and
+gid when it sets up the chroot.
 
 | Path | What |
 |---|---|
-| `root/` | jailer's chroot |
+| `root/` | jailer's chroot (the VM's once jailer runs) |
 | `root/rootfs.ext4` | A hard link to the clone, which is given to the VM's uid and gid, 0600 |
 | `root/kernel` | A hard link to the image's kernel |
 | `root/fc.json` | Rebuilt from the checked values: chroot paths, and crew-vmctl's own `logger` (`/fc.log`, `Warning`) and `metrics` (`/fc.metrics`). 0400, the VM's. |
@@ -297,7 +307,9 @@ about 1.9 s after `vm.start`.
 
 - **Users:** `_crewagent` (the agent; its group owns the socket), and
   nothing for VMs: their uids and gids are 200000 + lease, with no
-  passwd entries.
+  passwd entries. The range 200001 to 216383 must be reserved: no user,
+  group or subordinate id range in it, or crew-vmctl refuses the leases
+  that collide.
 - **Directories:** `/srv/crew` root's 0755, `/srv/crew/jail` root's 0755
   (crew-vmctl makes it if it's missing, and refuses one anyone else can
   write); `agent/`, `vms/`, `images/` the agent's.
