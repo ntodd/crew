@@ -116,6 +116,55 @@ defmodule Crew.Scheduler do
     %{queue: queue, jobs: jobs, repos: Map.new(Repos.list(), &{&1.id, &1})}
   end
 
+  @doc """
+  The label tester (§17.3): how a `runs-on` value parses (`crew-m`,
+  `[self-hosted, crew-m]` or a YAML list), and which boxes could hold it.
+  """
+  def label_test(text) do
+    labels = parse_runs_on(text)
+    sizes = Sizes.list()
+
+    result =
+      case labels do
+        [] -> :empty
+        _ -> CrewProtocol.Labels.parse(labels, Sizes.for_parse(), Sizes.aliases_for_parse())
+      end
+
+    boxes =
+      case result do
+        {:ours, %{size_id: size_id, arch: arch}} ->
+          size = Enum.find(sizes, &(&1.id == size_id))
+
+          for b <- snapshot().boxes, Plan.arch_ok?(b, arch), Plan.could_hold?(b, size), do: b.name
+
+        _ ->
+          []
+      end
+
+    %{
+      labels: labels,
+      key: CrewProtocol.Labels.key(labels),
+      result: result,
+      boxes: boxes,
+      sizes: Map.new(sizes, &{&1.id, &1})
+    }
+  end
+
+  defp parse_runs_on(text) do
+    text
+    |> String.replace(~r/^\s*runs-on:\s*/m, "")
+    |> String.replace(["[", "]"], " ")
+    |> String.split(~r/[,\n]/)
+    |> Enum.map(
+      &(&1
+        |> String.trim()
+        |> String.trim_leading("- ")
+        |> String.trim(~s("'))
+        |> String.trim())
+    )
+    |> Enum.reject(&(&1 == ""))
+  end
+
   @doc "What a box offers job VMs (overcommit included), or nil before it reports."
   def capacity(box) do
     case snapshot_box(box) do
