@@ -306,7 +306,9 @@ defmodule Crew.Boxes do
                  type: box.type,
                  arch: params["arch"],
                  data_disk: disk,
-                 ssh_keys: split_keys(params["ssh_keys"])
+                 ssh_keys: split_keys(params["ssh_keys"]),
+                 # Root's copy, for the updates' root half (§20.2).
+                 release_key: Crew.Config.release_public_key()
                }) do
           Audit.log(scope, "box.reprovision_ignition", box, %{"arch" => params["arch"]})
           {:ok, config}
