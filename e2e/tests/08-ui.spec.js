@@ -60,6 +60,7 @@ test("the queue", async ({page}) => {
 test("runs by branch, and a run's actions and jobs", async ({page, request}) => {
   await signIn(page)
   await page.goto("/runs")
+  await connected(page)
   await page.locator("#view-stack").click()
   await expect(page).toHaveURL(/view=stack/)
   const feat = page.locator("[data-branch=\"feat/one\"]")
