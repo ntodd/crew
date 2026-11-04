@@ -8,6 +8,7 @@ defmodule CrewWeb.BoxLive.Show do
   use CrewWeb, :live_view
 
   alias Crew.{Agents, Boxes, Metrics, Operations, Repos, Scheduler, Scope, VMs}
+  alias Crew.Agents.{Releases, Updates}
   alias Crew.Boxes.Flatcar
 
   @impl true
@@ -40,7 +41,10 @@ defmodule CrewWeb.BoxLive.Show do
       readable: Repos.readable_ids(socket.assigns.current_scope),
       ops: Operations.recent_for_box(box.id, 10),
       images: box_images(box.id),
-      overrides: to_form(Boxes.change_overrides(box), as: :box)
+      overrides: to_form(Boxes.change_overrides(box), as: :box),
+      update: Updates.status(box),
+      versions: (Updates.target(box) && Releases.versions(Updates.target(box))) || [],
+      fleet: Updates.target(box) && Releases.fleet_version(Updates.target(box))
     )
   end
 
@@ -117,6 +121,32 @@ defmodule CrewWeb.BoxLive.Show do
     end
   end
 
+  def handle_event("pin_agent", %{"version" => version}, socket) do
+    case Boxes.pin_agent_version(socket.assigns.current_scope, socket.assigns.box, version) do
+      {:ok, box} ->
+        message =
+          if box.desired_agent_version,
+            do: "Pinned #{box.name}'s agent to #{box.desired_agent_version}.",
+            else: "#{box.name}'s agent follows the newest release again."
+
+        {:noreply, socket |> load(box) |> put_flash(:info, message)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        {message, _} = changeset.errors[:desired_agent_version]
+        {:noreply, put_flash(socket, :error, "Can't pin it: #{message}.")}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
+  def handle_event("retry_agent_update", _params, socket) do
+    case Boxes.retry_agent_update(socket.assigns.current_scope, socket.assigns.box) do
+      {:ok, box} -> {:noreply, socket |> load(box) |> put_flash(:info, "Sent the update again.")}
+      {:error, :unauthorized} -> {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
   def handle_event("kill", %{"id" => id}, socket) do
     with %VMs.VM{box_id: box_id} = vm <- VMs.get(id),
          true <- box_id == socket.assigns.box.id,
@@ -146,6 +176,23 @@ defmodule CrewWeb.BoxLive.Show do
     end
   end
 
+  defp update_label(%{state: :current}, _online), do: "Up to date"
+  defp update_label(%{state: :pending, version: v}, true), do: "Update to #{v} is due"
+  defp update_label(%{state: :pending, version: v}, false), do: "Updates to #{v} when it's back"
+  defp update_label(%{state: :updating, version: v}, _online), do: "Installing #{v}"
+  defp update_label(%{state: :restarting, version: v}, _online), do: "Restarting into #{v}"
+  defp update_label(%{state: :blocked, version: v}, _online), do: "#{v} failed twice"
+  defp update_label(%{state: :none, target: nil}, _online), do: "Not joined yet"
+  defp update_label(%{state: :none, target: t}, _online), do: "No release for #{t}"
+
+  defp update_color(:current), do: "emerald"
+  defp update_color(state) when state in [:pending, :updating, :restarting], do: "sky"
+  defp update_color(:blocked), do: "amber"
+  defp update_color(:none), do: "zinc"
+
+  defp pin_options(versions, fleet),
+    do: [{"Follow the newest (#{fleet || "none"})", ""} | Enum.map(versions, &{&1, &1})]
+
   @fields [
     {"vcpus", "vCPUs"},
     {"memory_mib", "Memory (MiB)"},
@@ -169,7 +216,11 @@ defmodule CrewWeb.BoxLive.Show do
 
       <.header>
         {@box.name}
-        <:subtitle>{@box.type} · agent {@box.agent_version || "not joined yet"}</:subtitle>
+        <:subtitle>
+          {@box.type} · agent {@box.agent_version || "not joined yet"}<span :if={
+            @update.state in [:updating, :restarting]
+          }>, updating to {@update.version}</span>
+        </:subtitle>
         <:actions>
           <span id="box-status"><.box_status box={@box} online={@online} /></span>
           <%= if Scope.admin?(@current_scope) do %>
@@ -222,7 +273,78 @@ defmodule CrewWeb.BoxLive.Show do
         </:actions>
       </.callout>
 
+      <.callout :if={@update.state == :blocked} id="agent-update-failed" kind="warning">
+        <p class="font-medium">
+          Agent {@update.version} didn't take on this box twice, so it isn't sent again.
+        </p>
+        <p class="mt-0.5">
+          The box went back to {@box.agent_version}.<span :if={@update.error}> Last time: {@update.error}</span>
+        </p>
+        <:actions :if={Scope.admin?(@current_scope)}>
+          <.button
+            id="retry-agent-update"
+            size="sm"
+            phx-click="retry_agent_update"
+            data-confirm={"Send agent #{@update.version} to #{@box.name} again?"}
+          >
+            Retry
+          </.button>
+        </:actions>
+      </.callout>
+
       <div class="grid gap-4 lg:grid-cols-2">
+        <.panel id="agent" title="Agent">
+          <:subtitle>
+            Updates follow the newest release for the box's target unless an admin pins one (§20.2).
+          </:subtitle>
+          <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+            <dt class="text-ink-2">Running</dt>
+            <dd id="agent-running" class="text-right tabular-nums text-ink">
+              {@box.agent_version || "–"}<span :if={@update.target} class="text-ink-3"> · {@update.target}</span>
+            </dd>
+            <dt class="text-ink-2">{if @update.pinned, do: "Pinned to", else: "Follows"}</dt>
+            <dd id="agent-target" class="text-right tabular-nums text-ink">
+              {@update.version || "no release yet"}
+            </dd>
+          </dl>
+          <div class="mt-4 flex flex-wrap items-center gap-2">
+            <span id="agent-update-state">
+              <.badge
+                color={update_color(@update.state)}
+                dot
+                pulse={@update.state in [:updating, :restarting]}
+              >
+                {update_label(@update, @online)}
+              </.badge>
+            </span>
+            <span
+              :if={@update.error && @update.state != :blocked}
+              id="agent-update-error"
+              class="text-xs text-danger"
+            >
+              Last update: {@update.error}
+            </span>
+          </div>
+          <form
+            :if={Scope.admin?(@current_scope) and @versions != []}
+            id="pin-agent"
+            phx-submit="pin_agent"
+            class="mt-4 flex flex-wrap items-end gap-x-3"
+          >
+            <div class="w-full sm:w-64">
+              <.input
+                type="select"
+                name="version"
+                id="pin-agent-version"
+                label="Agent version"
+                value={@box.desired_agent_version || ""}
+                options={pin_options(@versions, @fleet)}
+              />
+            </div>
+            <div class="mb-3"><.button type="submit" size="sm">Save</.button></div>
+          </form>
+        </.panel>
+
         <.panel id="capabilities" title="Capabilities">
           <:subtitle>Pinned at enrollment; placement uses these.</:subtitle>
           <dl :if={@box.pinned_capabilities} class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">

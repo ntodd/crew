@@ -66,6 +66,9 @@ defmodule Crew.Agents do
     # Its cache gets the deployment's config (§15.8), rotating its CA if
     # a rotation happened while it was away.
     Crew.Caches.push(box.id)
+    # The version it joined on settles an update under way, and a box
+    # behind its target version gets one (§20.2).
+    Crew.Agents.Updates.joined(box, join)
     :ok
   end
 

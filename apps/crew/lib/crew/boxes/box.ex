@@ -17,6 +17,7 @@ defmodule Crew.Boxes.Box do
     field :failed_agent_version, :string
     field :update_state, :map
     field :os, :string
+    field :arch, :string
     field :capabilities, :map
     field :pinned_capabilities, :map
     field :needs_approval, :boolean, default: false
