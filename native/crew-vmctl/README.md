@@ -80,15 +80,16 @@ range's capacity less one (16,383 for a /16). `force` is a boolean.
 | `list` | | Every `crew-vm-*` unit systemd knows. |
 | `tap-add` / `tap-del` | `lease_index` | `crewt<n>`, owned by uid and gid 200000 + n, with `<gateway>/30`, `disable_ipv6=1` and `rp_filter=1` (set before the link is up). `tap-add` makes a leftover tap again. |
 | `pair-add` / `pair-del` | `lease_index` | `crewt<n> . <guest>` in `inet crew`'s `vm_pairs`. Deleting one that's gone is fine. |
-| `nft-verify` | | Compares the loaded rules with the shipped ones (below). `nft_mismatch` on any difference. |
+| `nft-verify` | | Compares the loaded rules with the shipped ones (below): `nft_mismatch` on any difference. Then checks that `site4` holds everything crew-net puts there (more is fine): `site4_not_ready` if not. Answers `site4: {egress, prefixes}`, the egress address in it if crew-vmctl knows one. It only looks. |
+| `site4` | | Refills `site4` now, as crew-net's timer does. The agent asks when it learns a new egress address. |
 | `reboot` | `boot_id`, `force` | `already: true` if the box is on another boot. Without `force`, `busy` while any `crew-vm-*` unit is live. Then `systemd-run --on-active=5 systemctl reboot`. |
 | `cleanup` | `vm_id` | SIGKILLs a live unit and waits for it, removes the pair and tap of the lease recorded at start, moves `console.log`, `fc.stderr` and `fc.log` into `vms/<vm_id>/` and removes the jail directory. Idempotent; fine for a VM that never started. |
 | `restart-cache` | | `systemctl restart --no-block crew-cache.service` (§20.2). |
 | `info` | | crew-vmctl's version, Firecracker's (`firecracker --version`) and systemd's, for `driver_version` and the systemd ≥ 252 check. |
 
 Error codes: `bad_request`, `unknown_verb`, `invalid_config`,
-`already_launched`, `not_found`, `busy`, `nft_mismatch`, `id_in_use`,
-`failed`.
+`already_launched`, `not_found`, `busy`, `nft_mismatch`,
+`site4_not_ready`, `id_in_use`, `failed`.
 
 Two more commands aren't verbs, since no socket request reaches them:
 `crew-vmctl exited <vm_id>` (the unit's `ExecStopPost`) and
@@ -210,11 +211,19 @@ The exit record:
    while VMs run);
 7. site4.
 
-`crew-vmctl site4` (every 10 minutes) flushes and refills `site4` in one
-nft transaction: the uplink's connected subnets, the egress address the
-agent learned (`agent/egress4`, one IPv4 address) and `CREW_EXTRA_BLOCKED`.
-A prefix inside another is left out, since nft refuses overlapping
-intervals.
+`crew-vmctl site4` (every 10 minutes, and the `site4` verb) flushes and
+refills `site4` in one nft transaction: the uplink's connected subnets,
+the egress address the agent learned (`agent/egress4`, one IPv4 address)
+and `CREW_EXTRA_BLOCKED`. A prefix inside another is left out, since nft
+refuses overlapping intervals.
+
+crew-vmctl keeps the last valid egress address it read in
+`/run/crew/egress4` (root's). When `agent/egress4` is missing or isn't
+one IPv4 address, that one stays in `site4` rather than being dropped.
+At boot crew-net runs before the agent has asked the echo service, so
+`site4` starts with the address the agent wrote before the reboot
+(`agent/egress4` is on the data disk), if any; the agent asks for a
+refill as soon as it learns one.
 
 `agent/env` is the agent's file, so crew-net parses it for exactly
 `CREW_UPLINK` and `CREW_EXTRA_BLOCKED`, and never hands it to systemd as

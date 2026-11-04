@@ -114,6 +114,7 @@ func (f *fakeSys) ReadFile(path string, _ int64) ([]byte, error) {
 
 func (f *fakeSys) WriteFile(path string, data []byte) error {
 	f.wrote[path] = string(data)
+	f.root[path] = data
 	return nil
 }
 
@@ -435,35 +436,17 @@ func TestCleanup(t *testing.T) {
 }
 
 func TestNftVerify(t *testing.T) {
-	ref := ruleset.Listing{Nft: mustRead(t, "../ruleset/testdata/nft-1.1.6-clean.json"),
-		Mangle: string(mustRead(t, "../ruleset/testdata/iptables-1.8.13-mangle.save"))}
-	host := func(nft string) func(argv []string) (string, error) {
-		return func(argv []string) (string, error) {
-			switch argv[0] {
-			case "nft":
-				return nft, nil
-			case "iptables-nft-save":
-				return ref.Mangle, nil
-			}
-			return "", nil
-		}
-	}
-	sys := newFake()
-	sys.ref = ref
-	sys.root["/run/crew/uplink"] = []byte("eth0\n")
-	sys.answer = host(string(mustRead(t, "../ruleset/testdata/nft-1.1.6-busy.json")))
-	if r := handle(t, server(t, sys, time.Now()), `{"verb":"nft-verify"}`); !r.OK {
+	sys := newBox(t)
+	if r := handle(t, server(t, sys.fakeSys, time.Now()), `{"verb":"nft-verify"}`); !r.OK {
 		t.Fatalf("%+v", r)
 	}
 	if !sys.ran("nft", "-j", "list", "table", "inet", "crew") || !sys.ran("iptables-nft-save", "-t", "mangle") {
 		t.Fatalf("%q", sys.cmds)
 	}
 
-	tampered := newFake()
-	tampered.ref = ref
-	tampered.root["/run/crew/uplink"] = []byte("eth0\n")
-	tampered.answer = host(strings.Replace(string(ref.Nft), `"policy": "drop"`, `"policy": "accept"`, 1))
-	r := handle(t, server(t, tampered, time.Now()), `{"verb":"nft-verify"}`)
+	tampered := newBox(t)
+	tampered.table = strings.Replace(tampered.table, `"policy": "drop"`, `"policy": "accept"`, 1)
+	r := handle(t, server(t, tampered.fakeSys, time.Now()), `{"verb":"nft-verify"}`)
 	if r.OK || r.Error != ErrNftMismatch || !strings.Contains(r.Detail, "chain forward") {
 		t.Fatalf("%+v", r)
 	}

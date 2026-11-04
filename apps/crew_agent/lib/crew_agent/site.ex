@@ -16,6 +16,7 @@ defmodule CrewAgent.Site do
   require Logger
 
   alias CrewAgent.Config
+  alias CrewAgent.Driver.Firecracker
 
   @every_ms 10 * 60_000
   @crew_ranges ["10.199.0.0/16"]
@@ -99,25 +100,48 @@ defmodule CrewAgent.Site do
 
   @doc """
   Keeps the egress address. On a Firecracker box crew-net fills the
-  kernel's site4 from it (`crew-vmctl site4`, every 10 minutes), so it's
-  also written to `agent/egress4`.
+  kernel's site4 from it, so it's also written to `agent/egress4`, and a
+  new one is loaded at once (`crew-vmctl site4`) rather than at
+  crew-net's next refill.
   """
   def record_egress(config, ip) do
+    changed = egress() != ip
     :persistent_term.put({__MODULE__, :egress}, ip)
 
-    if config.driver == "firecracker" do
+    if config.driver == "firecracker" and changed do
       dir = Config.agent_dir(config)
       File.mkdir_p!(dir)
-      CrewAgent.SafeFS.write_atomic(Path.join(dir, "egress4"), ip <> "\n", 0o644)
+      :ok = CrewAgent.SafeFS.write_atomic(egress_file(config), ip <> "\n", 0o644)
+
+      with {:error, why} <- Firecracker.refresh_site4() do
+        Logger.warning("site4 wasn't refilled with the new egress address: #{why}")
+      end
     end
 
     :ok
   end
 
+  @doc """
+  The egress address the agent wrote before it restarted (Firecracker),
+  so site4 can be held to it before the echo service answers again.
+  """
+  def load_egress(config) do
+    with "firecracker" <- config.driver,
+         {:ok, body} <- File.read(egress_file(config)),
+         ip when is_binary(ip) <- parse_egress(body) do
+      :persistent_term.put({__MODULE__, :egress}, ip)
+    end
+
+    :ok
+  end
+
+  defp egress_file(config), do: Path.join(Config.agent_dir(config), "egress4")
+
   # -- the egress address --------------------------------------------------------
 
   @impl true
   def init(_) do
+    load_egress(Config.get())
     send(self(), :check)
     {:ok, nil}
   end

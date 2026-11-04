@@ -7,10 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -67,13 +65,14 @@ type Server struct {
 
 // Response is the one line written back.
 type Response struct {
-	OK      bool      `json:"ok"`
-	Error   string    `json:"error,omitempty"`
-	Detail  string    `json:"detail,omitempty"`
-	VM      *VMStatus `json:"vm,omitempty"`
-	VMs     []string  `json:"vms,omitempty"`
-	Already bool      `json:"already,omitempty"`
-	Info    *Info     `json:"info,omitempty"`
+	OK      bool         `json:"ok"`
+	Error   string       `json:"error,omitempty"`
+	Detail  string       `json:"detail,omitempty"`
+	VM      *VMStatus    `json:"vm,omitempty"`
+	VMs     []string     `json:"vms,omitempty"`
+	Already bool         `json:"already,omitempty"`
+	Info    *Info        `json:"info,omitempty"`
+	Site4   *Site4Status `json:"site4,omitempty"`
 }
 
 // VMStatus is a VM's unit, and how it ended once it has.
@@ -134,7 +133,10 @@ func (s *Server) handle(ctx context.Context, r Request, peer Peer) (Response, er
 	case "pair-del":
 		return Response{}, s.pairDel(ctx, r.Lease)
 	case "nft-verify":
-		return Response{}, s.nftVerify(ctx)
+		st, err := s.nftVerify(ctx)
+		return Response{Site4: st}, err
+	case "site4":
+		return Response{}, s.RefreshSite4(ctx)
 	case "reboot":
 		return s.reboot(ctx, r.BootID, r.IsForce())
 	case "cleanup":
@@ -386,7 +388,16 @@ func (s *Server) uplink() (string, error) {
 	return up, nil
 }
 
-func (s *Server) nftVerify(ctx context.Context) error {
+// nftVerify holds the loaded packet filter to the shipped one, and site4
+// to what crew-net puts in it. It only looks.
+func (s *Server) nftVerify(ctx context.Context) (*Site4Status, error) {
+	if err := s.verifyRuleset(ctx); err != nil {
+		return nil, err
+	}
+	return s.site4Ready(ctx)
+}
+
+func (s *Server) verifyRuleset(ctx context.Context) error {
 	up, err := s.uplink()
 	if err != nil {
 		return err
@@ -498,93 +509,6 @@ func (s *Server) agentEnv() map[string]string {
 		out[k] = strings.Trim(strings.TrimSpace(v), `"'`)
 	}
 	return out
-}
-
-// Site4 is the set crew-net keeps in site4 (§14.2): the uplink's
-// connected subnets, the site's egress address (the agent's
-// agent/egress4) and CREW_EXTRA_BLOCKED. A prefix inside another is left
-// out, since nft refuses overlapping intervals.
-func (s *Server) Site4(ctx context.Context) ([]string, error) {
-	up, err := s.uplink()
-	if err != nil {
-		return nil, err
-	}
-	var prefixes []netip.Prefix
-	out, err := s.Sys.Run(ctx, nil, "ip", "-j", "-4", "addr", "show", "dev", up)
-	if err != nil {
-		return nil, err
-	}
-	var links []struct {
-		AddrInfo []struct {
-			Family    string `json:"family"`
-			Local     string `json:"local"`
-			PrefixLen int    `json:"prefixlen"`
-		} `json:"addr_info"`
-	}
-	if err := json.Unmarshal(out, &links); err != nil {
-		return nil, fmt.Errorf("ip addr: %w", err)
-	}
-	for _, l := range links {
-		for _, a := range l.AddrInfo {
-			if p, err := netip.ParsePrefix(fmt.Sprintf("%s/%d", a.Local, a.PrefixLen)); err == nil && p.Addr().Is4() {
-				prefixes = append(prefixes, p.Masked())
-			}
-		}
-	}
-	if body, err := s.Sys.ReadFile(s.Paths.Egress(), 64); err == nil {
-		if a, err := netip.ParseAddr(strings.TrimSpace(string(body))); err == nil && a.Is4() {
-			prefixes = append(prefixes, netip.PrefixFrom(a, 32))
-		}
-	}
-	for _, c := range strings.Split(s.agentEnv()["CREW_EXTRA_BLOCKED"], ",") {
-		if p, err := netip.ParsePrefix(strings.TrimSpace(c)); err == nil && p.Addr().Is4() {
-			prefixes = append(prefixes, p.Masked())
-		}
-	}
-	return disjoint(prefixes), nil
-}
-
-func disjoint(ps []netip.Prefix) []string {
-	// Widest first, so a prefix inside one already kept is skipped.
-	sort.Slice(ps, func(i, j int) bool {
-		if ps[i].Bits() != ps[j].Bits() {
-			return ps[i].Bits() < ps[j].Bits()
-		}
-		return ps[i].Addr().Less(ps[j].Addr())
-	})
-	var kept []netip.Prefix
-	for _, p := range ps {
-		inside := false
-		for _, k := range kept {
-			if k.Contains(p.Addr()) {
-				inside = true
-				break
-			}
-		}
-		if !inside {
-			kept = append(kept, p)
-		}
-	}
-	sort.Slice(kept, func(i, j int) bool { return kept[i].Addr().Less(kept[j].Addr()) })
-	out := make([]string, len(kept))
-	for i, p := range kept {
-		out[i] = p.String()
-	}
-	return out
-}
-
-// RefreshSite4 flushes and refills site4 in one nft transaction.
-func (s *Server) RefreshSite4(ctx context.Context) error {
-	set, err := s.Site4(ctx)
-	if err != nil {
-		return err
-	}
-	script := "flush set inet crew site4\n"
-	if len(set) > 0 {
-		script += "add element inet crew site4 { " + strings.Join(set, ", ") + " }\n"
-	}
-	_, err = s.Sys.Run(ctx, []byte(script), "nft", "-f", "-")
-	return err
 }
 
 // -- the box -----------------------------------------------------------------------

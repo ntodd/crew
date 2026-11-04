@@ -70,24 +70,30 @@ defmodule CrewAgent.FirecrackerKVMTest do
   end
 
   defp start(ctx, overrides \\ %{}) do
-    cmd =
-      start_command(
-        Map.merge(
-          %{
-            "size" => %{"vcpus" => 2, "memory_mib" => 1024, "disk_gib" => 10},
-            "image" => %{
-              "id" => ctx.image_id,
-              "version" => "0.0.0-dev",
-              "arch" => ctx.arch,
-              "manifest_sha256" => String.duplicate("0", 64)
-            }
-          },
-          overrides
-        )
-      )
-
+    cmd = command(ctx, overrides)
     assert :ok = Handler.handle(cmd)
     cmd.payload.vm_id
+  end
+
+  defp command(ctx, overrides \\ %{}) do
+    start_command(
+      Map.merge(
+        %{
+          "size" => %{"vcpus" => 2, "memory_mib" => 1024, "disk_gib" => 10},
+          "image" => image(ctx)
+        },
+        overrides
+      )
+    )
+  end
+
+  defp image(ctx) do
+    %{
+      "id" => ctx.image_id,
+      "version" => "0.0.0-dev",
+      "arch" => ctx.arch,
+      "manifest_sha256" => String.duplicate("0", 64)
+    }
   end
 
   defp lease(ctx, vm_id) do
@@ -129,6 +135,25 @@ defmodule CrewAgent.FirecrackerKVMTest do
         do: assert(f in caps.features, "missing #{f}")
 
     assert {:ok, _} = CrewProtocol.Event.new("box.capabilities", caps)
+  end
+
+  test "with an echo service, VMs wait for site4 to hold the egress address, which is loaded at once",
+       ctx do
+    Application.put_env(:crew_agent, :egress_echo_url, "https://echo.invalid")
+    :persistent_term.erase({CrewAgent.Site, :egress})
+    refute Monitor.verify()
+
+    cmd = command(ctx)
+    assert {:error, "start_failed", why} = Handler.handle(cmd)
+    assert why =~ "firewall_not_ready"
+
+    CrewAgent.Site.record_egress(ctx.config, "198.51.100.77")
+    assert Monitor.verify()
+    assert Monitor.status().site4_egress == "198.51.100.77"
+  after
+    Application.delete_env(:crew_agent, :egress_echo_url)
+    :persistent_term.erase({CrewAgent.Site, :egress})
+    Monitor.reset()
   end
 
   test "a real VM boots and fetches its payload, then powers off by itself", ctx do

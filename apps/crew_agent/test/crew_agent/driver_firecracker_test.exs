@@ -41,11 +41,14 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     }
 
     Config.put(config)
-    :persistent_term.erase({Monitor, :firewall_ok})
+    Monitor.reset()
+    :persistent_term.erase({CrewAgent.Site, :egress})
 
     on_exit(fn ->
       Config.put(base)
-      :persistent_term.erase({Monitor, :firewall_ok})
+      Monitor.reset()
+      :persistent_term.erase({CrewAgent.Site, :egress})
+      Application.delete_env(:crew_agent, :egress_echo_url)
       File.rm_rf!(root)
     end)
 
@@ -97,12 +100,15 @@ defmodule CrewAgent.Driver.FirecrackerTest do
   end
 
   describe "start" do
-    test "adds the tap and the pair, writes fc.json and starts the unit, in that order", ctx do
+    test "verifies the filter, adds the tap and the pair, writes fc.json and starts the unit, in that order",
+         ctx do
       vmctl(ctx)
       spec = spec(ctx.config)
       assert :ok = Firecracker.start(spec)
 
+      # Before the monitor's first verdict, the start asks for one.
       assert [
+               %{"verb" => "nft-verify"},
                %{"verb" => "tap-add", "lease_index" => 3},
                %{"verb" => "pair-add", "lease_index" => 3},
                %{"verb" => "start", "vm_id" => vm_id}
@@ -184,7 +190,8 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     end
 
     test "with crew-vmctl down, it fails rather than hangs", ctx do
-      assert {:error, "unreachable: " <> _} = Firecracker.start(spec(ctx.config))
+      assert {:error, "firewall_not_ready: unreachable: " <> _} =
+               Firecracker.start(spec(ctx.config))
     end
   end
 
@@ -364,6 +371,114 @@ defmodule CrewAgent.Driver.FirecrackerTest do
       {:ok, caps} = Firecracker.capabilities()
       refute caps.firewall_ok
       assert caps.driver_version == "unknown"
+    end
+  end
+
+  describe "site4's egress address (§14.2)" do
+    defp verified(egress) do
+      fn
+        %{"verb" => "nft-verify"} ->
+          %{"ok" => true, "site4" => %{"egress" => egress, "prefixes" => []}}
+
+        %{"verb" => "site4"} ->
+          %{"ok" => true}
+
+        %{"verb" => "info"} ->
+          %{
+            "ok" => true,
+            "info" => %{"vmctl" => "x", "firecracker" => "1.17.0", "systemd" => 260}
+          }
+
+        _ ->
+          %{"ok" => true}
+      end
+    end
+
+    test "a new address is written for crew-net and loaded at once", ctx do
+      vmctl(ctx, verified(nil))
+      CrewAgent.Site.record_egress(ctx.config, "198.51.100.20")
+      assert File.read!(Path.join([ctx.data, "agent", "egress4"])) == "198.51.100.20\n"
+      assert [%{"verb" => "site4"} | _] = FakeVmctl.requests()
+
+      # The same address again changes nothing.
+      CrewAgent.Site.record_egress(ctx.config, "198.51.100.20")
+      assert FakeVmctl.requests() == []
+    end
+
+    test "the agent knows it again after a restart", ctx do
+      File.write!(Path.join([ctx.data, "agent", "egress4"]), "198.51.100.20\n")
+      CrewAgent.Site.load_egress(ctx.config)
+      assert CrewAgent.Site.egress() == "198.51.100.20"
+
+      :persistent_term.erase({CrewAgent.Site, :egress})
+      File.write!(Path.join([ctx.data, "agent", "egress4"]), "garbage\n")
+      CrewAgent.Site.load_egress(ctx.config)
+      assert CrewAgent.Site.egress() == nil
+    end
+
+    test "with an echo service, no VM starts until site4 holds the egress address", ctx do
+      Application.put_env(:crew_agent, :egress_echo_url, "https://echo.invalid")
+      vmctl(ctx, verified(nil))
+
+      # Not learned yet.
+      assert {:error, "firewall_not_ready: " <> why} = Firecracker.start(spec(ctx.config))
+      assert why =~ "egress"
+      refute Enum.any?(FakeVmctl.requests(), &(&1["verb"] in ["tap-add", "start"]))
+      {:ok, caps} = Firecracker.capabilities()
+      refute caps.firewall_ok
+      refute "site4_egress" in caps.features
+    end
+
+    test "site4 holding another address is refreshed, then checked again", ctx do
+      Application.put_env(:crew_agent, :egress_echo_url, "https://echo.invalid")
+      :persistent_term.put({CrewAgent.Site, :egress}, "198.51.100.20")
+      loaded = :counters.new(1, [])
+
+      vmctl(ctx, fn
+        %{"verb" => "site4"} ->
+          :counters.put(loaded, 1, 1)
+          %{"ok" => true}
+
+        %{"verb" => "nft-verify"} ->
+          egress = if :counters.get(loaded, 1) == 1, do: "198.51.100.20", else: "203.0.113.9"
+          %{"ok" => true, "site4" => %{"egress" => egress, "prefixes" => []}}
+
+        req ->
+          verified(nil).(req)
+      end)
+
+      assert Monitor.verify()
+      assert ["nft-verify", "site4", "nft-verify"] = Enum.map(FakeVmctl.requests(), & &1["verb"])
+      {:ok, caps} = Firecracker.capabilities()
+      assert caps.firewall_ok and "site4_egress" in caps.features
+      assert :ok = Firecracker.start(spec(ctx.config))
+    end
+
+    test "site4 that isn't loaded is loaded, then checked again", ctx do
+      tries = :counters.new(1, [])
+
+      vmctl(ctx, fn
+        %{"verb" => "nft-verify"} ->
+          :counters.add(tries, 1, 1)
+
+          if :counters.get(tries, 1) == 1,
+            do: %{"ok" => false, "error" => "site4_not_ready", "detail" => "site4 is missing x"},
+            else: %{"ok" => true, "site4" => %{"prefixes" => []}}
+
+        req ->
+          verified(nil).(req)
+      end)
+
+      assert Monitor.verify()
+      assert ["nft-verify", "site4", "nft-verify"] = Enum.map(FakeVmctl.requests(), & &1["verb"])
+    end
+
+    test "without an echo service the capabilities say site4 has no egress address", ctx do
+      vmctl(ctx, verified(nil))
+      {:ok, caps} = Firecracker.capabilities()
+      assert caps.firewall_ok
+      assert "no_egress_echo" in caps.features
+      refute "site4_egress" in caps.features
     end
   end
 
