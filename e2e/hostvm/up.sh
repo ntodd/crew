@@ -7,11 +7,17 @@
 # the mac-vm launcher does (spec §12.3): the image's own kernel, an ISO.
 #
 #   make -C native hostvm-dev && e2e/hostvm/up.sh
+#
+# HOSTVM_DIR (tmp/hostvm), HOSTVM_IGNITION (a config to stage instead of
+# the dev one: SSH for core only), HOSTVM_MAC, HOSTVM_CPUS and
+# HOSTVM_MEMORY_MIB pick another box; the Flatcar images are shared.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 bin="$root/native/hostvm-dev/hostvm-dev"
-mkdir -p "$root/tmp/hostvm/images"
-cd "$root/tmp/hostvm"
+state="${HOSTVM_DIR:-$root/tmp/hostvm}"
+mkdir -p "$root/tmp/hostvm/images" "$state"
+[ "$state" = "$root/tmp/hostvm" ] || ln -sfn "$root/tmp/hostvm/images" "$state/images"
+cd "$state"
 
 # Flatcar stable, pinned with the digests from the release's signed
 # DIGESTS files (as Foreman's mac.sh pins them).
@@ -29,15 +35,19 @@ fetch flatcar_production_image.bin.bz2 "$image_sha512"
 fetch flatcar_production_image.vmlinuz "$kernel_sha512"
 verity=6ae5c5ebc899cb7e26ff0cf052d73929ebb0340d53d537c96a4957eafa5184f4
 usr_a=7130c94a-213a-4e5a-8e26-6cce9662f132
-mac=52:54:00:c7:e0:01
+mac="${HOSTVM_MAC:-52:54:00:c7:e0:01}"
 
 [ -f id_ed25519 ] || ssh-keygen -q -t ed25519 -N "" -C crew-hostvm-dev -f id_ed25519
 if [ ! -f os.img ]; then
   rm -rf cfg && mkdir cfg
-  key=$(cat id_ed25519.pub)
-  cat > cfg/config.ign <<IGN
+  if [ -n "${HOSTVM_IGNITION:-}" ]; then
+    cp "$HOSTVM_IGNITION" cfg/config.ign
+  else
+    key=$(cat id_ed25519.pub)
+    cat > cfg/config.ign <<IGN
 {"ignition":{"version":"3.4.0"},"passwd":{"users":[{"name":"core","sshAuthorizedKeys":["$key"]}]}}
 IGN
+  fi
   cat > cfg/prep.sh <<'PREP'
 #!/bin/sh
 set -eu
@@ -63,4 +73,5 @@ PREP
   [ -f data.img ] || truncate -s 100g data.img
 fi
 rm -f serial.log
-exec "$bin" -disk os.img -disk data.img -serial serial.log -efi-vars efi-vars -cpus 8 -memory 16384 -nested -mac "$mac"
+exec "$bin" -disk os.img -disk data.img -serial serial.log -efi-vars efi-vars \
+  -cpus "${HOSTVM_CPUS:-8}" -memory "${HOSTVM_MEMORY_MIB:-16384}" -nested -mac "$mac"
