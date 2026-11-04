@@ -322,7 +322,10 @@ sudo CREW_REAL_IMAGE_DIR=/srv/crew/kvm-image native/crew-vmctl/kvm/run.sh   # --
   script refuses an `agent/` or `root/` it didn't make.
 - It fetches and checks the pinned Firecracker, builds crew-vmctl,
   installs both into `root/kvm-test` with `root/current` linking to it,
-  and the units (runtime units in `/run/systemd/system`,
+  checks the units with `systemd-analyze verify` in one boot transaction
+  (a target that wants them with `sockets.target` and `basic.target`;
+  any output fails the run, so an ordering cycle between them does),
+  and installs the units (runtime units in `/run/systemd/system`,
   with the socket's group root, since the tests run as root), starts
   crew-net and the socket, runs the suite, checks the host for anything
   left (units, taps, `vm_pairs` elements, jails) and takes it all down.
