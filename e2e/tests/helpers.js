@@ -17,6 +17,12 @@ export async function setTheme(page, theme) {
   }, theme)
 }
 
+// A LiveView ignores clicks and form changes until its socket is up,
+// which on a slow machine can be well after the page has loaded.
+export async function connected(page) {
+  await page.locator("[data-phx-main].phx-connected").waitFor()
+}
+
 export async function fakeState(request) {
   return (await request.get(`${fake}/__fake/state`)).json()
 }
@@ -96,6 +102,7 @@ export function stopAgent(child) {
 
 export async function addBox(page, name, type = "mac-vz") {
   await page.goto("/boxes/new")
+  await connected(page)
   await page.getByLabel("Name").fill(name)
   await page.locator(`input[name="box[box_type]"][value="${type}"]`).check()
   await page.getByRole("button", { name: "Create join token" }).click()
