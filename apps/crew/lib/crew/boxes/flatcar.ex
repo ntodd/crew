@@ -394,11 +394,15 @@ defmodule Crew.Boxes.Flatcar do
       else: %{"name" => name, "contents" => contents}
   end
 
+  # By label, and wanting the formatter rather than requiring it: a disk
+  # that comes back under another name still mounts, whatever is at the
+  # configured device. After= only so a first boot mounts what was just
+  # formatted.
   defp srv_crew_mount do
     """
     [Unit]
     Description=Crew's data disk
-    Requires=crew-format-data.service
+    Wants=crew-format-data.service
     After=crew-format-data.service
 
     [Mount]
@@ -412,15 +416,14 @@ defmodule Crew.Boxes.Flatcar do
     """
   end
 
+  # Only while no disk has the label; the script waits for the device
+  # itself, and scans for the label again before it touches anything.
   defp format_data(disk) do
-    device = device_unit(disk)
-
     """
     [Unit]
     Description=Format Crew's data disk if it's empty
     DefaultDependencies=no
-    BindsTo=#{device}
-    After=#{device}
+    ConditionPathExists=!/dev/disk/by-label/crew-data
     Before=srv-crew.mount shutdown.target
     Conflicts=shutdown.target
 
@@ -722,26 +725,6 @@ defmodule Crew.Boxes.Flatcar do
     [Install]
     WantedBy=timers.target
     """
-  end
-
-  @doc """
-  The device unit systemd names for a device path, escaped as
-  `systemd-escape --path` escapes it: `/dev/vdb` is `dev-vdb.device`.
-  """
-  def device_unit(path) do
-    escaped =
-      path
-      |> String.trim("/")
-      |> :binary.bin_to_list()
-      |> Enum.with_index()
-      |> Enum.map_join(fn
-        {?/, _} -> "-"
-        {?., 0} -> "\\x2e"
-        {c, _} when c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?:, ?_, ?.] -> <<c>>
-        {c, _} -> "\\x" <> String.downcase(Base.encode16(<<c>>))
-      end)
-
-    escaped <> ".device"
   end
 
   # -- files ---------------------------------------------------------------------
