@@ -832,3 +832,19 @@ The other spikes are recorded here as they run.
     registry with a port. The backup's tar, the units and a real pull
     and recreate need a Docker host; Foreman's DinD run
     (`e2e/updater/run.sh` there) isn't copied yet.
+- **The update check** (`Crew.Updates`) is Foreman's, checked daily
+  (`Crew.Updates.Check` at 05:11 UTC) rather than every five minutes,
+  and at boot when there's never been a check. The result is kept in
+  the settings table (`update_latest`) instead of a persistent term, so
+  a restart doesn't blank the page for a day. It's one unauthenticated
+  call to `CREW_UPDATE_REPO`'s releases through `Crew.GitHub.Client`
+  (so `CREW_GITHUB_API_URL` and the e2e fake apply); the repo has to be
+  public, as boxes download its release files without credentials too.
+  It offers only tags `crew-update` would take: `vX.Y.Z`, at most four
+  digits a field, no leading zeros, not a draft or prerelease.
+- **"Update to X"** is on the Deployment page, which is admin-only;
+  `Crew.Updates.request/2` checks the scope again, takes only the
+  version the last check found newer, and refuses while a request is
+  pending or a run is under way. It's audited as `crew.update` with
+  `from` and `to`. The page polls the updater's `status/` every 2 s
+  while it works.

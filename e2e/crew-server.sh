@@ -51,6 +51,13 @@ else
   run mix run --no-start "$root/e2e/make_agent_release.exs" "$CREW_AGENT_RELEASE_DIR"
 fi
 
+# Updating the control plane from the Deployment page (§20.3): the
+# directory crew-update shares with it, which the browser test writes
+# status/ in as the host's updater would.
+export CREW_UPDATE_DIR="$root/tmp/e2e/update"
+rm -rf "$CREW_UPDATE_DIR"
+mkdir -p "$CREW_UPDATE_DIR/request" "$CREW_UPDATE_DIR/status"
+
 run mix ecto.create --quiet
 run mix ecto.migrate --quiet
 if [ -n "$E2E_SEED" ]; then run mix run "$root/e2e/$E2E_SEED"; fi
