@@ -41,6 +41,8 @@ if config_env() != :test do
     guest_api_ip: System.get_env("CREW_GUEST_API_IP"),
     guest_api_port: int.("CREW_GUEST_API_PORT", 7777),
     vzd_socket: System.get_env("CREW_VZD_SOCKET"),
+    # crew-vmctl's socket (§10.8, native/crew-vmctl).
+    vmctl_socket: System.get_env("CREW_VMCTL_SOCKET", "/run/crew/vmctl.sock"),
     vz_host_reserve_vcpus: int.("CREW_VZ_HOST_RESERVE_VCPUS", 2),
     vz_host_reserve_mib: int.("CREW_VZ_HOST_RESERVE_MIB", 8192),
     vz_vm_area_gib: int.("CREW_VZ_VM_AREA_GIB", 400),

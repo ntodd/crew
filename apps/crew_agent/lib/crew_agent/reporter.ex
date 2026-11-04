@@ -82,7 +82,8 @@ defmodule CrewAgent.Reporter do
       required: File.exists?("/run/reboot-required"),
       packages: reboot_packages(),
       boot_id: CrewAgent.Boot.id(),
-      can_restart: false,
+      # Firecracker boxes reboot through crew-vmctl (§12.1).
+      can_restart: Config.get().driver == "firecracker",
       os_version: CrewAgent.Boot.os_version()
     })
   end

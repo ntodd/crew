@@ -46,4 +46,21 @@ defmodule CrewAgent.SiteTest do
     assert Site.parse_egress("<html>nope</html>") == nil
     assert Site.parse_egress("2001:db8::1") == nil
   end
+
+  @tag :tmp_dir
+  test "on a Firecracker box the egress address is kept for crew-net (agent/egress4)", %{
+    tmp_dir: dir
+  } do
+    config = %{Config.get() | driver: "firecracker", data_dir: dir}
+    Site.record_egress(config, "198.51.100.20")
+    assert Site.egress() == "198.51.100.20"
+    assert File.read!(Path.join([dir, "agent", "egress4"])) == "198.51.100.20\n"
+
+    # vz keeps it in memory: each VM's helper is given site4 at start.
+    other = Path.join(dir, "vz")
+    Site.record_egress(%{config | driver: "vz", data_dir: other}, "198.51.100.21")
+    refute File.exists?(Path.join([other, "agent", "egress4"]))
+  after
+    :persistent_term.erase({Site, :egress})
+  end
 end
