@@ -484,7 +484,10 @@ if wants ticks && [ "$ticks" -gt 0 ]; then
 fi
 
 if wants console_flood && [ "$console_mib" -gt 0 ]; then
-  read -r bytes took < <(probe console "$console_mib" 240)
+  # At most 15 minutes: Firecracker's 8250 UART takes about 14 KB/s
+  # nested (vz's virtio console takes 100 MiB in seconds), so a guest
+  # there needs about ten minutes to pass the 8 MiB cap.
+  read -r bytes took < <(probe console "$console_mib" 900)
   if [ "${bytes:-0}" -gt 0 ]; then
     result 12.console_flood ok "wrote $bytes bytes to /dev/console in ${took}s"
   else
