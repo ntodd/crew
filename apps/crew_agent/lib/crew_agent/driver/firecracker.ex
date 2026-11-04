@@ -278,15 +278,12 @@ defmodule CrewAgent.Driver.Firecracker do
     end
   end
 
-  # The unit's cgroup holds a process from the VMM's start until its
-  # ExecStopPost is done, when the exit record is written.
+  # The unit's cgroup is there from its start until systemd is done with
+  # it: past the VMM's exit (the cgroup is empty for a moment), through
+  # ExecStopPost, which writes the exit record. So once it's gone, the
+  # record is there.
   @impl true
-  def alive?(vm_id) do
-    case File.read(Path.join(cgroup(vm_id), "cgroup.events")) do
-      {:ok, events} -> String.contains?(events, "populated 1")
-      _ -> false
-    end
-  end
+  def alive?(vm_id), do: File.dir?(cgroup(vm_id))
 
   defp cgroup(vm_id) do
     Path.join([Config.get().sys, "fs/cgroup/system.slice", "crew-vm-#{vm_id}.service"])

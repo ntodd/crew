@@ -188,7 +188,7 @@ func TestStop(t *testing.T) {
 	if r := handle(t, s, `{"verb":"stop","vm_id":"`+vmID+`","force":true}`); !r.OK {
 		t.Fatal(r)
 	}
-	if !sys.ran("systemctl", "kill", "--signal=SIGKILL", Unit(vmID)) {
+	if !sys.ran("systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", Unit(vmID)) {
 		t.Fatalf("%q", sys.cmds)
 	}
 	if r := handle(t, s, `{"verb":"stop","vm_id":"`+vmID+`"}`); !r.OK {
@@ -358,7 +358,7 @@ func TestCleanup(t *testing.T) {
 		t.Fatal(r)
 	}
 	for _, c := range [][]string{
-		{"systemctl", "kill", "--signal=SIGKILL", Unit(vmID)},
+		{"systemctl", "kill", "--kill-whom=main", "--signal=SIGKILL", Unit(vmID)},
 		{"nft", "delete", "element", "inet", "crew", "vm_pairs", "{ crewt3 . 10.200.0.14 }"},
 	} {
 		if !sys.ran(c...) {

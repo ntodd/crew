@@ -205,12 +205,17 @@ defmodule CrewAgent.Driver.FirecrackerTest do
            ] = FakeVmctl.requests()
   end
 
-  test "alive? is the unit's cgroup, populated", ctx do
+  test "alive? holds until systemd removes the unit's cgroup", ctx do
     vm_id = CrewProtocol.uuid7()
     refute Firecracker.alive?(vm_id)
     dir = cgroup(ctx, vm_id, [{"cgroup.events", "populated 1\nfrozen 0\n"}])
     assert Firecracker.alive?(vm_id)
+
+    # The VMM is gone and the cgroup empty for a moment before systemd
+    # runs ExecStopPost in it, which writes the exit record: still alive.
     File.write!(Path.join(dir, "cgroup.events"), "populated 0\nfrozen 0\n")
+    assert Firecracker.alive?(vm_id)
+    File.rm_rf!(dir)
     refute Firecracker.alive?(vm_id)
   end
 
