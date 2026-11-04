@@ -27,7 +27,7 @@
 # no bridge, and stopped at the end. Its caches are in /var/lib/crew-kvm.
 set -eu
 
-GO_IMAGE=golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40
+GO_IMAGE=golang:1.25.14-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
 ELIXIR_IMAGE=hexpm/elixir:1.20.4-erlang-29.1.1-ubuntu-noble-20260917@sha256:d6bafec523f681f19d430ac1e19884022576b19d93e57e0db013633c73385bd2
 
 here=$(cd "$(dirname "$0")" && pwd)
