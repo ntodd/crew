@@ -840,6 +840,16 @@ The other spikes are recorded here as they run.
     The service gets `TimeoutStopSec=10min`, so a timeout's SIGTERM
     leaves time for a health check of the previous version. An existing
     install picks up the new units by running `install` again.
+  - **A backup is restored only if it reads whole.** `backup()` writes
+    the name `run.state` recorded (it used to take a second timestamp,
+    so a stop that crossed a second left the rollback restoring a file
+    that didn't exist, after it had emptied the volume). It writes
+    `.part`, reads it back with `tar -tzf`, and only then renames it, so
+    a backup under its name is complete. `restore()` reads it again
+    before emptying the volume, and if it's missing or unreadable
+    touches nothing: the data stays as the new version left it, Crew
+    stays stopped (the previous version may not read migrated data),
+    and the status says so.
   - **It can be sourced** (`CREW_UPDATE_SOURCED=1`) by
     `docker/test/crew-update-test.sh`, which runs its decisions against
     a fake docker (`docker/test/crew-update-fakes.sh`) in CI: request
@@ -849,10 +859,13 @@ The other spikes are recorded here as they run.
     a fault at each step after the stop (the backup failing, the new
     `.env` unwritable or not renamed into place, SIGTERM during the
     backup and while the new version starts, SIGKILL then the next
-    run). Each run is its own `sh`, so a fault can signal it. The
-    backup's tar, the units and a real pull and recreate need a Docker
-    host; Foreman's DinD run (`e2e/updater/run.sh` there) isn't copied
-    yet.
+    run). Each run is its own `sh`, so a fault can signal it. With
+    `real-backup`, the updater's own `backup()` and `restore()` scripts
+    run against a directory standing in for the volume, with a clock
+    that ticks on every read: a rollback across a tick, a backup gone or
+    garbled by the time it's needed, a backup that can't be made. The
+    units and a real pull and recreate need a Docker host; Foreman's
+    DinD run (`e2e/updater/run.sh` there) isn't copied yet.
 - **The update check** (`Crew.Updates`) is Foreman's, checked daily
   (`Crew.Updates.Check` at 05:11 UTC) rather than every five minutes,
   and at boot when there's never been a check. The result is kept in

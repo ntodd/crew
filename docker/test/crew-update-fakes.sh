@@ -20,6 +20,17 @@
 #     up-signal          compose up starts the new image, then the run gets SIGTERM
 #     up-kill            compose up starts the new image, then the run is
 #                        SIGKILLed: no trap runs
+#     up-removes-backup  compose up starts the new image, which deletes
+#                        the backup (real backups only)
+#     up-corrupts-backup compose up starts the new image, which garbles
+#                        the backup (real backups only)
+#
+# With $T/fake/real-backup, the updater's own backup() and restore() run:
+# docker run runs their scripts here, with /data as $T/volume (the
+# crew-data volume) and /backup as the updater's backups/, and an image
+# listed in $T/fake/migrates writes "migrated by <ref>" to the volume's
+# marker when it starts. date ticks a second on every call, so anything
+# that reads the clock twice sees two times.
 #
 # shellcheck shell=sh disable=SC2034,SC2154,SC2329
 
@@ -38,14 +49,25 @@ use_fakes() {
   BIN=$T/bin/crew-update
   HEALTH_TIMEOUT=6
   sleep() { :; }
-  backup() {
-    echo "backup $data $backup_name" >> "$T/fake/calls"
-    echo partial > "$DIR/backups/$backup_name"
-    if fault backup-fails; then return 1; fi
-    if fault backup-signal; then kill -TERM $$; fi
-    return 0
+  date() {
+    tick=$(($(cat "$T/fake/clock" 2> /dev/null || echo 0) + 1))
+    echo "$tick" > "$T/fake/clock"
+    s=$(printf '%02d' $((tick % 60)))
+    case "$*" in
+      *%Y%m%dT%H%M%SZ*) echo "20261104T1000${s}Z" ;;
+      *) echo "2026-11-04T10:00:${s}Z" ;;
+    esac
   }
-  restore() { echo "restore $1" >> "$T/fake/calls"; }
+  if [ ! -e "$T/fake/real-backup" ]; then
+    backup() {
+      echo "backup $data $backup_name" >> "$T/fake/calls"
+      echo partial > "$DIR/backups/$backup_name"
+      if fault backup-fails; then return 1; fi
+      if fault backup-signal; then kill -TERM $$; fi
+      return 0
+    }
+    restore() { echo "restore $1" >> "$T/fake/calls"; }
+  fi
   refresh_self() { echo "refresh_self $1" >> "$T/fake/calls"; }
   mv() {
     if [ "${3:-}" = "$T/opt/.env" ]; then
@@ -74,6 +96,13 @@ use_fakes() {
             sed -n 's/^CREW_IMAGE=//p' "$T/opt/.env" 2> /dev/null | tail -n 1 > "$T/fake/image"
             echo c1 > "$T/fake/container"
             echo running > "$T/fake/running"
+            if grep -qxF "$(cat "$T/fake/image")" "$T/fake/migrates" 2> /dev/null; then
+              echo "migrated by $(cat "$T/fake/image")" > "$T/volume/marker"
+            fi
+            if fault up-removes-backup; then rm -f "$DIR"/backups/crew-data-*; fi
+            if fault up-corrupts-backup; then
+              for b in "$DIR"/backups/crew-data-*.tgz; do echo garbage > "$b"; done
+            fi
             if fault up-signal; then kill -TERM $$; fi
             if fault up-kill; then kill -KILL $$; fi
             ;;
@@ -102,6 +131,7 @@ use_fakes() {
         esac
         ;;
       pull) grep -qxF "$3" "$T/fake/published" ;;
+      run) fake_run "$@" ;;
       exec)
         [ "$(cat "$T/fake/running")" = running ] &&
           grep -qxF "$(cat "$T/fake/image")" "$T/fake/healthy"
@@ -109,4 +139,48 @@ use_fakes() {
       *) return 1 ;;
     esac
   }
+}
+
+# docker run, for the updater's own backup and restore: their sh or tar
+# entrypoint runs here, with the mounts' container paths in the script
+# and arguments rewritten to where they are on this side.
+fake_run() {
+  shift
+  entry="" host_data="" host_backup=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --rm) shift ;;
+      --network | --user) shift 2 ;;
+      --entrypoint)
+        entry=$2
+        shift 2
+        ;;
+      -v)
+        src=${2%%:*} rest=${2#*:}
+        case ${rest%%:*} in
+          /data) if [ "$src" = crew-data ]; then host_data=$T/volume; else host_data=$src; fi ;;
+          /backup) host_backup=$src ;;
+        esac
+        shift 2
+        ;;
+      *) break ;;
+    esac
+  done
+  shift
+  here() { printf '%s' "$1" | sed -e "s|/backup|$host_backup|g" -e "s|/data|$host_data|g"; }
+  case $entry in
+    sh)
+      [ "$1" = -c ] || return 125
+      script=$(here "$2")
+      shift 2
+      command sh -c "$script" "$@"
+      ;;
+    tar)
+      n=$#
+      for a in "$@"; do set -- "$@" "$(here "$a")"; done
+      shift "$n"
+      command tar "$@"
+      ;;
+    *) return 125 ;;
+  esac
 }

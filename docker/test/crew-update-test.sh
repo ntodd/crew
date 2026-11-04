@@ -390,6 +390,74 @@ equals "a clean update leaves nothing to recover: succeeds" succeeded "$(field s
 check_not "a clean update leaves nothing to recover: no run state" run_state_left
 equals "a clean update leaves nothing to recover: no stray files" 0 "$(strays)"
 
+# -- real backups ------------------------------------------------------------------
+#
+# The updater's own backup() and restore(), run here against a directory
+# standing in for the volume, with a clock that ticks on every read.
+
+real_update() {
+  an_update "${1:-}"
+  touch "$T/fake/real-backup"
+  echo ghcr.io/ntodd/crew:0.3.0 > "$T/fake/migrates"
+  : > "$T/fake/healthy"
+  works ghcr.io/ntodd/crew:0.2.0
+  mkdir -p "$T/volume/images/x" "$T/volume/logs"
+  echo "at 0.2.0" > "$T/volume/marker"
+  echo "a log" > "$T/volume/logs/one"
+  echo "a rootfs" > "$T/volume/images/x/rootfs"
+}
+marker() { cat "$T/volume/marker" 2> /dev/null; }
+backups() { find "$T/update/backups" -name 'crew-data-*' -exec basename {} \; | sort | tr '\n' ' '; }
+
+real_update
+run_update
+equals "a real backup across a clock tick: rolls back" rolled_back "$(field state)"
+equals "a real backup across a clock tick: the data is as it was" "at 0.2.0" "$(marker)"
+check "a real backup across a clock tick: with the logs" test -f "$T/volume/logs/one"
+check "a real backup across a clock tick: and the images left alone" test -f "$T/volume/images/x/rootfs"
+equals "a real backup across a clock tick: the previous version runs" \
+  "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+case $(backups) in
+  "crew-data-0.2.0-"*".tgz ") ok "a real backup across a clock tick: one backup, whole" ;;
+  *) not_ok "a real backup across a clock tick: one backup, whole" "got [$(backups)]" ;;
+esac
+
+real_update
+works ghcr.io/ntodd/crew:0.3.0
+run_update
+equals "an update with a real backup: succeeds" succeeded "$(field state)"
+backup=$(find "$T/update/backups" -name 'crew-data-*.tgz' | head -n 1)
+check "an update with a real backup: the backup has the data" sh -c 'tar -tzf "$1" | grep -qx ./marker' sh "$backup"
+check_not "an update with a real backup: and not the images" sh -c 'tar -tzf "$1" | grep -q "^\./images"' sh "$backup"
+
+real_update up-removes-backup
+run_update
+equals "the backup's gone when it's needed: fails" failed "$(field state)"
+check "the backup's gone when it's needed: says it can't be read" grep -q "can't be read" "$T/update/status/state.json"
+equals "the backup's gone when it's needed: the data is left as it was" \
+  "migrated by ghcr.io/ntodd/crew:0.3.0" "$(marker)"
+check "the backup's gone when it's needed: logs and all" test -f "$T/volume/logs/one"
+equals "the backup's gone when it's needed: nothing is started on it" \
+  "stopped ghcr.io/ntodd/crew:0.3.0" "$(running)"
+equals "the backup's gone when it's needed: .env as it was" ghcr.io/ntodd/crew:0.2.0 "$(env_image)"
+check_not "the backup's gone when it's needed: nothing left to recover" run_state_left
+
+real_update up-corrupts-backup
+run_update
+equals "a garbled backup: fails" failed "$(field state)"
+check "a garbled backup: says it can't be read" grep -q "can't be read" "$T/update/status/state.json"
+equals "a garbled backup: the data is left as it was" "migrated by ghcr.io/ntodd/crew:0.3.0" "$(marker)"
+check "a garbled backup: logs and all" test -f "$T/volume/logs/one"
+
+real_update
+rm -rf "$T/volume"
+run_update
+equals "a backup that can't be made: fails" "The backup failed; 0.2.0 is running again and nothing changed." \
+  "$(field message)"
+equals "a backup that can't be made: no partial file" "" "$(backups)"
+equals "a backup that can't be made: the previous version runs" \
+  "running ghcr.io/ntodd/crew:0.2.0" "$(running)"
+
 # -- backups ---------------------------------------------------------------------
 
 new_case
