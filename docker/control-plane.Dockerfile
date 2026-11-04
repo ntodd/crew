@@ -65,6 +65,9 @@ ENV LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8 MIX_ENV=prod PHX_SERVE
 RUN groupadd --system --gid 9000 crew \
   && useradd --system --uid 9000 --gid crew --create-home --home-dir /var/lib/crew --shell /usr/sbin/nologin crew
 WORKDIR /app
+# The host's updater (docker/crew-update) installs and refreshes itself
+# from here, reading the image, never the running container.
+COPY --chmod=0755 docker/crew-update /app/updater/crew-update
 # Root's, and read-only to the app: what it runs can't be changed from
 # inside. The release's scratch files go to /tmp instead.
 COPY --from=build /src/apps/crew/_build/prod/rel/crew ./

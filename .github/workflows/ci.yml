@@ -137,6 +137,15 @@ jobs:
           "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck" --version
           "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck" --shell=sh -x \
             apps/crew/priv/flatcar/* apps/crew/priv/agent/*.sh
+      # The control plane's updater (§20.3), which runs as root on its
+      # host, and what the release workflow signs and checks with.
+      - name: ShellCheck the release and update scripts
+        run: |
+          sc="$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck"
+          "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh
+          "$sc" -x images/guest/sign.sh packaging/release/build-linux.sh
+      - name: crew-update's decisions
+        run: docker/test/crew-update-test.sh
 
   # The UI in a real browser, against a fake GitHub (e2e/).
   browser:
