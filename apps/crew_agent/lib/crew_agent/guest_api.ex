@@ -118,7 +118,7 @@ defmodule CrewAgent.GuestAPI do
 
   @impl Plug
   def call(conn, opts) do
-    source = source(conn.remote_ip)
+    source = source(conn.remote_ip, Keyword.get(opts, :vm_id))
 
     if dropped?(source) do
       conn |> send_resp(429, "") |> halt()
@@ -130,10 +130,13 @@ defmodule CrewAgent.GuestAPI do
     end
   end
 
-  # A Unix socket (vz) has no peer address: its source is the socket.
-  defp source({_, _, _, _} = ip), do: ip |> :inet.ntoa() |> to_string()
-  defp source({_, _, _, _, _, _, _, _} = ip), do: ip |> :inet.ntoa() |> to_string()
-  defp source(_), do: "local"
+  # A Unix socket (vz) has no peer address: its source is the socket,
+  # which is one VM's. Keyed apart, so a guest guessing tokens is dropped
+  # alone, not every VM on the box with it.
+  defp source(_ip, pinned) when is_binary(pinned), do: "vm:" <> pinned
+  defp source({_, _, _, _} = ip, nil), do: ip |> :inet.ntoa() |> to_string()
+  defp source({_, _, _, _, _, _, _, _} = ip, nil), do: ip |> :inet.ntoa() |> to_string()
+  defp source(_ip, nil), do: "local"
 
   defp authenticate(conn, opts, source) do
     with ["Bearer " <> token] <- get_req_header(conn, "authorization"),
