@@ -1,0 +1,20 @@
+# The per-VM connection cap (spec §14.2): at most 2048 tracked connections
+# from each VM, to the host VM and through it. The spec has it as
+# `ct count over 2048` in nft.conf, but Flatcar's kernel has no
+# nft_connlimit; xt_connlimit is the same counter (nf_conncount), reached
+# through iptables-nft. Crew owns the ip mangle table on a box, so
+# crew-net loads this with iptables-nft-restore, which replaces the whole
+# table atomically, and crew-vmctl nft-verify holds it to this file.
+#
+# Check it with: iptables-nft-restore --test connlimit.rules
+*mangle
+:PREROUTING ACCEPT [0:0]
+:INPUT ACCEPT [0:0]
+:FORWARD ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+:POSTROUTING ACCEPT [0:0]
+:CREW-CONNLIMIT - [0:0]
+-A INPUT -i crewt+ -j CREW-CONNLIMIT
+-A FORWARD -i crewt+ -j CREW-CONNLIMIT
+-A CREW-CONNLIMIT -m conntrack --ctstate NEW -m connlimit --connlimit-above 2048 --connlimit-mask 32 --connlimit-saddr -j DROP
+COMMIT

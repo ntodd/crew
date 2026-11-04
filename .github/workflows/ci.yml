@@ -254,3 +254,34 @@ jobs:
       - run: packaging/macos/test-install.sh
         working-directory: .
 
+  # crew-vmctl (§10.8) and the Firecracker boxes' packet filter (§14.2),
+  # on both arches: the kernel checks etc/nft.conf (with $UPLINK filled
+  # in, as crew-net does) and etc/connlimit.rules, and crew-vmctl's tests
+  # run on Linux, where its root-only code builds.
+  vmctl:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: native
+    env:
+      GOFLAGS: -mod=vendor
+      GOPROXY: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: native/go.mod
+          cache: false
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq nftables iptables
+      - run: nft --version && iptables-nft --version
+      - run: sudo nft -c -D UPLINK=eth0 -f crew-vmctl/etc/nft.conf
+      - run: sudo iptables-nft-restore --test crew-vmctl/etc/connlimit.rules
+      - run: go vet ./crew-vmctl/...
+      - run: go test ./crew-vmctl/...
+
