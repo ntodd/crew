@@ -1,0 +1,5 @@
+# TEST KEY, FOR DEVELOPMENT ONLY: the public half of test-signing.key.
+# Fingerprint SHA256:vj4DnPcWRn2HCPz3dJiut+9PXO1/RHe0J1LN92r/nRE
+# Format: base64 of the raw 32-byte ed25519 public key, as
+# CREW_RELEASE_PUBLIC_KEY takes it.
+Absy22FD3Nu5+ysBnynCVPSfo5ZteQZ1TZGcMjCU8VQ=

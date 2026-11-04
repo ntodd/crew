@@ -14,9 +14,15 @@
 #   build.sh rootfs         the root filesystem: out/<arch>/rootfs.ext4
 #   build.sh lock           re-resolve the packages from the snapshot and
 #                           rewrite this arch's lines of packages.lock
+#   build.sh artifacts      compress, write the manifest, sign, verify:
+#                           out/<arch>/release/crew-guest-<version>-<arch>.*
 #
 # Env: ARCH (arm64, the default, or x64); OUT (default out/<arch>);
-# VERSION (crew-guest's, default 0.1.0-dev).
+# VERSION (the image's and crew-guest's, default 0.1.0-dev); MIX (how to
+# run mix, default `mix`); SIGN for `artifacts`: `test` (the default, the
+# development test key), `release` (CREW_RELEASE_SIGNING_KEY, never the
+# test key) or `none`; PUBLIC_KEY (base64) to verify against instead of
+# the test key.
 # Caches: the Docker volumes crew-guest-kernel (kernel downloads, source
 # and object trees) and crew-guest-rootfs (the unpacked tree), and
 # BuildKit's cache (layers, the apt archive, downloads).
@@ -117,7 +123,7 @@ rootfs_build() {
     "$@" "$here"
 }
 
-step=${1:?usage: build.sh builder|kernel-config|kernel|kernel-check|kernel-check-test|rootfs|lock}
+step=${1:?usage: build.sh builder|kernel-config|kernel|kernel-check|kernel-check-test|rootfs|lock|artifacts}
 case "$step" in
 builder)
   builder
@@ -168,6 +174,36 @@ lock)
   mv "$lock.new" "$lock"
   echo "build: packages.lock: $(wc -l < "$resolved" | tr -d ' ') packages for $ARCH"
   git -C "$repo" --no-pager diff --stat -- "$lock" || true
+  ;;
+artifacts)
+  [ -f "$out/rootfs.ext4" ] && [ -f "$out/kernel/$kimage" ] ||
+    { echo "build: build the kernel and rootfs first" >&2; exit 1; }
+  release="$out/release"
+  base="crew-guest-$VERSION-$ARCH"
+  rm -rf "$release"
+  mkdir -p "$release"
+  # zstd from the builder, so its version is pinned with everything else.
+  # --long=27 keeps the window within what zstd decompresses by default.
+  t0=$(date +%s)
+  in_builder -v "$out:/out" -- \
+    zstd -q -T0 -19 --long=27 -f /out/rootfs.ext4 -o "/out/release/$base.rootfs.ext4.zst"
+  echo "build: compressed the rootfs in $(( $(date +%s) - t0 ))s"
+  mix=(${MIX:-mix})
+  (cd "$here/tools" && "${mix[@]}" crew_image.write "$release" \
+    --version "$VERSION" --arch "$ARCH" \
+    --kernel "$out/kernel/$kimage" --kernel-release "$out/kernel/release" \
+    --rootfs "$out/rootfs.ext4" --rootfs-zst "$release/$base.rootfs.ext4.zst" \
+    --lock "$lock" --versions "$here/versions.env")
+  case "${SIGN:-test}" in
+    test) (cd "$here/tools" && "${mix[@]}" crew_image.sign "$release/$base.manifest.json") ;;
+    release) "$here/sign.sh" --release "$release/$base.manifest.json" ;;
+    none) echo "build: not signing (SIGN=none)"; exit 0 ;;
+    *) echo "build: SIGN must be test, release or none" >&2; exit 1 ;;
+  esac
+  (cd "$here/tools" && "${mix[@]}" crew_image.verify "$release/$base.manifest.json" \
+    --rootfs-ext4 "$out/rootfs.ext4" ${PUBLIC_KEY:+--public-key "$PUBLIC_KEY"} \
+    $([ "${SIGN:-test}" = release ] && echo --release))
+  ls -l "$release"
   ;;
 kernel-check-test)
   if [ "$(uname -s)" = Linux ]; then

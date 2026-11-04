@@ -31,3 +31,8 @@
 /e2e/node_modules/
 /e2e/test-results/
 /e2e/playwright-report/
+
+# The guest image tools (images/guest/tools)
+/images/guest/tools/_build/
+/images/guest/tools/deps/
+/images/guest/tools/tmp/
