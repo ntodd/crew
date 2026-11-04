@@ -301,11 +301,20 @@ path, crew-vmctl's socket, a systemd unit and jailer:
   with the example JIT config crew-guest then refuses to start the runner
   and powers off, a clean exit (status 0);
 - a forced stop's `vm.exited` is `killed_stop`, status 137, within a
-  couple of seconds;
+  couple of seconds; jailer has given the chroot to the VM's uid, and
+  the directory around it is root's;
 - with its pair deleted the VM never reaches the guest API (`vm_pairs`
   fails closed), and with its server gone (the agent away) systemd's
   `RuntimeMaxSec` kills it at the deadline; adoption reports
   `killed_deadline`;
+- with an echo service configured, starts wait until site4 holds the
+  egress address, which is loaded the moment the agent records it;
+- a rule added by hand: crew-vmctl's own `start` refuses, the agent's
+  next check kills the running VM (`firewall_not_verified`) and refuses
+  starts, and both recover once the rule is gone;
+- a cleanup crew-vmctl can't do (its socket out of reach) keeps the VM's
+  record, lease and jail until a retry works; a jail with no record is
+  reconciled away;
 - after each, nothing is left: no unit, tap, jail or clone.
 
 `kvm/run.sh` runs it on a Linux host with KVM, from a checkout:
@@ -336,8 +345,8 @@ sudo CREW_REAL_IMAGE_DIR=/srv/crew/kvm-image native/crew-vmctl/kvm/run.sh   # --
   and `/run/crew`. Caches are in `/var/lib/crew-kvm`.
 
 On the M3's Flatcar VM (arm64, nested virtualization, Flatcar 4757.2.3,
-systemd 260, nft 1.1.6) all four pass; crew-guest fetches its payload
-about 1.9 s after `vm.start`.
+systemd 260, nft 1.1.6) all eight pass; crew-guest fetches its payload
+about 2 s after `vm.start`, which is answered in about 170 ms.
 
 ## What a box needs (the Ignition)
 
