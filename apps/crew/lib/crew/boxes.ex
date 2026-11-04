@@ -34,9 +34,14 @@ defmodule Crew.Boxes do
   def subscribe(box_id), do: Phoenix.PubSub.subscribe(Crew.PubSub, "box:#{box_id}")
 
   defp changed(%Box{id: id} = box) do
+    broadcast_changed(id)
+    box
+  end
+
+  @doc "Tells the box's pages it changed."
+  def broadcast_changed(id) do
     Phoenix.PubSub.broadcast(Crew.PubSub, "boxes", {:box_changed, id})
     Phoenix.PubSub.broadcast(Crew.PubSub, "box:#{id}", {:box_changed, id})
-    box
   end
 
   # -- enrollment ----------------------------------------------------------------
@@ -362,6 +367,7 @@ defmodule Crew.Boxes do
       agent_version: join.agent_version,
       protocol_version: join.protocol_version,
       os: join.os,
+      arch: join.arch,
       boot_id: join.boot_id,
       online_at: now,
       last_seen_at: now,
@@ -619,6 +625,63 @@ defmodule Crew.Boxes do
         Crew.Scheduler.poke()
         {:ok, changed(updated)}
       end
+    end)
+  end
+
+  @doc """
+  Pins the box's agent to `version` (§20.2), or with nil (or "") lets it
+  follow the newest release for its target again. Audited. A pin must
+  be a version the box's target has; picking another version clears one
+  that failed twice. An online box gets the update at once.
+  """
+  def pin_agent_version(%Scope{} = scope, %Box{} = box, version) do
+    admin(scope, fn ->
+      version = if version in [nil, ""], do: nil, else: version
+
+      changeset =
+        box
+        |> Ecto.Changeset.change(desired_agent_version: version)
+        |> validate_pin(box)
+
+      changeset =
+        if Ecto.Changeset.changed?(changeset, :desired_agent_version),
+          do: Ecto.Changeset.put_change(changeset, :failed_agent_version, nil),
+          else: changeset
+
+      with {:ok, box} <- Repo.update(changeset) do
+        Audit.log(scope, "box.pin_agent_version", box, %{"version" => version})
+        Crew.Agents.Updates.maybe_update(box)
+        {:ok, changed(box)}
+      end
+    end)
+  end
+
+  defp validate_pin(changeset, box) do
+    Ecto.Changeset.validate_change(changeset, :desired_agent_version, fn _, version ->
+      case Crew.Agents.Updates.target(box) do
+        nil ->
+          [desired_agent_version: "the box hasn't joined yet, so its target isn't known"]
+
+        target ->
+          if version in Crew.Agents.Releases.versions(target),
+            do: [],
+            else: [desired_agent_version: "there's no #{version} release for #{target}"]
+      end
+    end)
+  end
+
+  @doc """
+  Sends a box the version that failed on it twice again (§20.2), with
+  its two tries back. Audited.
+  """
+  def retry_agent_update(%Scope{} = scope, %Box{} = box) do
+    admin(scope, fn ->
+      failed = box.failed_agent_version
+      box = box |> Ecto.Changeset.change(failed_agent_version: nil) |> Repo.update!()
+      Crew.Agents.Updates.forget_failures(box)
+      Audit.log(scope, "box.retry_agent_update", box, %{"version" => failed})
+      Crew.Agents.Updates.maybe_update(box)
+      {:ok, changed(box)}
     end)
   end
 

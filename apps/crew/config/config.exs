@@ -66,7 +66,9 @@ config :crew, Oban,
        # §20.4: the control plane's image files, checked and kept in bounds.
        {"37 4 * * *", Crew.Images.Upkeep},
        # §20.3: a newer Crew release, for the Deployment page.
-       {"11 5 * * *", Crew.Updates.Check}
+       {"11 5 * * *", Crew.Updates.Check},
+       # §20.2: agent updates under way settle, and due ones go out.
+       {"* * * * *", Crew.Agents.UpdateSweep}
      ]}
   ]
 

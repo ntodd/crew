@@ -58,6 +58,13 @@ defmodule Crew.Operations do
         op = finish(op, payload)
         Phoenix.PubSub.broadcast(Crew.PubSub, "op:#{op.id}", {:op_result, op})
         if op.command == "cache.config", do: Crew.Caches.config_applied(op)
+        if op.command == "agent.update", do: after_update(op)
+        :ok
+
+      # An update the agent has installed is `running` until the box
+      # comes back on it; the release it rolled back to reports failing.
+      %Operation{box_id: ^box_id, status: "running", command: "agent.update"} = op ->
+        if payload.status != "ok", do: op |> finish(payload) |> after_update()
         :ok
 
       # A result resent after a reconnect is acknowledged and ignored.
@@ -70,6 +77,32 @@ defmodule Crew.Operations do
       nil ->
         {:error, "unknown operation"}
     end
+  end
+
+  defp after_update(op) do
+    Crew.Boxes.broadcast_changed(op.box_id)
+    Crew.Agents.Updates.result_recorded(op)
+  end
+
+  # An agent that has put a new release in place says so before it
+  # restarts into it; the update isn't done until the box comes back on
+  # the version (`Crew.Agents.Updates`).
+  defp finish(%Operation{command: "agent.update"} = op, %{
+         status: "ok",
+         result: %{"restart" => true} = result
+       }) do
+    op
+    |> Ecto.Changeset.change(
+      status: "running",
+      result: result,
+      args:
+        Map.put_new(
+          op.args || %{},
+          "restart_reported_at",
+          DateTime.to_iso8601(DateTime.utc_now())
+        )
+    )
+    |> Repo.update!()
   end
 
   defp finish(op, %{status: "ok"} = payload) do
@@ -96,6 +129,23 @@ defmodule Crew.Operations do
       finished_at: DateTime.utc_now()
     )
     |> Repo.update!()
+  end
+
+  @doc """
+  Finishes an operation the control plane settles itself, not the
+  agent (an update by the version its box came back on, or overdue):
+  `status` with `:result`, `:error_code` and `:error`.
+  """
+  def settle(%Operation{} = op, status, attrs \\ []) when status in ["succeeded", "failed"] do
+    op =
+      op
+      |> Ecto.Changeset.change(
+        Keyword.merge([status: status, finished_at: DateTime.utc_now()], attrs)
+      )
+      |> Repo.update!()
+
+    Phoenix.PubSub.broadcast(Crew.PubSub, "op:#{op.id}", {:op_result, op})
+    op
   end
 
   def recent_for_box(box_id, limit \\ 20) do

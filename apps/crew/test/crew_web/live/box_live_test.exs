@@ -316,6 +316,75 @@ defmodule CrewWeb.BoxLiveTest do
     end
   end
 
+  describe "the agent's version (§20.2)" do
+    setup do
+      key = Crew.ImageFixtures.keypair()
+      Crew.ImageFixtures.trust(key)
+      dir = Crew.AgentReleaseFixtures.tmp_dir("box-page-releases")
+
+      for v <- ["0.2.0", "0.3.0"],
+          do:
+            Crew.AgentReleaseFixtures.write_release(dir, key, v, "darwin-arm64",
+              components: ["agent"]
+            )
+
+      Crew.Agents.Releases.register_bundle(dir)
+
+      box =
+        box_fixture(name: "m4")
+        |> Ecto.Changeset.change(os: "darwin", arch: "arm64", agent_version: "0.2.0")
+        |> Crew.Repo.update!()
+
+      %{box: box}
+    end
+
+    test "says where the box is and what it follows", %{conn: conn, box: box} do
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#agent-running", "0.2.0")
+      assert has_element?(view, "#agent-running", "darwin-arm64")
+      assert has_element?(view, "#agent-target", "0.3.0")
+      assert has_element?(view, "#agent-update-state", "Updates to 0.3.0 when it's back")
+
+      assert has_element?(
+               view,
+               "#pin-agent-version option[value='']",
+               "Follow the newest (0.3.0)"
+             )
+    end
+
+    test "an admin pins a version, and unpins it", %{conn: conn, box: box} do
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+
+      view |> form("#pin-agent", %{"version" => "0.2.0"}) |> render_submit()
+      assert render(view) =~ "Pinned m4&#39;s agent to 0.2.0."
+      assert has_element?(view, "#agent-target", "0.2.0")
+      assert has_element?(view, "#agent", "Pinned to")
+      assert has_element?(view, "#agent-update-state", "Up to date")
+      assert Boxes.get!(box.id).desired_agent_version == "0.2.0"
+
+      view |> form("#pin-agent", %{"version" => ""}) |> render_submit()
+      assert Boxes.get!(box.id).desired_agent_version == nil
+      assert has_element?(view, "#agent", "Follows")
+    end
+
+    test "a version that failed twice says so, and an admin can retry it", %{conn: conn, box: box} do
+      box |> Ecto.Changeset.change(failed_agent_version: "0.3.0") |> Crew.Repo.update!()
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#agent-update-failed", "didn't take on this box twice")
+
+      view |> element("#retry-agent-update") |> render_click()
+      refute has_element?(view, "#agent-update-failed")
+      assert Boxes.get!(box.id).failed_agent_version == nil
+    end
+
+    test "members see it but can't change it", %{box: box} do
+      conn = log_in(build_conn(), user_fixture())
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#agent-target", "0.3.0")
+      refute has_element?(view, "#pin-agent")
+    end
+  end
+
   test "members see boxes but can't add, approve or revoke" do
     member = user_fixture()
     box = box_fixture()

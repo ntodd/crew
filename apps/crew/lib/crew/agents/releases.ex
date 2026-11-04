@@ -82,6 +82,67 @@ defmodule Crew.Agents.Releases do
     end
   end
 
+  @doc "The release target for an agent's `os` and `arch` (its join's), e.g. `linux-arm64`."
+  def target(os, arch) when os in ["linux", "darwin"] and arch in ["x64", "arm64"],
+    do: "#{os}-#{if arch == "x64", do: "amd64", else: "arm64"}"
+
+  def target(_os, _arch), do: nil
+
+  @doc """
+  The versions a box on `target` can be updated to, newest first: an
+  agent tarball here and, on Linux, crew_cache's at the same version
+  (§20.2: the cache updates with the agent).
+  """
+  def versions(target) when target in @targets do
+    Repo.all(from r in Release, where: r.target == ^target)
+    |> Enum.filter(&File.regular?(&1.path))
+    |> Enum.group_by(& &1.version)
+    |> Enum.filter(fn {_version, rows} -> complete?(target, rows) end)
+    |> Enum.flat_map(fn {version, _} ->
+      case Version.parse(version) do
+        {:ok, parsed} -> [{parsed, version}]
+        :error -> []
+      end
+    end)
+    |> Enum.sort_by(&elem(&1, 0), {:desc, Version})
+    |> Enum.map(&elem(&1, 1))
+  end
+
+  def versions(_target), do: []
+
+  defp complete?("linux-" <> _, rows),
+    do:
+      Enum.any?(rows, &(&1.component == "agent")) and Enum.any?(rows, &(&1.component == "cache"))
+
+  defp complete?(_target, rows), do: Enum.any?(rows, &(&1.component == "agent"))
+
+  @doc """
+  The version boxes on `target` follow unless pinned: the newest they
+  can be updated to, passing over prereleases unless there's nothing
+  else. Nil when there's none.
+  """
+  def fleet_version(target), do: target |> versions() |> highest()
+
+  @doc "The tarballs an update to `version` sends a box on `target`, or nil."
+  def update_set(target, version) do
+    if version in versions(target) do
+      %{
+        agent: get("agent", version, target),
+        cache: if(String.starts_with?(target, "linux-"), do: get("cache", version, target))
+      }
+    end
+  end
+
+  @doc """
+  Where an agent downloads an update from: the control plane's own copy
+  (§20.2, Foreman's). Only a first install downloads from the GitHub
+  release. The agent swaps in the host it reaches the control plane at.
+  """
+  def update_url(%Release{} = release) do
+    file = file_name(release.component, release.version, release.target)
+    "#{Crew.Config.base_url()}/agent/releases/#{release.version}/#{release.target}/#{file}"
+  end
+
   # The highest version, passing over prereleases unless there's nothing
   # else (Foreman's).
   defp highest(versions) do
@@ -147,10 +208,13 @@ defmodule Crew.Agents.Releases do
         end
       end
 
-    %{
-      registered: Enum.count(results, &match?({:ok, _}, &1)),
-      failed: for({:error, f} <- results, do: f)
-    }
+    registered = Enum.count(results, &match?({:ok, _}, &1))
+
+    # Boxes online behind a release that just arrived get it now; the
+    # rest when they join.
+    if registered > 0, do: Crew.Agents.Updates.released()
+
+    %{registered: registered, failed: for({:error, f} <- results, do: f)}
   end
 
   # sobelow_skip ["Traversal.FileModule"]
