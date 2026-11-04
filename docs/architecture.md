@@ -192,12 +192,18 @@ The other spikes are recorded here as they run.
     Killing the whole unit goes through `cgroup.kill`, which on a real
     host also killed the `ExecStopPost` forked into the cgroup a moment
     later, and the exit record with it.
-- **The packet filter** differs from §14.2's text in two places, both
-  forced: `blocked4` leaves out `255.255.255.255/32` (inside
-  `240.0.0.0/4`; nft refuses overlapping intervals, so the spec's set
-  doesn't load), and the 2048-connection cap is in iptables-nft's mangle
-  table (`etc/connlimit.rules`, `xt_connlimit`) because Flatcar's kernel
-  has no `nft_connlimit` for `ct count`. Both use `nf_conncount`.
+- **The packet filter** differs from §14.2's text in three places:
+  - **pings are accepted to `10.199.0.1` only.** §14.2's
+    `iifname "crewt*" icmp type { echo-request } … accept` takes an echo
+    request to any local address, so a guest could ping its gateway,
+    other taps' gateways and the host's uplink and tailnet addresses: the
+    input chain, which `blocked4` and `site4` in forward don't cover. The
+    spec's text has the same mistake;
+  - `blocked4` leaves out `255.255.255.255/32` (inside `240.0.0.0/4`; nft
+    refuses overlapping intervals, so the spec's set doesn't load);
+  - the 2048-connection cap is in iptables-nft's mangle table
+    (`etc/connlimit.rules`, `xt_connlimit`) because Flatcar's kernel has
+    no `nft_connlimit` for `ct count`. Both use `nf_conncount`.
 - **`nft-verify`** compares the box's listings with the same files loaded
   into a fresh network namespace by the same binaries, not with a stored
   hash: nft 1.0.6 and 1.1.6 print the same table in different orders,
