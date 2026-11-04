@@ -26,6 +26,37 @@ defmodule CrewGuest.TestHelpers do
 
   def fixture(name), do: Path.expand("../fixtures/#{name}", __DIR__)
 
+  @doc """
+  The pid of the stub runner's listener (its child in its own process
+  group, as run.sh's is), once it's up. Its group is killed when the test
+  ends, whatever happened.
+  """
+  def stub_listener(runner_dir) do
+    file = Path.join(runner_dir, "listener.pid")
+    pid = eventually(fn -> File.exists?(file) && String.trim(File.read!(file)) end)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      System.cmd("kill", ["-KILL", "--", "-" <> pid], stderr_to_stdout: true)
+    end)
+
+    pid
+  end
+
+  @doc "The stub runner's last page, where it notes the signals it gets."
+  def stub_page(runner_dir) do
+    case Path.wildcard(Path.join(runner_dir, "_diag/pages/*_2.log")) do
+      [file] -> File.read!(file)
+      [] -> ""
+    end
+  end
+
+  @doc "Whether an OS process is running. A zombie still answers `kill -0`, so this asks ps."
+  def os_alive?(os_pid) do
+    {out, _} = System.cmd("ps", ["-o", "stat=", "-p", os_pid])
+    out = String.trim(out)
+    out != "" and not String.starts_with?(out, "Z")
+  end
+
   @doc "An encoded JIT config, shaped like GitHub's `encoded_jit_config`."
   def jit_config(runner_settings \\ %{"DisableUpdate" => true}) do
     runner =

@@ -43,6 +43,7 @@ defmodule CrewGuest.MainTest do
       payload_retry_ms: 50,
       flush_timeout_ms: 3_000,
       sigterm_timeout_ms: 1_000,
+      flush_reserve_ms: 500,
       metrics_interval_ms: 200
     }
   end
@@ -237,20 +238,53 @@ defmodule CrewGuest.MainTest do
       assert "stub-runner: got SIGTERM" in FakeAPI.log_texts(api)
     end
 
-    test "a runner that ignores SIGTERM gets half the budget; job_finished goes anyway",
+    test "a runner still cancelling at its deadline is killed, tree and all; job_finished goes anyway",
          %{dir: dir} do
       api = start_api()
       main = boot(hanging(api, dir, "ignore"))
       await_job(api)
-      kill_runner_on_exit(main)
+      listener = stub_listener(runner_dir(dir))
 
-      # Half of 1 s for the runner; the flush then waits on the steps
-      # snapshot (2 a second at most), within the rest.
+      # 0.5 s of the 1 s for the runner, then SIGKILL; the flush then
+      # waits on the steps snapshot (2 a second at most), within the rest.
       ms = sigterm(main)
       assert ms >= 500 and ms < 1_300
       assert last_state(api).state == "job_finished"
       assert last_state(api).detail == "runner_stop_timeout"
-      assert "stub-runner: ignoring SIGTERM" in FakeAPI.log_texts(api)
+      assert "stub-runner: ignoring SIGINT" in FakeAPI.log_texts(api)
+      refute os_alive?(listener)
+    end
+
+    test "an agent stop, then SIGTERM: one SIGTERM to the runner, and its last lines arrive",
+         %{dir: dir} do
+      api = start_api()
+      main = boot(slow_cancel(api, dir))
+      await_job(api)
+
+      # Through the control poll, as the agent does it.
+      FakeAPI.request_stop(api)
+      eventually(fn -> stub_page(runner_dir(dir)) =~ "got SIGTERM" end)
+
+      assert sigterm(main) < 1_300
+      assert last_state(api).detail == "exit_code=143"
+      assert "stub-runner: cancelled" in FakeAPI.log_texts(api)
+      assert "stub-runner: done waiting" in FakeAPI.log_texts(api)
+    end
+
+    test "SIGTERM, then an agent stop: one SIGTERM to the runner, and its last lines arrive",
+         %{dir: dir} do
+      api = start_api()
+      main = boot(slow_cancel(api, dir))
+      await_job(api)
+
+      Main.sigterm(main)
+      eventually(fn -> stub_page(runner_dir(dir)) =~ "got SIGTERM" end)
+      FakeAPI.request_stop(api)
+
+      assert_receive {:system, :stop}, 3_000
+      assert last_state(api).detail == "exit_code=143"
+      assert "stub-runner: cancelled" in FakeAPI.log_texts(api)
+      assert "stub-runner: done waiting" in FakeAPI.log_texts(api)
     end
 
     test "with the agent unreachable, it still stops within the budget", %{dir: dir} do
@@ -279,7 +313,19 @@ defmodule CrewGuest.MainTest do
       assert "job_finished" in attempted_states(api)
     end
 
-    test "if the runner exits first (systemd signals it too), the flush keeps to the budget",
+    test "with every endpoint hanging, it still stops within the budget", %{dir: dir} do
+      api = start_api()
+      main = boot(hanging(api, dir, "1"))
+      await_job(api)
+
+      for path <- ~w(/v1/state /v1/log /v1/steps /v1/metrics /v1/control),
+          do: FakeAPI.respond(api, path, [{:delay, 10_000, {204, nil}}])
+
+      ms = sigterm(main)
+      assert ms >= 900 and ms < 1_300
+    end
+
+    test "if the runner has just exited, SIGTERM keeps the flush to its budget",
          %{dir: dir} do
       api = start_api()
       main = boot(hanging(api, dir, "1"))
@@ -300,11 +346,11 @@ defmodule CrewGuest.MainTest do
       api = start_api()
       main = boot(%{hanging(api, dir, "ignore") | flush_timeout_ms: 6_000})
       await_job(api)
-      kill_runner_on_exit(main)
+      stub_listener(runner_dir(dir))
 
-      # The agent's stop gives the runner 3 s; SIGTERM leaves it 0.5 s.
+      # The agent's stop gives the runner 5.5 s; SIGTERM leaves it 0.5 s.
       Main.request_stop(main)
-      eventually(fn -> "stub-runner: ignoring SIGTERM" in FakeAPI.log_texts(api) end)
+      eventually(fn -> stub_page(runner_dir(dir)) =~ "ignoring SIGINT" end)
 
       assert sigterm(main) < 1_300
       refute_received {:system, :poweroff}
@@ -321,9 +367,16 @@ defmodule CrewGuest.MainTest do
   end
 
   # A stub that gets through its steps quickly, then waits for SIGTERM
-  # ("1") or ignores it ("ignore").
+  # ("1"), or gets it and never finishes cancelling ("ignore").
   defp hanging(api, dir, hang),
     do: config(api, dir, [{"STUB_HANG", hang}, {"STUB_DELAY", "0.1"}])
+
+  # Its cancel takes 0.3 s: a second SIGTERM in that time would kill its
+  # run.sh before the last line.
+  defp slow_cancel(api, dir),
+    do: config(api, dir, [{"STUB_HANG", "1"}, {"STUB_DELAY", "0.1"}, {"STUB_CANCEL", "0.3"}])
+
+  defp runner_dir(dir), do: Path.join(dir, "runner")
 
   # How long from Main.sigterm/1 until crew-guest stops itself.
   defp sigterm(main) do
@@ -339,12 +392,6 @@ defmodule CrewGuest.MainTest do
   defp runner_os_pid(main) do
     %{runner: runner} = :sys.get_state(main)
     Integer.to_string(:sys.get_state(runner).os_pid)
-  end
-
-  # A stub that ignores SIGTERM would outlive the test.
-  defp kill_runner_on_exit(main) do
-    os_pid = runner_os_pid(main)
-    on_exit(fn -> System.cmd("kill", ["-KILL", os_pid], stderr_to_stdout: true) end)
   end
 
   defp last_state(api), do: List.last(FakeAPI.delivered(api, "/v1/state")).cast

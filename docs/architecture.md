@@ -183,14 +183,35 @@ The other spikes are recorded here as they run.
 - **crew-guest now replaces that handler** on `erl_signal_server`
   (`CrewGuest.Signals`), and the boot and the final flush run in tasks, so
   `Main` acts on a stop in every phase. SIGTERM takes the agent's stop
-  path within 6 s: SIGTERM to the runner, half the budget for it to exit
-  (otherwise `job_finished` with detail `runner_stop_timeout`), the flush
-  in the rest, then an exit rather than a poweroff, since systemd is
-  already powering off. If the BEAM is still up 8 s after SIGTERM, the
-  handler halts it. §13.5 gives no budget for SIGTERM; both stay under
-  systemd's stop timeout (15 s for this unit, 10 s for the image's
-  others).
-- **In local mode** a real SIGTERM ends crew-guest in about 25 ms while it
+  path, then exits rather than powering off, since systemd is already
+  powering off.
+- **One SIGTERM to the runner, from crew-guest.** The unit is
+  `KillMode=mixed`. With the default, systemd signalled the whole cgroup
+  and crew-guest signalled run.sh again. Under `RUNNER_MANUALLY_TRAP_SIG`
+  run.sh runs the listener in its own process group, forwards the first
+  signal to it as SIGINT, drops its trap and waits for the last output;
+  the second SIGTERM killed it in that wait. `Runner.stop/1` signals once
+  per runner, whichever stop asks first. systemd's SIGKILL still clears
+  the cgroup when crew-guest exits, or at the timeout.
+- **The budget:** 11 s from SIGTERM (10 s for the agent's stop, as §13.5
+  says). The runner gets all but the last 2 s: its own cancel gives a
+  step 7.5 s after SIGINT before it escalates (`ProcessInvoker`), so 9 s
+  covers that plus time for the worker to report. A runner still up then
+  is SIGKILLed with every process group in its tree (run.sh's and the
+  listener's, never crew-guest's), gets 0.5 s for its output to close,
+  and is reported `job_finished` with detail `runner_stop_timeout`; then
+  the final snapshot and the flush, in the 2 s left. A step that ignores
+  SIGTERM too, which the runner would kill at 10 s, is killed at 9 s.
+- **Past the budget:** `-shutdown_time 2000` caps `init:stop`, and the
+  handler halts the BEAM 12.5 s after SIGTERM. Its timer lives in
+  `erl_signal_server`, which Kernel stops late in `init:stop`, so the cap
+  covers what the timer can't. All of it is under the unit's 15 s
+  `TimeoutStopSec`. A test holds the unit, `vm.args` and the defaults to
+  these bounds.
+- **A Port reports its exit only once its output closes,** so with
+  run.sh's listener still holding the pipe, crew-guest doesn't see an
+  exit until the listener is done or killed.
+- **In local mode** a real SIGTERM ends crew-guest in about 30 ms while it
   waits for its payload, and in about 0.5 s mid-job, most of it the steps
   lane's 2-a-second limit on the last snapshot.
 

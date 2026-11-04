@@ -22,16 +22,19 @@ defmodule CrewGuest.Main do
   rest of the pages and the worker log are read, everything is flushed
   (10 s at most) and the VM powers off.
 
-  **On `{"stop": true}`** from any response: SIGTERM to the runner, up to
-  half the flush budget for it to exit, then the same, all within 10 s. A
-  runner still up at half time is reported `job_finished` with detail
-  `runner_stop_timeout`. During the boot, the boot is dropped and what's
-  held is flushed.
+  **On `{"stop": true}`** from any response: one SIGTERM to the runner,
+  which has until 2 s (`flush_reserve_ms`) before the end of the 10 s
+  budget to exit; then the same as above, within the budget. A runner
+  still up at its deadline is SIGKILLed with everything it started
+  (`CrewGuest.Runner.kill/1`), given up to 0.5 s for its output to close,
+  and reported `job_finished` with detail `runner_stop_timeout`. During the
+  boot, the boot is dropped and what's held is flushed.
 
   **On SIGTERM** (`sigterm/1`: systemd is stopping the VM, see
-  `CrewGuest.Signals`): the same, within `sigterm_timeout_ms` (6 s), and
-  then crew-guest exits instead of powering off. A stop already under way
-  ends by SIGTERM's deadline if that's sooner.
+  `CrewGuest.Signals`): the same, within `sigterm_timeout_ms` (11 s, so 9
+  s for the runner), and then crew-guest exits instead of powering off. A
+  stop already under way keeps its single SIGTERM to the runner, and ends
+  by SIGTERM's deadline if that's sooner.
 
   A failed OS step (DNS, the CA, Docker) is logged and reported as a log
   line, and the boot carries on: the job may not need it.
@@ -44,6 +47,9 @@ defmodule CrewGuest.Main do
   alias CrewGuest.{API, Control, EnvFile, JIT, Metrics, Outbox, Pages, Runner, Steps}
 
   @resize_timeout 120_000
+
+  # After SIGKILL, how long the runner's output gets to close.
+  @kill_wait_ms 500
 
   def start_link(opts),
     do: GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -63,7 +69,7 @@ defmodule CrewGuest.Main do
       system: Keyword.fetch!(opts, :system),
       client: Keyword.fetch!(opts, :client),
       outbox: Keyword.get(opts, :outbox, Outbox),
-      # :booting → :running → :stopping → :halting → :halted
+      # :booting → :running → :stopping → (:killing →) :halting → :halted
       phase: :booting,
       boot: nil,
       job: nil,
@@ -104,9 +110,10 @@ defmodule CrewGuest.Main do
   def handle_cast(:sigterm, %{phase: :running} = s),
     do: {:noreply, stop_runner(%{s | ending: :exit}, s.cfg.sigterm_timeout_ms)}
 
-  def handle_cast(:sigterm, %{phase: phase} = s) when phase in [:stopping, :halting] do
+  # The runner has had its SIGTERM; it keeps to SIGTERM's budget too.
+  def handle_cast(:sigterm, %{phase: phase} = s) when phase in [:stopping, :killing, :halting] do
     budget = s.cfg.sigterm_timeout_ms
-    if phase == :stopping, do: Process.send_after(self(), :runner_stop_timeout, div(budget, 2))
+    if phase == :stopping, do: runner_timer(s, budget)
     {:noreply, sooner(%{s | ending: :exit}, deadline(budget))}
   end
 
@@ -165,22 +172,39 @@ defmodule CrewGuest.Main do
     {:noreply, shutdown(s, s.deadline || deadline(s.cfg.flush_timeout_ms))}
   end
 
+  # Its deadline: SIGKILL to the runner and all it started, so nothing
+  # writes past the last snapshot, and a moment for its output to close.
   def handle_info(:runner_stop_timeout, %{phase: :stopping} = s) do
     Logger.warning("crew-guest: the runner didn't exit after SIGTERM")
-    Outbox.state(s.outbox, "job_finished", "runner_stop_timeout")
-    {:noreply, shutdown(s, s.deadline)}
+
+    try do
+      Runner.kill(s.runner)
+    catch
+      :exit, _reason -> :ok
+    end
+
+    wait = min(@kill_wait_ms, max(s.deadline - now(), 0))
+    Process.send_after(self(), :runner_kill_timeout, wait)
+    {:noreply, %{s | phase: :killing}}
+  end
+
+  def handle_info({:runner_exited, _status}, %{phase: :killing} = s), do: {:noreply, killed(s)}
+
+  def handle_info(:runner_kill_timeout, %{phase: :killing} = s) do
+    Logger.warning("crew-guest: the runner's output is still open after SIGKILL")
+    {:noreply, killed(s)}
   end
 
   # The runner's process went without reporting an exit.
   def handle_info({:DOWN, _ref, :process, pid, reason}, %{runner: pid, phase: phase} = s)
-      when phase in [:running, :stopping] and reason != :normal do
+      when phase in [:running, :stopping, :killing] and reason != :normal do
     report(s, "crew-guest: lost track of the runner (#{inspect(reason)})")
     {:noreply, shutdown(s, s.deadline || deadline(s.cfg.flush_timeout_ms))}
   end
 
   # The job's supervisor gave up (a part kept crashing).
   def handle_info({:EXIT, job, reason}, %{job: job, phase: phase} = s)
-      when phase in [:running, :stopping] do
+      when phase in [:running, :stopping, :killing] do
     report(s, "crew-guest: the job's processes failed (#{inspect(reason)})")
     {:noreply, shutdown(s, s.deadline || deadline(s.cfg.flush_timeout_ms))}
   end
@@ -352,7 +376,8 @@ defmodule CrewGuest.Main do
     end
   end
 
-  # SIGTERM to the runner, which gets half the budget to exit.
+  # SIGTERM to the runner (once: Runner.stop/1 sees to that), which gets
+  # all of the budget but the flush's reserve to exit.
   defp stop_runner(s, budget) do
     try do
       Runner.stop(s.runner)
@@ -361,8 +386,16 @@ defmodule CrewGuest.Main do
       :exit, _reason -> :ok
     end
 
-    Process.send_after(self(), :runner_stop_timeout, div(budget, 2))
+    runner_timer(s, budget)
     %{s | phase: :stopping, deadline: deadline(budget)}
+  end
+
+  defp runner_timer(s, budget),
+    do: Process.send_after(self(), :runner_stop_timeout, max(budget - s.cfg.flush_reserve_ms, 0))
+
+  defp killed(s) do
+    Outbox.state(s.outbox, "job_finished", "runner_stop_timeout")
+    shutdown(s, s.deadline)
   end
 
   # Ending

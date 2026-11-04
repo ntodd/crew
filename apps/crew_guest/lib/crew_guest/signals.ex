@@ -3,8 +3,9 @@ defmodule CrewGuest.Signals do
   What SIGTERM does to crew-guest (§13.5).
 
   A graceful stop of the VM (the power button, ctrl-alt-del) reaches
-  crew-guest as systemd's SIGTERM, with the unit's stop timeout before
-  SIGKILL. The BEAM's own handler (`erl_signal_handler`) answers SIGTERM
+  crew-guest as systemd's SIGTERM (to it alone: `KillMode=mixed`), with
+  the unit's stop timeout before SIGKILL. The BEAM's own handler
+  (`erl_signal_handler`) answers SIGTERM
   with `init:stop/0`, which stops the release without stopping the runner
   or flushing what's held, and waits out each process's shutdown timeout
   on the way.
@@ -14,8 +15,10 @@ defmodule CrewGuest.Signals do
   release), which starts the ordered stop and returns at once: the handler
   runs in the signal server, so it mustn't block. It also arms a backstop:
   if the BEAM is still up `:deadline_ms` after the first SIGTERM, it
-  halts (status 1), well before systemd's SIGKILL would. SIGUSR1 and
-  SIGQUIT keep the BEAM's handling.
+  halts (status 1), before systemd's SIGKILL would. Its timer lives in the
+  signal server, which goes when Kernel stops, late in `init:stop`; so
+  `-shutdown_time` in `rel/vm.args.eex` caps `init:stop` itself. SIGUSR1
+  and SIGQUIT keep the BEAM's handling.
   """
 
   @behaviour :gen_event
@@ -29,7 +32,7 @@ defmodule CrewGuest.Signals do
   Takes SIGTERM over from the BEAM's handler. Installing again replaces
   the earlier install. Options:
   - `:on_sigterm` (required), a function of no arguments;
-  - `:deadline_ms` (default 8 000), when the backstop halts;
+  - `:deadline_ms` (default 12 500), when the backstop halts;
   - `:on_deadline`, what the backstop does (for tests).
   """
   @spec install(keyword()) :: :ok | {:error, term()}
@@ -60,7 +63,7 @@ defmodule CrewGuest.Signals do
     {:ok,
      %{
        on_sigterm: Map.fetch!(args, :on_sigterm),
-       deadline_ms: Map.get(args, :deadline_ms, 8_000),
+       deadline_ms: Map.get(args, :deadline_ms, 12_500),
        on_deadline: Map.get(args, :on_deadline, &halt/0),
        armed: false
      }}

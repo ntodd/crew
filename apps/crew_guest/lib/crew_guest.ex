@@ -7,7 +7,7 @@ defmodule CrewGuest do
   reports back: states, steps, live log lines and metrics. When the runner
   exits, or the agent asks it to stop, it flushes what it holds and powers
   the VM off. On SIGTERM (systemd stopping the VM) it does the same within
-  6 s, then exits.
+  11 s, then exits.
 
   The pieces: `CrewGuest.Main` runs the sequence, `CrewGuest.Outbox`
   delivers (and buffers) what's reported, `CrewGuest.Runner` supervises the
