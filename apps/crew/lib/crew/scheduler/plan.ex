@@ -180,14 +180,16 @@ defmodule Crew.Scheduler.Plan do
   end
 
   # Whether the box could hold the size at all, empty.
-  defp could_hold?(box, size) do
+  @doc "Whether a box could ever hold a VM of `size` (its limits and what it offers)."
+  def could_hold?(box, size) do
     size.vcpus <= box.caps.max_vcpus_per_vm and size.memory_mib <= box.caps.max_memory_mib_per_vm and
       size.memory_mib + box.caps.vmm_overhead_mib <= allocatable_memory_mib(box) and
       size.vcpus <= allocatable_vcpus(box)
   end
 
-  defp arch_ok?(_box, :any), do: true
-  defp arch_ok?(box, arch), do: box.guest_arch == Atom.to_string(arch)
+  @doc false
+  def arch_ok?(_box, :any), do: true
+  def arch_ok?(box, arch), do: box.guest_arch == Atom.to_string(arch)
 
   defp state_ok?(box, now) do
     box.online and not box.draining and not box.needs_approval and box.firewall_ok and
