@@ -130,10 +130,16 @@ func (s *Server) handle(ctx context.Context, r Request, peer Peer) (Response, er
 	case "tap-add":
 		return Response{}, s.tapAdd(ctx, r.Lease)
 	case "tap-del":
+		if err := s.ownLease(r.Lease, r.VMID); err != nil {
+			return Response{}, err
+		}
 		return Response{}, s.tapDel(ctx, r.Lease)
 	case "pair-add":
 		return Response{}, s.pair(ctx, "add", r.Lease)
 	case "pair-del":
+		if err := s.ownLease(r.Lease, r.VMID); err != nil {
+			return Response{}, err
+		}
 		return Response{}, s.pairDel(ctx, r.Lease)
 	case "nft-verify":
 		st, err := s.nftVerify(ctx)
@@ -343,6 +349,17 @@ func (s *Server) jailLease(vmID string) int {
 // leaseHolder is the VM, other than except, whose jail records lease
 // index n, or "". A lease is one jail's at most: its tap and pair are
 // that VM's until its cleanup.
+// ownLease refuses tap-del and pair-del for vmID when another VM's jail
+// records the lease: those are that VM's until its own cleanup,
+// whatever the agent sends (a failed start's cleanup, say, for a lease
+// tap-add refused because an orphan's jail holds it).
+func (s *Server) ownLease(l Lease, vmID string) error {
+	if holder := s.leaseHolder(l.Index, vmID); holder != "" {
+		return fail(ErrLeaseInUse, "lease %d is %s's (its jail records it), not %s's", l.Index, holder, vmID)
+	}
+	return nil
+}
+
 func (s *Server) leaseHolder(n int, except string) string {
 	for _, j := range s.jails() {
 		if j.LeaseIndex == n && j.VMID != except {

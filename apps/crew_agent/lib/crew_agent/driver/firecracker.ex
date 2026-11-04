@@ -406,14 +406,14 @@ defmodule CrewAgent.Driver.Firecracker do
       # crew-vmctl recorded the lease (cleanup does the one it recorded).
       case lease_index(dir) do
         nil -> :ok
-        index -> drop_lease(index)
+        index -> drop_lease(vm_id, index)
       end
     end
   end
 
-  defp drop_lease(index) do
-    with {:ok, _} <- vmctl_ok(%{"verb" => "pair-del", "lease_index" => index}),
-         {:ok, _} <- vmctl_ok(%{"verb" => "tap-del", "lease_index" => index}),
+  defp drop_lease(vm_id, index) do
+    with {:ok, _} <- vmctl_ok(%{"verb" => "pair-del", "lease_index" => index, "vm_id" => vm_id}),
+         {:ok, _} <- vmctl_ok(%{"verb" => "tap-del", "lease_index" => index, "vm_id" => vm_id}),
          do: :ok
   end
 

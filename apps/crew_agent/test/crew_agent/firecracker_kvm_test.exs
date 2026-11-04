@@ -178,7 +178,8 @@ defmodule CrewAgent.FirecrackerKVMTest do
     lease = lease(ctx, vm_id)
     jail = Path.join([ctx.config.data_dir, "jail", "firecracker", vm_id])
     # Without its pair it never gets its payload, so it stays up.
-    assert {:ok, _} = Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease})
+    assert {:ok, _} =
+             Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease, "vm_id" => vm_id})
 
     # crew-vmctl is out of reach when systemd kills it at its deadline.
     Config.put(%{ctx.config | vmctl_socket: "/run/crew/nowhere.sock"})
@@ -229,7 +230,8 @@ defmodule CrewAgent.FirecrackerKVMTest do
     vm_id = start(ctx)
     lease = lease(ctx, vm_id)
     # Without its pair it never gets its payload, so it stays up.
-    assert {:ok, _} = Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease})
+    assert {:ok, _} =
+             Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease, "vm_id" => vm_id})
 
     # Someone adds a rule.
     {_, 0} =
@@ -344,7 +346,8 @@ defmodule CrewAgent.FirecrackerKVMTest do
 
     # vm_pairs fails closed (§14.2): with the pair gone, nothing from the
     # VM gets past prerouting, so its payload never comes.
-    assert {:ok, _} = Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease})
+    assert {:ok, _} =
+             Firecracker.vmctl(%{"verb" => "pair-del", "lease_index" => lease, "vm_id" => vm_id})
 
     # The agent goes away (this VM's server does): only systemd's
     # RuntimeMaxSec is left to enforce the deadline (§10.7).
