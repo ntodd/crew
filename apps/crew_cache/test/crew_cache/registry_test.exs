@@ -58,6 +58,19 @@ defmodule CrewCache.RegistryTest do
                Stats.snapshot().top
     end
 
+    # Go clients (containerd) negotiate HTTP/2 through ALPN.
+    test "the same pull over HTTP/2", %{ctx: ctx} do
+      big = :crypto.strong_rand_bytes(300_000)
+      image = FakeRegistry.put_image("library/debian", "13", [big])
+      FakeRegistry.slow(FakeRegistry.digest(big), 5)
+      h2 = Map.put(ctx, :protocols, [:http2])
+
+      first = pull(h2, "docker.io", "library/debian", "13")
+      assert first.head.headers["docker-content-digest"] == [image.manifest]
+      assert {FakeRegistry.digest(big), big} in first.blobs
+      assert pull(h2, "docker.io", "library/debian", "13").blobs == first.blobs
+    end
+
     @tag cache: [tag_ttl_ms: 0]
     test "a tag is resolved upstream every time, past the micro-cache", %{ctx: ctx} do
       first = FakeRegistry.put_image("actions/runner", "latest", layers())
