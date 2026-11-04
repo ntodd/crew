@@ -649,6 +649,139 @@ defmodule Crew.Jobs do
     for t <- ticks, do: {t, Enum.count(spans, fn {a, b} -> a <= t and (is_nil(b) or b > t) end)}
   end
 
+  # -- the dashboard (§17.3) ----------------------------------------------------------
+
+  @doc "Running, waiting and booting counts for Crew's jobs."
+  def counts do
+    running =
+      Repo.aggregate(
+        from(j in Job, where: j.classification == "ours" and j.gh_state == "in_progress"),
+        :count
+      )
+
+    waiting =
+      Repo.aggregate(
+        from(j in Job, where: j.classification == "ours" and j.gh_state == "queued"),
+        :count
+      )
+
+    booting =
+      Repo.aggregate(
+        from(v in Crew.VMs.VM, where: v.state in ["requested", "starting", "booted"]),
+        :count
+      )
+
+    %{running: running, waiting: waiting, booting: booting}
+  end
+
+  @doc "The `n` longest-waiting Crew jobs, with their reasons."
+  def longest_waiting(n \\ 10) do
+    Repo.all(
+      from j in Job,
+        where: j.classification == "ours" and j.gh_state == "queued",
+        order_by: [asc: coalesce(j.queued_at, j.seen_at)],
+        limit: ^n,
+        preload: [:repo, :size]
+    )
+  end
+
+  @doc "The `n` Crew jobs completed last."
+  def recently_completed(n \\ 20) do
+    Repo.all(
+      from j in Job,
+        where: j.classification == "ours" and j.gh_state == "completed",
+        order_by: [desc: j.completed_at],
+        limit: ^n,
+        preload: [:repo, :size]
+    )
+  end
+
+  @doc """
+  Crew jobs started per 5 minutes over the last day, by conclusion (the
+  dashboard's stacked chart). Times are Unix seconds.
+  """
+  def started_series(now \\ DateTime.utc_now()) do
+    since = DateTime.add(now, -86_400)
+    step = 300
+
+    rows =
+      Repo.all(
+        from j in Job,
+          where: j.classification == "ours" and j.started_at > ^since,
+          select: {j.started_at, j.conclusion}
+      )
+
+    bucket = fn at -> div(DateTime.to_unix(at), step) * step end
+
+    ticks =
+      for i <- 0..div(86_400, step), do: div(DateTime.to_unix(since), step) * step + i * step
+
+    by = fn pick ->
+      counts =
+        rows
+        |> Enum.filter(fn {_, c} -> pick.(c) end)
+        |> Enum.frequencies_by(fn {at, _} -> bucket.(at) end)
+
+      for t <- ticks, do: {t, Map.get(counts, t, 0)}
+    end
+
+    %{
+      since: DateTime.to_unix(since),
+      until: DateTime.to_unix(now),
+      success: by.(&(&1 == "success")),
+      failure: by.(&(&1 == "failure")),
+      other: by.(&(&1 not in ["success", "failure"]))
+    }
+  end
+
+  @doc """
+  p50 and p95 of the wait (seen → placed) and the boot (placed → runner
+  listening) per hour over the last day, from VMs and their jobs (§16.4).
+  """
+  def phase_series(now \\ DateTime.utc_now()) do
+    since = DateTime.add(now, -86_400)
+
+    rows =
+      Repo.all(
+        from v in Crew.VMs.VM,
+          join: j in Job,
+          on: j.id == v.job_id,
+          where: v.requested_at > ^since,
+          select: {v.requested_at, j.seen_at, v.idle_at}
+      )
+
+    hour = fn at -> div(DateTime.to_unix(at), 3600) * 3600 end
+
+    series = fn values ->
+      values
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+      |> Enum.sort()
+      |> Enum.map(fn {t, xs} -> {t, percentile(xs, 0.5), percentile(xs, 0.95)} end)
+    end
+
+    waits =
+      for {placed, seen, _} <- rows,
+          seen,
+          do: {hour.(placed), max(DateTime.diff(placed, seen), 0)}
+
+    boots =
+      for {placed, _, idle} <- rows,
+          idle,
+          do: {hour.(placed), max(DateTime.diff(idle, placed), 0)}
+
+    %{
+      since: DateTime.to_unix(since),
+      until: DateTime.to_unix(now),
+      wait: series.(waits),
+      boot: series.(boots)
+    }
+  end
+
+  defp percentile(xs, p) do
+    sorted = Enum.sort(xs)
+    Enum.at(sorted, min(length(sorted) - 1, floor(p * length(sorted))))
+  end
+
   @doc "The last `n` successful completions of the same job (repo, workflow, name), for \"usually X\"."
   def recent_successes(%Job{} = job, n) do
     Repo.all(
