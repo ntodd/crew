@@ -195,6 +195,40 @@ jobs:
       - run: mix credo --strict
       - run: mix test
 
+  # crew_cache (§15). Its tests run a fake registry in-process. Go is
+  # there for the CA chain check in crypto/x509 (the guest's dockerd
+  # and containerd verify the cache with it).
+  cache:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/crew_cache
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: native/go.mod
+          cache: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            apps/crew_cache/deps
+            apps/crew_cache/_build
+          key: cache-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('apps/crew_cache/mix.lock') }}
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
+      - run: mix test
+
   # native/: crew-vz (§11.4). Unit tests and vet on macOS, plus the
   # linux/arm64 vet crew-vmctl shares. The real-VM suite (make
   # integration) needs Virtualization.framework on bare Apple silicon,
