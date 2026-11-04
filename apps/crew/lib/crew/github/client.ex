@@ -517,6 +517,26 @@ defmodule Crew.GitHub.Client do
     )
   end
 
+  @doc "Re-runs a run, all its jobs (a person's Re-run all, §17.3)."
+  def rerun(installation_id, repo, run_id), do: run_post(installation_id, repo, run_id, "rerun")
+
+  @doc "Re-runs a run's failed jobs (§17.3)."
+  def rerun_failed(installation_id, repo, run_id),
+    do: run_post(installation_id, repo, run_id, "rerun-failed-jobs")
+
+  defp run_post(installation_id, repo, run_id, what) do
+    case installation_request(
+           installation_id,
+           :post,
+           "#{repo_path(repo)}/actions/runs/#{run_id}/#{what}",
+           endpoint: "/repos/{o}/{r}/actions/runs/{id}/#{what}",
+           class: :normal
+         ) do
+      {:ok, %{status: status}} when status in 200..299 -> :ok
+      other -> unexpected(other)
+    end
+  end
+
   @doc "Cancels a run (fork refusal, §19.5; or a person's Cancel)."
   def cancel_run(installation_id, repo, run_id, opts \\ []) do
     case installation_request(

@@ -364,6 +364,73 @@ defmodule Crew.Boxes do
     :ok
   end
 
+  # -- admin controls (§17.3) -------------------------------------------------------
+
+  @doc "Drains a box (no new VMs; idle ones are reaped, §8.5), or undrains it. Audited."
+  def set_draining(%Scope{} = scope, %Box{} = box, draining?, reason \\ "admin") do
+    admin(scope, fn ->
+      box =
+        box
+        |> Ecto.Changeset.change(draining: draining?, drain_reason: if(draining?, do: reason))
+        |> Repo.update!()
+
+      Audit.log(scope, if(draining?, do: "box.drain", else: "box.undrain"), box)
+      Crew.Scheduler.poke()
+      {:ok, changed(box)}
+    end)
+  end
+
+  @doc "Ends a box's quarantine early (§8.6). Audited."
+  def clear_quarantine(%Scope{} = scope, %Box{} = box) do
+    admin(scope, fn ->
+      box =
+        box
+        |> Ecto.Changeset.change(quarantined_until: nil, consecutive_failures: 0)
+        |> Repo.update!()
+
+      Audit.log(scope, "box.clear_quarantine", box)
+      Crew.Scheduler.poke()
+      {:ok, changed(box)}
+    end)
+  end
+
+  @override_fields ~w(allocatable_vcpus_override allocatable_memory_mib_override reserve_vcpus reserve_memory_mib cpu_overcommit max_vms)a
+
+  def change_overrides(%Box{} = box, attrs \\ %{}) do
+    box
+    |> Ecto.Changeset.cast(attrs, @override_fields, empty_values: [""])
+    |> Ecto.Changeset.validate_number(:cpu_overcommit,
+      greater_than_or_equal_to: 1.0,
+      less_than_or_equal_to: 4.0
+    )
+    |> Ecto.Changeset.validate_number(:reserve_vcpus, greater_than_or_equal_to: 0)
+    |> Ecto.Changeset.validate_number(:reserve_memory_mib, greater_than_or_equal_to: 0)
+    |> Ecto.Changeset.validate_number(:allocatable_vcpus_override, greater_than: 0)
+    |> Ecto.Changeset.validate_number(:allocatable_memory_mib_override, greater_than: 0)
+    |> Ecto.Changeset.validate_number(:max_vms, greater_than: 0)
+  end
+
+  @doc "Capacity overrides (§8.3). Audited with what changed."
+  def update_overrides(%Scope{} = scope, %Box{} = box, attrs) do
+    admin(scope, fn ->
+      changeset = change_overrides(box, attrs)
+
+      with {:ok, updated} <- Repo.update(changeset) do
+        Audit.log(
+          scope,
+          "box.overrides",
+          updated,
+          Map.new(changeset.changes, fn {k, v} -> {to_string(k), v} end)
+        )
+
+        Crew.Scheduler.poke()
+        {:ok, changed(updated)}
+      end
+    end)
+  end
+
+  defp admin(scope, fun), do: if(Scope.admin?(scope), do: fun.(), else: {:error, :unauthorized})
+
   # -- revoking ------------------------------------------------------------------
 
   @doc "Revokes a box: its key is deleted and its socket dropped at once."

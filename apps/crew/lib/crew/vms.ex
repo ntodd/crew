@@ -306,6 +306,39 @@ defmodule Crew.VMs do
     )
   end
 
+  @doc """
+  An admin kills a VM (§17.3): a forced stop, recorded in the activity
+  feed and the audit log. Its server takes it from there when it exits.
+  """
+  def kill(%Crew.Scope{} = scope, %VM{} = vm) do
+    if Crew.Scope.admin?(scope) do
+      result =
+        Operations.dispatch(
+          vm.box_id,
+          "vm.stop",
+          %{"vm_id" => vm.id, "reason" => "admin", "force" => true, "grace_s" => 0},
+          vm_id: vm.id,
+          user_id: scope.user.id
+        )
+
+      Crew.Audit.log(scope, "vm.kill", vm, %{"name" => vm.name})
+
+      Crew.Activity.record("vm_killed", "#{scope.user.login} killed VM #{vm.name}",
+        box_id: vm.box_id,
+        repo_id: vm.repo_id,
+        masked: "An admin killed a VM of another repo"
+      )
+
+      case result do
+        {:ok, _} -> :ok
+        {:error, :offline} -> {:error, :offline}
+        other -> other
+      end
+    else
+      {:error, :unauthorized}
+    end
+  end
+
   @doc "What a box's VMs hold of it: every VM that isn't destroyed counts (§8.6)."
   def allocation(box_id) do
     vms = for_box(box_id)
