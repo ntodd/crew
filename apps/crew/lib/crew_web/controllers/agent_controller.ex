@@ -35,6 +35,26 @@ defmodule CrewWeb.AgentController do
     end
   end
 
+  @doc "The linux-vm launcher (§12.3)."
+  def linux_vm_script(conn, _params), do: send_launcher(conn, "linux-vm")
+
+  @doc "The mac-vm launcher (§12.3)."
+  def mac_vm_script(conn, _params), do: send_launcher(conn, "mac-vm")
+
+  defp send_launcher(conn, type) do
+    case Crew.Boxes.Launcher.script(type, Crew.Config.base_url()) do
+      {:ok, script} ->
+        conn
+        |> put_resp_content_type("text/x-shellscript")
+        |> send_resp(200, script)
+
+      {:error, :bad_url} ->
+        conn
+        |> put_status(:internal_server_error)
+        |> json(%{error: "the control plane's URL (CREW_BASE_URL) can't go in a launcher"})
+    end
+  end
+
   @doc """
   A Flatcar box's first-boot Ignition for a join token (§12.2, Foreman's):
   `join_token`, `arch` and optional `ssh_keys[]`, answered with the box's
