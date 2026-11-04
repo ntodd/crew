@@ -212,8 +212,14 @@ an `EnvironmentFile` (it could set `LD_PRELOAD` for a root process).
 
 ## The packet filter and `nft-verify`
 
-`etc/nft.conf` is §14.2's ruleset with two changes:
+`etc/nft.conf` is §14.2's ruleset with three changes:
 
+- **Pings are accepted to `10.199.0.1` only.** §14.2's rule accepts an
+  echo request to any address on the host, so a guest could ping its
+  gateway, other VMs' gateways and the host's uplink and tailnet
+  addresses: that's the input chain, which `blocked4` and `site4` (in
+  forward) don't cover. A test holds every accepting input rule to the
+  service address.
 - `blocked4` leaves out `255.255.255.255/32`, which `240.0.0.0/4`
   covers. nft refuses overlapping intervals in a set without
   `auto-merge`, so the spec's set doesn't load.
@@ -226,7 +232,11 @@ an `EnvironmentFile` (it could set `LD_PRELOAD` for a root process).
   forward, in the `ip mangle` table, which Crew owns on a box.
 
 crew-vmctl embeds both files, so what crew-net loads and what
-`nft-verify` checks are one copy.
+`nft-verify` checks are one copy. The tests' listings
+(`ruleset/testdata/`) are recorded from them by
+`ruleset/testdata/record.sh`, with the files' hash in `rules.sha256`; a
+test fails when the files change and the listings weren't recorded
+again.
 
 `nft-verify` loads them into a new network namespace (`crew-vmctl
 nft-reference`), lists that with `nft -j list table inet crew` and

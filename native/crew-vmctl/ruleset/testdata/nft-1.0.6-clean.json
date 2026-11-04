@@ -11,7 +11,7 @@
             "table": {
                 "family": "inet",
                 "name": "crew",
-                "handle": 2
+                "handle": 1
             }
         },
         {
@@ -507,6 +507,18 @@
                                 }
                             },
                             "right": "crewt*"
+                        }
+                    },
+                    {
+                        "match": {
+                            "op": "==",
+                            "left": {
+                                "payload": {
+                                    "protocol": "ip",
+                                    "field": "daddr"
+                                }
+                            },
+                            "right": "10.199.0.1"
                         }
                     },
                     {

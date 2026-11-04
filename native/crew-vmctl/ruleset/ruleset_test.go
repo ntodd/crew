@@ -1,6 +1,8 @@
 package ruleset
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"strings"
@@ -25,6 +27,71 @@ func read(t *testing.T, name string) []byte {
 
 func listing(t *testing.T, nft, ipt, kind string) Listing {
 	return Listing{Nft: read(t, "nft-"+nft+"-"+kind+".json"), Mangle: string(read(t, "iptables-"+ipt+"-mangle.save"))}
+}
+
+// The listings must be of the rules crew-vmctl ships: change etc/ and
+// they're recorded again (with the hash of what they were recorded from).
+func TestTestdataIsOfTheShippedRules(t *testing.T) {
+	sum := sha256.Sum256([]byte(etc.NftConf + etc.ConnlimitRules))
+	want := strings.TrimSpace(string(read(t, "rules.sha256")))
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("testdata was recorded from other rules (%s, now %s): record it again (README)", want, got)
+	}
+}
+
+// From a VM, nothing on the host but the service address answers (§14.4):
+// every rule in the input chain that accepts from crewt* names it.
+func TestGuestsReachOnlyTheServiceAddress(t *testing.T) {
+	for _, name := range []string{"nft-1.0.6-clean.json", "nft-1.1.6-clean.json"} {
+		var doc struct {
+			Nftables []map[string]json.RawMessage `json:"nftables"`
+		}
+		if err := json.Unmarshal(read(t, name), &doc); err != nil {
+			t.Fatal(err)
+		}
+		type match struct {
+			Left struct {
+				Meta    struct{ Key string }             `json:"meta"`
+				Payload struct{ Protocol, Field string } `json:"payload"`
+			} `json:"left"`
+			Right any `json:"right"`
+		}
+		accepts := 0
+		for _, o := range doc.Nftables {
+			raw, ok := o["rule"]
+			if !ok {
+				continue
+			}
+			var r struct {
+				Chain string                       `json:"chain"`
+				Expr  []map[string]json.RawMessage `json:"expr"`
+			}
+			if err := json.Unmarshal(raw, &r); err != nil {
+				t.Fatal(err)
+			}
+			fromVMs, accept, toService := false, false, false
+			for _, e := range r.Expr {
+				if _, ok := e["accept"]; ok {
+					accept = true
+				}
+				var m match
+				if b, ok := e["match"]; ok && json.Unmarshal(b, &m) == nil {
+					fromVMs = fromVMs || (m.Left.Meta.Key == "iifname" && m.Right == "crewt*")
+					toService = toService || (m.Left.Payload.Protocol == "ip" && m.Left.Payload.Field == "daddr" && m.Right == "10.199.0.1")
+				}
+			}
+			if r.Chain != "input" || !fromVMs || !accept {
+				continue
+			}
+			accepts++
+			if !toService {
+				t.Errorf("%s: an input rule accepts from VMs without naming 10.199.0.1: %s", name, raw)
+			}
+		}
+		if accepts != 3 {
+			t.Errorf("%s: %d accepting input rules, want 3", name, accepts)
+		}
+	}
 }
 
 func TestTheLoadedRulesetMatchesItself(t *testing.T) {
