@@ -149,7 +149,7 @@ defmodule CrewAgent.Images do
   # `rootfs.ext4`, cloned in, for a real driver without a download.
   defp prepare_from_dir(config, image, src) do
     d = dir(config, image.id)
-    kernel = Enum.find(["kernel", "Image"], &File.exists?(Path.join(src, &1)))
+    kernel = Enum.find(["kernel", "Image"], &File.regular?(Path.join(src, &1)))
 
     with true <- kernel != nil and File.exists?(Path.join(src, "rootfs.ext4")),
          :ok <- File.mkdir_p(d),

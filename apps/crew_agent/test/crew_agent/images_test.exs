@@ -300,6 +300,21 @@ defmodule CrewAgent.ImagesTest do
     assert File.exists?(live)
   end
 
+  # The image build's output directory (images/guest/out/<arch>) holds
+  # `Image` beside `kernel/`, the kernel build's directory.
+  test "a development image dir: the kernel is a file, not the kernel build's directory", ctx do
+    src = Path.join(ctx.config.data_dir, "out")
+    File.mkdir_p!(Path.join(src, "kernel"))
+    File.write!(Path.join(src, "Image"), "the kernel")
+    File.write!(Path.join(src, "rootfs.ext4"), "the rootfs")
+    config = %{ctx.config | dev: true, dev_image_dir: src}
+    id = CrewProtocol.uuid7()
+
+    assert :ok = Images.prepare(%{id: id, version: "0.0.0-dev", arch: "arm64"}, config)
+    assert File.read!(Images.kernel(config, id)) == "the kernel"
+    assert Images.ready?(config, id)
+  end
+
   test "the inventory and ready? never see a prepare in progress", ctx do
     id = CrewProtocol.uuid7()
     tmp = Images.tmp_dir(ctx.config, id)
