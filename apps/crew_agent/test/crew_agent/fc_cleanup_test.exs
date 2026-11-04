@@ -11,7 +11,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
 
   alias CrewAgent.{Config, FakeVmctl, Handler, Net}
   alias CrewAgent.Driver.Firecracker.Monitor
-  alias CrewAgent.VMs.Cleanup
+  alias CrewAgent.VMs.{Cleanup, Janitor}
 
   setup do
     base = Config.get()
@@ -31,6 +31,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
 
     Config.put(config)
     Monitor.reset()
+    Cleanup.reset()
 
     image_id = CrewProtocol.uuid7()
     image = Path.join([data, "images", image_id])
@@ -40,6 +41,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     {:ok, jails} = Agent.start_link(fn -> [] end)
     # crew-vmctl's cleanup fails until the test says otherwise.
     cleanup_works = :counters.new(1, [])
+    list_fails = :counters.new(1, [])
     test = self()
 
     answer = fn
@@ -67,7 +69,13 @@ defmodule CrewAgent.FirecrackerCleanupTest do
         %{"ok" => true, "vm" => %{"vm_id" => id, "state" => "gone", "exited" => exited}}
 
       %{"verb" => "list"} ->
-        %{"ok" => true, "vms" => [], "jails" => Agent.get(jails, & &1)}
+        # A list that fails first, when the test asks for it.
+        if :counters.get(list_fails, 1) > 0 do
+          :counters.sub(list_fails, 1, 1)
+          %{"ok" => false, "error" => "failed", "detail" => "systemctl: timed out"}
+        else
+          %{"ok" => true, "vms" => [], "jails" => Agent.get(jails, & &1)}
+        end
 
       _ ->
         %{"ok" => true}
@@ -79,10 +87,18 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     on_exit(fn ->
       Config.put(base)
       Monitor.reset()
+      Cleanup.reset()
       File.rm_rf!(root)
     end)
 
-    %{config: config, root: root, image_id: image_id, works: cleanup_works, jails: jails}
+    %{
+      config: config,
+      root: root,
+      image_id: image_id,
+      works: cleanup_works,
+      jails: jails,
+      list_fails: list_fails
+    }
   end
 
   defp cgroup(ctx, vm_id),
@@ -200,7 +216,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     File.write!(Path.join(dir, "exited.json"), ~s({"code":0,"reason":"poweroff","at":1}))
     Cleanup.failed(ctx.config, vm_id, "rm: device busy")
 
-    Cleanup.claim_leases()
+    Cleanup.reserve_leases()
     assert {:error, :taken} = Net.claim(CrewProtocol.uuid7(), 4321)
     Cleanup.retry_all()
     assert Cleanup.pending?(ctx.config, vm_id)
@@ -224,7 +240,9 @@ defmodule CrewAgent.FirecrackerCleanupTest do
         do: File.write!(Path.join(Config.vm_dir(ctx.config, id), "exited.json"), "{}")
 
     Cleanup.failed(ctx.config, pending, "x")
-    Agent.update(ctx.jails, fn _ -> [orphan, live, done, pending] end)
+
+    Agent.update(ctx.jails, fn _ -> Enum.map([orphan, live, done, pending], &%{"vm_id" => &1}) end)
+
     :counters.put(ctx.works, 1, 0)
 
     Cleanup.reconcile()
@@ -235,6 +253,71 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     assert Cleanup.pending?(ctx.config, done)
   end
 
+  defp vm_record(ctx, lease, opts) do
+    vm_id = CrewProtocol.uuid7()
+    dir = Config.vm_dir(ctx.config, vm_id)
+    File.mkdir_p!(dir)
+
+    File.write!(
+      Path.join(dir, "vm.json"),
+      Jason.encode!(%{"vm_id" => vm_id, "lease_index" => lease})
+    )
+
+    if opts[:exited], do: File.write!(Path.join(dir, "exited.json"), ~s({"at":1}))
+    if opts[:pending], do: Cleanup.failed(ctx.config, vm_id, "x")
+    vm_id
+  end
+
+  defp release_all(ids), do: Enum.each(ids, &Net.release/1)
+
+  test "the janitor holds every lease before it's done starting, adoption or not", ctx do
+    live = vm_record(ctx, 5001, [])
+    pending = vm_record(ctx, 5002, exited: true, pending: true)
+    done = vm_record(ctx, 5003, exited: true)
+
+    # init itself, before anything else of the agent starts (the link, so
+    # no vm.start), not the adoption that follows it.
+    assert {:ok, _state, {:continue, _}} = Janitor.init([])
+    assert {:error, :taken} = Net.claim(CrewProtocol.uuid7(), 5001)
+    assert {:error, :taken} = Net.claim(CrewProtocol.uuid7(), 5002)
+    assert {:ok, _} = Net.claim(other = CrewProtocol.uuid7(), 5003)
+    release_all([live, pending, done, other])
+  end
+
+  test "two records holding one lease block starts until it's sorted out", ctx do
+    a = vm_record(ctx, 5010, exited: true, pending: true)
+    b = vm_record(ctx, 5010, exited: true, pending: true)
+    assert {:ok, _, _} = Janitor.init([])
+
+    assert {:error, "lease_conflict", why} = Handler.handle(start_command())
+    assert why =~ "5010"
+
+    # One of them is cleaned up; the next look clears the block.
+    Cleanup.done(ctx.config, b)
+    File.rm_rf!(Config.vm_dir(ctx.config, b))
+    Cleanup.reserve_leases()
+    assert Cleanup.conflicts() == []
+    release_all([a, b])
+  end
+
+  test "an orphan jail is looked for every minute, its lease held until its cleanup works", ctx do
+    orphan = CrewProtocol.uuid7()
+    Agent.update(ctx.jails, fn _ -> [%{"vm_id" => orphan, "lease_index" => 5020}] end)
+    # The first list fails (crew-vmctl busy at start).
+    :counters.put(ctx.list_fails, 1, 1)
+
+    start_supervised!({Janitor, name: nil, every_ms: 50})
+    assert_receive {:cleanup, ^orphan}, 1_000
+    assert_receive {:cleanup, ^orphan}, 1_000
+    assert {:error, :taken} = Net.claim(CrewProtocol.uuid7(), 5020)
+
+    :counters.put(ctx.works, 1, 1)
+    Agent.update(ctx.jails, fn _ -> [] end)
+    Process.sleep(200)
+    assert {:ok, _} = Net.claim(other = CrewProtocol.uuid7(), 5020)
+    release_all([other])
+  end
+
   test "the janitor retries pending cleanups until they work", ctx do
     vm_id = CrewProtocol.uuid7()
     File.mkdir_p!(Config.vm_dir(ctx.config, vm_id))
@@ -242,7 +325,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     File.write!(Path.join(Config.vm_dir(ctx.config, vm_id), "exited.json"), "{}")
     Cleanup.failed(ctx.config, vm_id, "x")
 
-    start_supervised!({CrewAgent.VMs.Janitor, name: nil, every_ms: 50})
+    start_supervised!({Janitor, name: nil, every_ms: 50})
     assert_receive {:cleanup, ^vm_id}, 1_000
     assert_receive {:cleanup, ^vm_id}, 1_000
     assert Cleanup.pending?(ctx.config, vm_id)
