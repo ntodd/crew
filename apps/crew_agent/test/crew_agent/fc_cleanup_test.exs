@@ -320,6 +320,66 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     release_all([other])
   end
 
+  # A crash between writing vm.json and guest.json leaves a VM that
+  # can't be adopted.
+  defp unadoptable(ctx, lease) do
+    vm_id = vm_record(ctx, lease, [])
+    dir = Config.vm_dir(ctx.config, vm_id)
+    for f <- ["rootfs.ext4", "kernel"], do: File.write!(Path.join(dir, f), "")
+    Cleanup.reserve_leases()
+    assert {:error, :taken} = Net.claim(CrewProtocol.uuid7(), lease)
+    {vm_id, dir}
+  end
+
+  defp free?(lease) do
+    other = CrewProtocol.uuid7()
+
+    case Net.claim(other, lease) do
+      {:ok, _} -> Net.release(other) && true
+      _ -> false
+    end
+  end
+
+  test "a VM that can't be adopted is finished like any other once its cleanup works", ctx do
+    :counters.put(ctx.works, 1, 1)
+    {vm_id, dir} = unadoptable(ctx, 5030)
+
+    CrewAgent.VMs.adopt_all()
+    assert_received {:cleanup, ^vm_id}
+    exited = await("vm.exited", &(&1.vm_id == vm_id), 5_000)
+    assert exited.payload.reason == "boot_failed"
+    assert exited.payload.detail == "adopt_failed"
+    assert exited.payload.cleanup == "ok"
+
+    record = dir |> Path.join("exited.json") |> File.read!() |> Jason.decode!()
+    assert record["reason"] == "boot_failed"
+    refute File.exists?(Path.join(dir, "rootfs.ext4"))
+    refute File.exists?(Path.join(dir, "kernel"))
+    assert free?(5030)
+    # Nor is it taken for live again.
+    Cleanup.reserve_leases()
+    assert free?(5030)
+  end
+
+  test "a VM that can't be adopted, whose cleanup fails, is kept and retried", ctx do
+    {vm_id, dir} = unadoptable(ctx, 5031)
+
+    CrewAgent.VMs.adopt_all()
+    assert_received {:cleanup, ^vm_id}
+    exited = await("vm.exited", &(&1.vm_id == vm_id), 5_000)
+    assert exited.payload.cleanup == "error"
+    assert Cleanup.pending?(ctx.config, vm_id)
+    assert File.exists?(Path.join(dir, "exited.json"))
+    refute free?(5031)
+
+    :counters.put(ctx.works, 1, 1)
+    Cleanup.retry_all()
+    refute Cleanup.pending?(ctx.config, vm_id)
+    assert free?(5031)
+    Cleanup.reserve_leases()
+    assert free?(5031)
+  end
+
   test "the janitor retries pending cleanups until they work", ctx do
     vm_id = CrewProtocol.uuid7()
     File.mkdir_p!(Config.vm_dir(ctx.config, vm_id))
