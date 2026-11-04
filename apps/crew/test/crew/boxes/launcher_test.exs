@@ -55,7 +55,8 @@ defmodule Crew.Boxes.LauncherTest do
     end
 
     assert script =~ "--nested"
-    assert script =~ "/Library/LaunchDaemons/com.crew.hostvm."
+    assert script =~ ~s(LAUNCHD="$ROOT/Library/LaunchDaemons")
+    assert script =~ ~s(plist="$LAUNCHD/com.crew.hostvm.$1.plist")
     assert script =~ "/Library/Application Support/Crew/hostvm"
     assert script =~ "macOS 15 or later on an M3 or later"
   end

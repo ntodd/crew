@@ -44,10 +44,14 @@ FLATCAR_USR_A="__FLATCAR_USR_A__"
 VFKIT_VERSION="__VFKIT_VERSION__"
 VFKIT_SHA256="__VFKIT_SHA256__"
 
-HOSTVM="${CREW_HOSTVM_DIR:-/Library/Application Support/Crew/hostvm}"
+# The Mac's own paths sit under CREW_BOX_ROOT, which only the control
+# plane's tests set.
+ROOT="${CREW_BOX_ROOT:-}"
+HOSTVM="${CREW_HOSTVM_DIR:-$ROOT/Library/Application Support/Crew/hostvm}"
 BIN="$HOSTVM/bin"
 SELF="$BIN/crew-box"
-LINK=/usr/local/bin/crew-box
+LINK="$ROOT/usr/local/bin/crew-box"
+LAUNCHD="$ROOT/Library/LaunchDaemons"
 
 say() { echo "crew-box: $*"; }
 fail() { echo "crew-box: $*" >&2; exit 1; }
@@ -69,7 +73,7 @@ pick() {
   if [ -z "$name" ]; then
     set --
     for d in "$HOSTVM"/*/box.conf; do
-      [ -f "$d" ] && set -- "$@" "$(basename "$(dirname "$d")")"
+      if [ -f "$d" ]; then set -- "$@" "$(basename "$(dirname "$d")")"; fi
     done
     [ $# -gt 0 ] || fail "there's no box on this Mac"
     [ $# -eq 1 ] || fail "there are several boxes here ($*); name one"
@@ -78,7 +82,7 @@ pick() {
   case "$name" in "" | *[!a-z0-9-]*) fail "'$name' isn't a box name" ;; esac
   BOX="$HOSTVM/$name"
   LABEL="com.crew.hostvm.$name"
-  PLIST="/Library/LaunchDaemons/$LABEL.plist"
+  PLIST="$LAUNCHD/$LABEL.plist"
   [ -f "$BOX/box.conf" ] || [ -n "${2:-}" ] || fail "there's no box named $name here"
 }
 
@@ -98,7 +102,7 @@ address() {
     /^[ \t]*ip_address=/ { sub(/.*ip_address=/, ""); ip = $0 }
     /^[ \t]*hw_address=/ { sub(/.*hw_address=/, ""); match_hw = ($0 == hw) }
     /^[ \t]*lease=/ { sub(/.*lease=/, ""); if (match_hw && $0 > best) { best = $0; found = ip } }
-    END { if (found) print found }' /var/db/dhcpd_leases 2>/dev/null || true
+    END { if (found) print found }' "$ROOT/var/db/dhcpd_leases" 2>/dev/null || true
 }
 
 # What launchd runs: the VM, booted from its OS disk, with the data disk.
@@ -361,7 +365,7 @@ fi
 install_launcher() {
   mkdir -p "$BIN"
   chmod 0700 "$HOSTVM"
-  [ -d /usr/local/bin ] || install -d -m 0755 /usr/local/bin
+  [ -d "$(dirname "$LINK")" ] || install -d -m 0755 "$(dirname "$LINK")"
   if [ ! -x "$BIN/vfkit" ] || [ "$(sha256 "$BIN/vfkit")" != "$VFKIT_SHA256" ]; then
     say "downloading vfkit $VFKIT_VERSION"
     curl -fsSL -o "$BIN/vfkit.new" "https://github.com/crc-org/vfkit/releases/download/$VFKIT_VERSION/vfkit" </dev/null
@@ -375,15 +379,17 @@ install_launcher() {
   mv -f "$SELF.new" "$SELF"
   ln -sf "$SELF" "$LINK"
 
+  # An if, not `[ ] &&`: with no box yet the glob stays as it is, and a
+  # false test as the function's last status would end the install.
   for conf_file in "$HOSTVM"/*/box.conf; do
-    [ -f "$conf_file" ] && write_plist "$(basename "$(dirname "$conf_file")")"
+    if [ -f "$conf_file" ]; then write_plist "$(basename "$(dirname "$conf_file")")"; fi
   done
 }
 
 # A root LaunchDaemon per box (Foreman's plist, as a daemon): a CI box has
 # to come back after a power cut with nobody logged in.
 write_plist() {
-  plist="/Library/LaunchDaemons/com.crew.hostvm.$1.plist"
+  plist="$LAUNCHD/com.crew.hostvm.$1.plist"
   cat > "$plist.new" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

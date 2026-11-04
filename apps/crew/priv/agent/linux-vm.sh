@@ -40,10 +40,13 @@ FLATCAR_VERSION="__FLATCAR_VERSION__"
 FLATCAR_IMAGE_SHA512_AMD64="__FLATCAR_IMAGE_SHA512_AMD64__"
 FLATCAR_IMAGE_SHA512_ARM64="__FLATCAR_IMAGE_SHA512_ARM64__"
 
-DIR="${CREW_BOX_DIR:-/var/lib/crew-box}"
+# The machine's own paths sit under CREW_BOX_ROOT, which only the control
+# plane's tests set.
+ROOT="${CREW_BOX_ROOT:-}"
+DIR="${CREW_BOX_DIR:-$ROOT/var/lib/crew-box}"
 UNIT="${CREW_BOX_UNIT:-crew-box}"
 USER_NAME=crew-box
-SELF=/usr/local/sbin/$UNIT
+SELF=$ROOT/usr/local/sbin/$UNIT
 
 say() { echo "crew-box: $*"; }
 fail() { echo "crew-box: $*" >&2; exit 1; }
@@ -214,7 +217,7 @@ reimage() {
 uninstall() {
   [ "${1:-}" = --yes ] || fail "this deletes the box's disks and everything on them; run: crew-box uninstall --yes (and revoke the box in Crew)"
   systemctl disable --now "$UNIT" 2>/dev/null || true
-  rm -f "/etc/systemd/system/$UNIT.service" "$SELF"
+  rm -f "$ROOT/etc/systemd/system/$UNIT.service" "$SELF"
   systemctl daemon-reload
   rm -rf "$DIR"
   say "removed the box; revoke it on its page in Crew"
@@ -267,7 +270,7 @@ for n in CPUS MEMORY DISK DATA SSH_PORT; do
   # shellcheck disable=SC2154
   case "$v" in *[!0-9]*) fail "--$(echo "$n" | tr '[:upper:]_' '[:lower:]-') takes a whole number" ;; esac
 done
-[ -c /dev/kvm ] || fail "KVM isn't available (no /dev/kvm): turn on virtualization in the firmware, or load kvm_intel or kvm_amd"
+[ -c "$ROOT/dev/kvm" ] || fail "KVM isn't available (no /dev/kvm): turn on virtualization in the firmware, or load kvm_intel or kvm_amd"
 
 # The box runs its job VMs with KVM itself, so this machine's KVM has to
 # offer it nested virtualization.
@@ -275,20 +278,20 @@ case "$(uname -m)" in
   x86_64)
     arch=amd64 qemu=qemu-system-x86_64 packages="qemu-system-x86 ovmf"
     image_sha=$FLATCAR_IMAGE_SHA512_AMD64
-    firmware_pairs="/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd
-/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd
-/usr/share/edk2/ovmf/OVMF_CODE.fd:/usr/share/edk2/ovmf/OVMF_VARS.fd
-/usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd
-/usr/share/qemu/ovmf-x86_64-code.bin:/usr/share/qemu/ovmf-x86_64-vars.bin"
+    firmware_pairs="$ROOT/usr/share/OVMF/OVMF_CODE_4M.fd:$ROOT/usr/share/OVMF/OVMF_VARS_4M.fd
+$ROOT/usr/share/OVMF/OVMF_CODE.fd:$ROOT/usr/share/OVMF/OVMF_VARS.fd
+$ROOT/usr/share/edk2/ovmf/OVMF_CODE.fd:$ROOT/usr/share/edk2/ovmf/OVMF_VARS.fd
+$ROOT/usr/share/edk2/x64/OVMF_CODE.4m.fd:$ROOT/usr/share/edk2/x64/OVMF_VARS.4m.fd
+$ROOT/usr/share/qemu/ovmf-x86_64-code.bin:$ROOT/usr/share/qemu/ovmf-x86_64-vars.bin"
     nested=""
-    for f in /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested; do
+    for f in "$ROOT"/sys/module/kvm_intel/parameters/nested "$ROOT"/sys/module/kvm_amd/parameters/nested; do
       if [ -r "$f" ]; then
         case "$(cat "$f")" in Y | y | 1) nested=1 ;; esac
       fi
     done
     if [ -z "$nested" ]; then
       module=kvm_intel
-      if grep -q AuthenticAMD /proc/cpuinfo; then module=kvm_amd; fi
+      if grep -q AuthenticAMD "$ROOT/proc/cpuinfo"; then module=kvm_amd; fi
       fail "KVM's nested virtualization is off, and the box needs it for its job VMs. Turn it on with:
   echo 'options $module nested=1' | sudo tee /etc/modprobe.d/crew-kvm-nested.conf
   sudo modprobe -r $module && sudo modprobe $module    (or reboot)
@@ -298,10 +301,10 @@ then run this again"
   aarch64)
     arch=arm64 qemu=qemu-system-aarch64 packages="qemu-system-arm qemu-efi-aarch64"
     image_sha=$FLATCAR_IMAGE_SHA512_ARM64
-    firmware_pairs="/usr/share/AAVMF/AAVMF_CODE.fd:/usr/share/AAVMF/AAVMF_VARS.fd
-/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw:/usr/share/edk2/aarch64/vars-template-pflash.raw
-/usr/share/edk2/aarch64/QEMU_CODE.fd:/usr/share/edk2/aarch64/QEMU_VARS.fd"
-    grep -q 'kvm-arm.mode=nested' /proc/cmdline ||
+    firmware_pairs="$ROOT/usr/share/AAVMF/AAVMF_CODE.fd:$ROOT/usr/share/AAVMF/AAVMF_VARS.fd
+$ROOT/usr/share/edk2/aarch64/QEMU_EFI-pflash.raw:$ROOT/usr/share/edk2/aarch64/vars-template-pflash.raw
+$ROOT/usr/share/edk2/aarch64/QEMU_CODE.fd:$ROOT/usr/share/edk2/aarch64/QEMU_VARS.fd"
+    grep -q 'kvm-arm.mode=nested' "$ROOT/proc/cmdline" ||
       fail "KVM's nested virtualization is off, and the box needs it for its job VMs: boot with kvm-arm.mode=nested on the kernel command line, then run this again"
     ;;
   *) fail "unsupported architecture $(uname -m)" ;;
@@ -325,7 +328,7 @@ work=$(mktemp -d)
 # shellcheck disable=SC2317,SC2329
 cleanup() {
   rm -rf "$work"
-  [ -z "$fresh_unit" ] || { rm -f "/etc/systemd/system/$UNIT.service"; systemctl daemon-reload; }
+  [ -z "$fresh_unit" ] || { rm -f "$ROOT/etc/systemd/system/$UNIT.service"; systemctl daemon-reload; }
   [ -z "$fresh_self" ] || rm -f "$SELF"
   [ -z "$fresh_dir" ] || rm -rf "$DIR"
   [ -z "$fresh_user" ] || userdel "$USER_NAME" 2>/dev/null || true
@@ -336,7 +339,7 @@ if [ -n "$new" ]; then
   [ -n "$TOKEN" ] || fail "--token is required (Add box in Crew makes one)"
 
   cores=$(nproc)
-  mem_gib=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1048576))
+  mem_gib=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' "$ROOT/proc/meminfo") / 1048576))
   [ -n "$CPUS" ] || CPUS=$((cores / 2 > 2 ? cores / 2 : 2))
   [ -n "$MEMORY" ] || MEMORY=$((mem_gib / 2 > 16 ? 16 : (mem_gib / 2 < 4 ? 4 : mem_gib / 2)))
   [ "$CPUS" -le "$cores" ] || fail "--cpus $CPUS is more than this machine's $cores"
@@ -345,7 +348,7 @@ if [ -n "$new" ]; then
   [ "$DATA" -ge 100 ] || fail "--data needs at least 100 GiB"
 
   [ -e "$DIR" ] || fresh_dir=1
-  [ -e "/etc/systemd/system/$UNIT.service" ] || fresh_unit=1
+  [ -e "$ROOT/etc/systemd/system/$UNIT.service" ] || fresh_unit=1
   [ -e "$SELF" ] || fresh_self=1
   id "$USER_NAME" >/dev/null 2>&1 || fresh_user=1
 
@@ -414,7 +417,7 @@ curl -fsSL -o "$SELF.new" "$CREW_URL/agent/linux-vm.sh" </dev/null || fail "coul
 chmod 0755 "$SELF.new"
 mv -f "$SELF.new" "$SELF"
 
-cat > "/etc/systemd/system/$UNIT.service" <<EOF
+cat > "$ROOT/etc/systemd/system/$UNIT.service" <<EOF
 [Unit]
 Description=Crew box (Flatcar VM)
 After=network-online.target
