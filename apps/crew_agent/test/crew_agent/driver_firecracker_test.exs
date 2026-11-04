@@ -304,10 +304,12 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     File.write!(Path.join(spec.vm_dir, "fc.json"), "{}")
     assert :ok = Firecracker.cleanup(spec.vm_id)
 
+    # Each names the VM, so crew-vmctl can refuse a lease another VM's
+    # jail records.
     assert [
              %{"verb" => "cleanup", "vm_id" => vm_id},
-             %{"verb" => "pair-del", "lease_index" => 3},
-             %{"verb" => "tap-del", "lease_index" => 3}
+             %{"verb" => "pair-del", "lease_index" => 3, "vm_id" => vm_id},
+             %{"verb" => "tap-del", "lease_index" => 3, "vm_id" => vm_id}
            ] = FakeVmctl.requests()
 
     assert vm_id == spec.vm_id

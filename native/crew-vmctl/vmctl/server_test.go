@@ -380,6 +380,23 @@ func TestALeaseIsOneJails(t *testing.T) {
 		t.Fatalf("another lease: %+v", r)
 	}
 
+	// Nor are its pair and tap deleted for a VM that isn't the one whose
+	// jail records the lease (a failed start's cleanup, say).
+	for _, verb := range []string{"pair-del", "tap-del"} {
+		del := newFake()
+		jailed(del, other, 3)
+		del.exists["/sys/class/net/crewt3"] = true
+		r := handle(t, server(t, del, time.Now()), `{"verb":"`+verb+`","lease_index":3,"vm_id":"`+vmID+`"}`)
+		if r.OK || r.Error != ErrLeaseInUse || del.ran("nft") || del.ran("ip") {
+			t.Fatalf("%s for another VM's lease: %+v %q", verb, r, del.cmds)
+		}
+		// Its own VM may.
+		r = handle(t, server(t, del, time.Now()), `{"verb":"`+verb+`","lease_index":3,"vm_id":"`+other+`"}`)
+		if !r.OK {
+			t.Fatalf("%s for its own VM: %+v", verb, r)
+		}
+	}
+
 	clean := newFake()
 	clean.answer = showing("")
 	jailed(clean, vmID, 3)
@@ -428,14 +445,14 @@ func TestTaps(t *testing.T) {
 
 	del := newFake()
 	del.exists["/sys/class/net/crewt3"] = true
-	if r := handle(t, server(t, del, time.Now()), `{"verb":"tap-del","lease_index":3}`); !r.OK {
+	if r := handle(t, server(t, del, time.Now()), `{"verb":"tap-del","lease_index":3,"vm_id":"`+vmID+`"}`); !r.OK {
 		t.Fatal(r)
 	}
 	if !reflect.DeepEqual(del.cmds, [][]string{{"ip", "link", "del", "dev", "crewt3"}}) {
 		t.Fatalf("%q", del.cmds)
 	}
 	none := newFake()
-	if r := handle(t, server(t, none, time.Now()), `{"verb":"tap-del","lease_index":3}`); !r.OK || len(none.cmds) != 0 {
+	if r := handle(t, server(t, none, time.Now()), `{"verb":"tap-del","lease_index":3,"vm_id":"`+vmID+`"}`); !r.OK || len(none.cmds) != 0 {
 		t.Fatalf("%+v %q", r, none.cmds)
 	}
 }
@@ -446,7 +463,7 @@ func TestPairs(t *testing.T) {
 	if r := handle(t, s, `{"verb":"pair-add","lease_index":3}`); !r.OK {
 		t.Fatal(r)
 	}
-	if r := handle(t, s, `{"verb":"pair-del","lease_index":3}`); !r.OK {
+	if r := handle(t, s, `{"verb":"pair-del","lease_index":3,"vm_id":"`+vmID+`"}`); !r.OK {
 		t.Fatal(r)
 	}
 	want := [][]string{
@@ -461,7 +478,7 @@ func TestPairs(t *testing.T) {
 	missing.answer = func([]string) (string, error) {
 		return "", errors.New("Error: Could not process rule: No such file or directory")
 	}
-	if r := handle(t, server(t, missing, time.Now()), `{"verb":"pair-del","lease_index":3}`); !r.OK {
+	if r := handle(t, server(t, missing, time.Now()), `{"verb":"pair-del","lease_index":3,"vm_id":"`+vmID+`"}`); !r.OK {
 		t.Fatalf("a pair that's gone is deleted: %+v", r)
 	}
 	if r := handle(t, server(t, missing, time.Now()), `{"verb":"pair-add","lease_index":3}`); r.OK {
