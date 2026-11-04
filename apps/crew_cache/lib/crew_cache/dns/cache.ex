@@ -6,12 +6,15 @@ defmodule CrewCache.DNS.Cache do
     capped at 300 s, at most 5000 at once (a full cache stops adding
     until the next sweep, every 5 s, frees room);
   - a token bucket per client address: 100 queries a second, with
-    bursts up to 100.
+    bursts up to 100;
+  - open TCP connections per client address.
   """
   use GenServer
 
   @answers :crew_dns_answers
   @rate :crew_dns_rate
+  @tcp :crew_dns_tcp
+  @tcp_per_client 16
   @max_entries 5000
   @max_ttl 300
   @rate_per_s 100
@@ -78,12 +81,28 @@ defmodule CrewCache.DNS.Cache do
     end
   end
 
+  @doc "Count a TCP connection from `ip`; false when it already has #{16}."
+  def tcp_open(ip) do
+    if :ets.update_counter(@tcp, ip, 1, {ip, 0}) <= @tcp_per_client do
+      true
+    else
+      tcp_closed(ip)
+      false
+    end
+  end
+
+  def tcp_closed(ip) do
+    if :ets.update_counter(@tcp, ip, -1, {ip, 0}) <= 0, do: :ets.delete(@tcp, ip)
+    :ok
+  end
+
   defp now_ms, do: System.monotonic_time(:millisecond)
 
   @impl true
   def init(_) do
     :ets.new(@answers, [:named_table, :public, :set, read_concurrency: true])
     :ets.new(@rate, [:named_table, :public, :set, write_concurrency: true])
+    :ets.new(@tcp, [:named_table, :public, :set, write_concurrency: true])
     Process.send_after(self(), :sweep, 5000)
     {:ok, nil}
   end

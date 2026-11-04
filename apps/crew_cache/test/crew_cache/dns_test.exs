@@ -175,6 +175,8 @@ defmodule CrewCache.DNSTest do
     assert msg |> :inet_dns.msg(:header) |> :inet_dns.header(:tc)
   end
 
+  # Over the limit, UDP queries are dropped without a reply (and without
+  # costing a task); TCP ones are answered REFUSED.
   test "limits each client to 100 queries a second", %{port: port} do
     {:ok, socket} = :gen_udp.open(0, [:binary, active: false])
 
@@ -189,16 +191,32 @@ defmodule CrewCache.DNSTest do
 
     for id <- 1..150, do: :ok = :gen_udp.send(socket, {127, 0, 0, 1}, port, query.(id))
 
-    rcodes =
-      for _ <- 1..150 do
-        {:ok, {_, _, reply}} = :gen_udp.recv(socket, 0, 2000)
+    rcodes = replies(socket, [])
+    assert length(rcodes) >= 90
+    assert length(rcodes) <= 115
+    assert Enum.all?(rcodes, &(&1 == 0))
+  end
+
+  defp replies(socket, acc) do
+    case :gen_udp.recv(socket, 0, 500) do
+      {:ok, {_, _, reply}} ->
         {:ok, msg} = :inet_dns.decode(reply)
-        msg |> :inet_dns.msg(:header) |> :inet_dns.header(:rcode)
+        replies(socket, [msg |> :inet_dns.msg(:header) |> :inet_dns.header(:rcode) | acc])
+
+      {:error, :timeout} ->
+        acc
+    end
+  end
+
+  test "caps each client's TCP connections", %{port: port} do
+    sockets =
+      for _ <- 1..20 do
+        {:ok, s} = :gen_tcp.connect({127, 0, 0, 1}, port, [:binary, packet: 2, active: false])
+        s
       end
 
-    refused = Enum.count(rcodes, &(&1 == 5))
-    assert refused >= 40
-    assert Enum.count(rcodes, &(&1 == 0)) >= 90
+    closed = Enum.count(sockets, &(:gen_tcp.recv(&1, 0, 300) == {:error, :closed}))
+    assert closed == 4
   end
 
   test "drops what isn't a query", %{port: port} do
