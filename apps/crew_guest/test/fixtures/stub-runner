@@ -95,6 +95,8 @@ if [ -n "${STUB_HANG:-}" ]; then
   # for the listener's last output. A second TERM in that wait kills
   # run.sh, so "done waiting" never comes.
   set -m
+  # run.sh traps TERM before it starts the listener.
+  trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; [ -z "${PID:-}" ] || kill -INT -$PID || true' TERM
   (
     # The INT kills the sleep it's in, which mustn't end the listener.
     set +e
@@ -111,8 +113,8 @@ if [ -n "${STUB_HANG:-}" ]; then
     echo "stub-runner: cancelled"
   ) &
   PID=$!
+  # Written once the trap can reach the listener: tests wait for it.
   echo "$PID" > "$dir/listener.pid"
-  trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; kill -INT -$PID || true' TERM
   code=0
   wait $PID || code=$?
   echo "Exiting runner..."
