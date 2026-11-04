@@ -114,6 +114,8 @@ defmodule CrewCache.MgmtTest do
                CrewCache.Settings.current().parent
 
       refute inspect(CrewCache.Settings.saved()) =~ "parent-secret"
+      # What a crash report would print.
+      refute inspect(:sys.get_status(CrewCache.Settings)) =~ "parent-secret"
       assert %{status: 200} = mgmt(ctx, :post, "/config", json: %{"parent" => nil})
       assert CrewCache.Settings.current().parent == nil
       refute File.read!(Path.join([dir, "cache", "config.json"])) =~ "parent-secret"

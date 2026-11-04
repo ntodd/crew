@@ -113,6 +113,10 @@ defmodule CrewCache.Mgmt do
       {:ok, %{ca_rotated: rotated}} -> json(conn, 200, %{"ok" => true, "ca_rotated" => rotated})
       {:error, message} -> json(conn, 422, %{"error" => message})
     end
+  catch
+    # An exit here would be logged with the call's arguments, the parent's
+    # token among them.
+    :exit, _ -> json(conn, 503, %{"error" => "the settings couldn't be applied; try again"})
   end
 
   defp purge(conn, params) do
