@@ -68,7 +68,8 @@ install -m 0644 "$root/native/crew-vmctl/etc/systemd/"* "$agent/etc/systemd/"
 # Reproducible-ish: sorted entries, no owners, a fixed time.
 pack() {
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime='2026-01-01 00:00:00Z' \
-    -C "$1" -czf "$2" . 2>/dev/null || COPYFILE_DISABLE=1 tar -C "$1" -czf "$2" .
+    -C "$1" -czf "$2" . 2>/dev/null ||
+    COPYFILE_DISABLE=1 tar --no-xattrs --uid 0 --gid 0 -C "$1" -czf "$2" .
 }
 pack "$agent" "$out/crew-agent-$version-$target.tar.gz"
 pack "$work/crew_cache" "$out/crew-cache-$version-$target.tar.gz"
