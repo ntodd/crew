@@ -139,4 +139,32 @@ defmodule CrewProtocol.CommandTest do
       end
     end
   end
+
+  describe "agent.update" do
+    test "carries the agent tarball's size, and crew_cache's tarball for a Linux box" do
+      assert {:ok, %{payload: p}} = Command.new("agent.update", Examples.command("agent.update"))
+      assert p.size > 0
+      assert p.cache.size > 0
+      assert p.cache.url =~ "crew-cache-"
+
+      macos = Map.delete(Examples.command("agent.update"), "cache")
+      assert {:ok, %{payload: p}} = Command.new("agent.update", macos)
+      refute Map.has_key?(p, :cache)
+    end
+
+    test "every tarball needs its URL, SHA-256, size and signature" do
+      update = Examples.command("agent.update")
+
+      for key <- ~w(url sha256 size signature) do
+        assert {:error, _} = Command.new("agent.update", Map.delete(update, key)), key
+
+        assert {:error, _} =
+                 Command.new("agent.update", update_in(update, ["cache"], &Map.delete(&1, key))),
+               "cache.#{key}"
+      end
+
+      assert {:error, _} = Command.new("agent.update", %{update | "version" => "../1.0.0"})
+      assert {:error, _} = Command.new("agent.update", %{update | "sha256" => "abc"})
+    end
+  end
 end
