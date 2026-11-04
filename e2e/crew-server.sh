@@ -29,7 +29,8 @@ run() { if command -v mise >/dev/null 2>&1; then mise exec -- "$@"; else "$@"; f
 # The guest image release the control plane's image would carry (§20.1),
 # signed with the development test key: a small made-up one, or a real
 # build (E2E_IMAGE_RELEASE_DIR=images/guest/out/arm64/release).
-export CREW_RELEASE_PUBLIC_KEY="$(grep -v '^#' "$root/images/guest/keys/test-signing.pub" | tr -d ' \n')"
+CREW_RELEASE_PUBLIC_KEY="$(grep -v '^#' "$root/images/guest/keys/test-signing.pub" | tr -d ' \n')"
+export CREW_RELEASE_PUBLIC_KEY
 export CREW_IMAGE_DIR="$root/tmp/e2e/images"
 rm -rf "$CREW_IMAGE_DIR"
 if [ -n "$E2E_IMAGE_RELEASE_DIR" ]; then
@@ -49,6 +50,11 @@ else
   export CREW_AGENT_RELEASE_DIR="$root/tmp/e2e/agent-release"
   rm -rf "$CREW_AGENT_RELEASE_DIR"
   run mix run --no-start "$root/e2e/make_agent_release.exs" "$CREW_AGENT_RELEASE_DIR"
+fi
+
+# Real darwin releases to update a box between (13-agent-update.spec.js).
+if [ -n "${E2E_AGENT_UPDATE:-}" ]; then
+  "$root/e2e/make_agent_update_release.sh" "$CREW_AGENT_RELEASE_DIR"
 fi
 
 # Updating the control plane from the Deployment page (§20.3): the

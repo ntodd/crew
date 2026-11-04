@@ -29,7 +29,8 @@ export default defineConfig({
     {
       command: "./crew-server.sh",
       url: `${base}/healthz`,
-      timeout: 240_000,
+      // E2E_AGENT_UPDATE builds two agent releases first (13-agent-update).
+      timeout: process.env.E2E_AGENT_UPDATE ? 900_000 : 240_000,
       reuseExistingServer: false,
       stdout: "pipe",
     },
