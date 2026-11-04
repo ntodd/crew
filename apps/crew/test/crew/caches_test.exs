@@ -95,6 +95,30 @@ defmodule Crew.CachesTest do
     assert Repo.exists?(from e in Crew.Activity.Event, where: e.kind == "ca_rotated")
   end
 
+  test "a rotation counts on a box once its cache has done it", %{box: box} do
+    online(box)
+    {:ok, config} = Caches.rotate_ca(admin())
+    cmd = assert_command("cache.config")
+    assert cmd.payload.rotate_ca
+
+    # The cache was unreachable: the next join asks again.
+    agent_event(box, "op.result", %{
+      "op_id" => cmd.op_id,
+      "status" => "error",
+      "error" => %{"code" => "cache_failed", "message" => "down"}
+    })
+
+    assert Crew.Boxes.get!(box.id).cache_ca_generation < config.ca_generation
+    Crew.Agents.joined(box, %{agent_version: "0.1.0", protocol_version: 1}, nil)
+    again = assert_command("cache.config")
+    assert again.payload.rotate_ca
+
+    agent_event(box, "op.result", %{"op_id" => again.op_id, "status" => "ok", "result" => %{}})
+    assert Crew.Boxes.get!(box.id).cache_ca_generation == config.ca_generation
+    Crew.Agents.joined(box, %{agent_version: "0.1.0", protocol_version: 1}, nil)
+    refute assert_command("cache.config").payload.rotate_ca
+  end
+
   test "a box that joins is sent the config", %{box: box} do
     online(box)
     Crew.Agents.joined(box, %{agent_version: "0.1.0", protocol_version: 1}, nil)

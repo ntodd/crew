@@ -34,7 +34,12 @@ defmodule Crew.Operations do
           vm_id: opts[:vm_id] || Map.get(cmd.payload, :vm_id),
           user_id: opts[:user_id],
           command: type,
-          args: cmd |> Command.to_wire() |> Map.fetch!("payload") |> Command.redact(),
+          args:
+            cmd
+            |> Command.to_wire()
+            |> Map.fetch!("payload")
+            |> Command.redact()
+            |> Map.merge(opts[:record] || %{}),
           status: "dispatched",
           dispatched_at: now
         })
@@ -52,6 +57,7 @@ defmodule Crew.Operations do
       %Operation{box_id: ^box_id, status: status} = op when status in ["queued", "dispatched"] ->
         op = finish(op, payload)
         Phoenix.PubSub.broadcast(Crew.PubSub, "op:#{op.id}", {:op_result, op})
+        if op.command == "cache.config", do: Crew.Caches.config_applied(op)
         :ok
 
       # A result resent after a reconnect is acknowledged and ignored.

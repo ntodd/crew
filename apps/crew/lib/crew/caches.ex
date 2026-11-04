@@ -212,16 +212,29 @@ defmodule Crew.Caches do
       rotate_ca: rotate?
     }
 
-    with {:ok, %{status: "dispatched"}} <- Operations.dispatch(box_id, "cache.config", payload) do
-      if rotate?,
-        do:
-          Repo.update_all(from(b in Box, where: b.id == ^box_id),
-            set: [cache_ca_generation: config.ca_generation]
-          )
+    # The generation is kept with the operation, and counts on the box
+    # once its cache has rotated (config_applied/1): a rotation that
+    # failed is asked for again at the next join.
+    record = if rotate?, do: %{"ca_generation" => config.ca_generation}, else: %{}
 
+    with {:ok, %{status: "dispatched"}} <-
+           Operations.dispatch(box_id, "cache.config", payload, record: record) do
       :ok
     end
   end
+
+  @doc "A box's cache took its config: a rotation it asked for is done."
+  def config_applied(%{status: "succeeded", box_id: box_id, args: %{"ca_generation" => gen}})
+      when is_integer(gen) do
+    Repo.update_all(
+      from(b in Box, where: b.id == ^box_id and b.cache_ca_generation < ^gen),
+      set: [cache_ca_generation: gen]
+    )
+
+    :ok
+  end
+
+  def config_applied(_op), do: :ok
 
   defp push_all do
     changed()

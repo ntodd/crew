@@ -30,12 +30,15 @@ defmodule CrewAgent.Cache do
     body = %{
       enabled_hosts: payload.enabled_hosts,
       allowlist: Map.get(payload, :allowlist, []),
-      parent: Map.get(payload, :parent),
       rotate_ca: Map.get(payload, :rotate_ca, false),
       # The box's networks and egress address: the cache refuses to
       # connect to them (§15.5), as job VMs are refused them.
       site4: CrewAgent.Site.current(config)
     }
+
+    # The control plane doesn't serve a parent cache yet (§15.7): one
+    # the cache was given some other way stays unless a parent is sent.
+    body = if parent = Map.get(payload, :parent), do: Map.put(body, :parent, parent), else: body
 
     case request(config, :post, "/config", json: body) do
       {:ok, %{status: 200}} ->
@@ -45,6 +48,16 @@ defmodule CrewAgent.Cache do
 
       other ->
         {:error, "cache_failed", "the cache didn't take its config: #{describe(other)}"}
+    end
+  end
+
+  @doc "Tells the cache the box's site4 alone (§15.5); its other settings stay."
+  def put_site4(%Config{cache_mgmt_url: nil}, _site4), do: {:error, :no_cache}
+
+  def put_site4(%Config{} = config, site4) do
+    case request(config, :post, "/config", json: %{site4: site4}) do
+      {:ok, %{status: 200}} -> :ok
+      other -> {:error, describe(other)}
     end
   end
 
