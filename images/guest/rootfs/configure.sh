@@ -37,6 +37,12 @@ echo 'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright' >> /etc/environment
 # installed as job-started.sh.
 install -D -m 0755 /crew/hooks/job-started /opt/crew/hooks/job-started.sh
 
+# The conformance check (§11.6): crew-guest runs it instead of the runner
+# only when the agent's own config has CREW_CONFORMANCE=1. Root's, and
+# read-only to everyone else.
+install -D -m 0755 /crew/conformance/check /opt/crew/conformance/check
+install -m 0644 /crew/conformance/probe.py /crew/conformance/requirements.txt /opt/crew/conformance/
+
 # systemd: crew-guest is the one service that matters; it starts Docker
 # itself once Docker's config is written.
 install -m 0644 /crew-guest-unit /etc/systemd/system/crew-guest.service
@@ -102,6 +108,12 @@ for u in "${masked[@]}"; do
 done
 [ -x /opt/crew-guest/bin/crew_guest ] || fail "no crew-guest release"
 [ -x /opt/crew/hooks/job-started.sh ] || fail "no job-started hook"
+[ -x /opt/crew/conformance/check ] || fail "no conformance check"
+[ -f /opt/crew/conformance/probe.py ] || fail "no conformance probe"
+echo '{"checks":["sizing"]}' > /tmp/conformance.json
+/opt/crew/conformance/check --validate-only /tmp/conformance.json >/dev/null ||
+  fail "the conformance check doesn't run here"
+rm -f /tmp/conformance.json
 grep -qx 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/crew/hooks/job-started.sh' /home/runner/actions-runner/.env ||
   fail "the runner's .env lacks the hook"
 for cmd in setpriv resize2fs update-ca-certificates jq curl inotifywait docker; do

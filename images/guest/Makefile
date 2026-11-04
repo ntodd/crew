@@ -24,7 +24,7 @@ OUT := out/$(ARCH)
 CREW_VZ := ../../native/crew-vz/bin/crew-vz
 
 .PHONY: all builder kernel-config kernel kernel-check kernel-check-test rootfs lock \
-	artifacts check tools tools-test smoke clean
+	artifacts check conformance-test tools tools-test smoke clean
 
 all: kernel kernel-check rootfs artifacts
 
@@ -34,7 +34,11 @@ builder kernel-config kernel kernel-check kernel-check-test rootfs lock:
 artifacts: tools
 	./build.sh artifacts
 
-check: kernel-check kernel-check-test tools-test
+check: kernel-check kernel-check-test tools-test conformance-test
+
+# The conformance check's input handling (bash and jq, any OS).
+conformance-test:
+	conformance/check_test.sh
 
 tools:
 	cd tools && $(MIX) deps.get --check-locked >/dev/null && $(MIX) compile --warnings-as-errors

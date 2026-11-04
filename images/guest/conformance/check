@@ -1,0 +1,521 @@
+#!/bin/bash
+# The guest image's conformance check (docs/crew_spec.md §11.6, items 2 to
+# 6 and 9 and 12 from inside the guest). crew-guest runs it, as root and
+# instead of the runner, only when the agent is in conformance mode
+# (CREW_CONFORMANCE=1 in the agent's own env):
+#
+#   /opt/crew/conformance/check [--validate-only] <conformance.json>
+#
+# Every check is fixed here. The JSON says which of them to run and gives
+# the few values they need (addresses, ports, counts, labels, tokens):
+# crew-guest checked it against CrewProtocol.Guest.cast_conformance/1, and
+# every value is checked again below before anything runs. A value is
+# only ever passed as an argument, never evaluated.
+#
+# Each result is one line, which crew-guest sends as a log line:
+#   crew-conformance: <item> ok|fail|skip <detail>
+# then `crew-conformance: done pass=<n> fail=<n> skip=<n>`. The exit
+# status is 0 when nothing failed. With hold_s it then waits (a listener
+# up, if asked for) until the hold ends or SIGTERM.
+set -u
+export LC_ALL=C.UTF-8
+
+here=/opt/crew/conformance
+probe() { python3 -I "$here/probe.py" "$@"; }
+
+checks_known="sizing disk dns https payload foreign_token docker buildx kind tls_clients
+isolation ipv6 spoof conntrack listen ticks console_flood api_flood"
+fields_known="checks targets reach peers foreign_tokens listen_port hold_s ticks console_mib
+conntrack size"
+
+# kind (item 4), from its GitHub release, by SHA-256.
+KIND_VERSION=v0.33.0
+KIND_SHA256_arm64=20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2
+KIND_SHA256_amd64=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+ALPINE=public.ecr.aws/docker/library/alpine:3.22
+
+pass=0 fail=0 skip=0
+result() { # item ok|fail|skip detail...
+  local item=$1 status=$2
+  shift 2
+  echo "crew-conformance: $item $status $*"
+  case $status in ok) pass=$((pass + 1)) ;; fail) fail=$((fail + 1)) ;; *) skip=$((skip + 1)) ;; esac
+}
+
+# -- the input ---------------------------------------------------------------------
+
+re_ipv4='^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])){3}$'
+re_label='^[a-z0-9][a-z0-9_.:-]{0,63}$'
+re_token='^[A-Za-z0-9_-]{16,128}$'
+re_uint='^(0|[1-9][0-9]{0,5})$'
+
+refuse() {
+  echo "crew-conformance: input fail $*"
+  exit 2
+}
+int_in() { [[ $1 =~ $re_uint ]] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]; }
+
+validate_only=0
+if [ "${1:-}" = --validate-only ]; then
+  validate_only=1
+  shift
+fi
+file=${1:-}
+[ -f "$file" ] || refuse "no conformance file"
+jq -e 'type == "object"' "$file" >/dev/null 2>&1 || refuse "not a JSON object"
+
+j() { jq -r "$@" "$file"; }
+# A field's type, or "missing".
+jtype() { jq -r "if has(\"$1\") then .$1 | type else \"missing\" end" "$file"; }
+
+for k in $(j 'keys[]'); do
+  [[ " ${fields_known//$'\n'/ } " == *" $k "* ]] || refuse "unknown field"
+done
+
+[ "$(jtype checks)" = array ] || refuse "checks"
+checks=()
+while IFS= read -r c; do
+  [[ " ${checks_known//$'\n'/ } " == *" $c "* ]] || refuse "unknown check"
+  checks+=("$c")
+done < <(j '.checks[] | if type == "string" then . else "?" end')
+wants() { [[ " ${checks[*]:-} " == *" $1 "* ]]; }
+
+# label ip port, one per line, from targets or reach.
+endpoints() {
+  local what=$1 n=0 label ip port
+  case $(jtype "$what") in missing) return 0 ;; array) ;; *) refuse "$what" ;; esac
+  while IFS=$'\t' read -r label ip port; do
+    [[ $label =~ $re_label ]] || refuse "$what label"
+    [[ $ip =~ $re_ipv4 ]] || refuse "$what address"
+    int_in "$port" 1 65535 || refuse "$what port"
+    n=$((n + 1))
+    printf '%s %s %s\n' "$label" "$ip" "$port"
+  done < <(j ".${what}[] | [(.label|tostring), (.ip|tostring), (.port|tojson)] | @tsv")
+  [ "$n" -le 64 ] || refuse "too many $what"
+}
+targets=$(endpoints targets) || { echo "$targets"; exit 2; }
+reach=$(endpoints reach) || { echo "$reach"; exit 2; }
+
+peers=()
+case $(jtype peers) in missing) ;; array) ;; *) refuse peers ;; esac
+while IFS= read -r p; do
+  [[ $p =~ $re_ipv4 ]] || refuse "peer address"
+  peers+=("$p")
+done < <(j '(.peers // [])[] | tostring')
+
+tokens=()
+case $(jtype foreign_tokens) in missing) ;; array) ;; *) refuse foreign_tokens ;; esac
+while IFS= read -r t; do
+  [[ $t =~ $re_token ]] || refuse "foreign token"
+  tokens+=("$t")
+done < <(j '(.foreign_tokens // [])[] | tostring')
+
+num() { # field min max default
+  local v
+  v=$(j ".$1 // \"$4\" | tojson" | tr -d '"')
+  int_in "$v" "$2" "$3" || refuse "$1"
+  echo "$v"
+}
+listen_port=$(num listen_port 0 65535 0) || { echo "$listen_port"; exit 2; }
+[ "$listen_port" = 0 ] || [ "$listen_port" -ge 1024 ] || refuse listen_port
+hold_s=$(num hold_s 0 3600 0) || { echo "$hold_s"; exit 2; }
+ticks=$(num ticks 0 100000 0) || { echo "$ticks"; exit 2; }
+console_mib=$(num console_mib 0 100 100) || { echo "$console_mib"; exit 2; }
+
+ct_ip=10.199.0.1 ct_port=7777 ct_count=2100
+if [ "$(jtype conntrack)" != missing ]; then
+  ct_ip=$(j '.conntrack.ip | tostring')
+  ct_port=$(j '.conntrack.port | tojson')
+  ct_count=$(j '.conntrack.count | tojson')
+  [[ $ct_ip =~ $re_ipv4 ]] || refuse "conntrack address"
+  int_in "$ct_port" 1 65535 || refuse "conntrack port"
+  int_in "$ct_count" 1 4096 || refuse "conntrack count"
+fi
+
+size_vcpus=$(j '.size.vcpus // 0 | tojson')
+size_mem=$(j '.size.memory_mib // 0 | tojson')
+size_disk=$(j '.size.disk_gib // 0 | tojson')
+for v in "$size_vcpus" "$size_mem" "$size_disk"; do int_in "$v" 0 999999 || refuse size; done
+
+if [ "$validate_only" = 1 ]; then
+  echo "crew-conformance: input ok"
+  exit 0
+fi
+
+# -- what the guest knows about itself ------------------------------------------------
+
+cmdline_arg() { tr ' ' '\n' </proc/cmdline | sed -n "s/^$1=//p" | head -1; }
+token=$(cmdline_arg crew.token)
+api=$(cmdline_arg crew.api)
+[[ $token =~ $re_token ]] || refuse "no token on the command line"
+[[ $api =~ ^http://[0-9.]+:[0-9]+$ ]] || refuse "no API on the command line"
+service_ip=${api#http://}
+service_ip=${service_ip%:*}
+gateway=$(ip -4 route show default | awk '{ print $3; exit }')
+own=$(ip -4 -o addr show dev eth0 | awk '{ split($4, a, "/"); print a[1]; exit }')
+arch=$(uname -m)
+
+bg=()
+cleanup() {
+  for p in "${bg[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null; done
+  for p in "${peers[@]:-}" 10.200.255.254; do [ -n "$p" ] && ip addr del "$p/32" dev eth0 2>/dev/null; done
+  sysctl -qw net.ipv6.conf.eth0.disable_ipv6=1 2>/dev/null
+}
+trap 'echo "crew-conformance: stopped (SIGTERM)"; cleanup; exit 143' TERM
+trap cleanup EXIT
+
+as_runner() { # cmd... with the runner's environment, as a job step has it
+  local envs=()
+  while IFS= read -r line; do
+    [[ $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && envs+=("$line")
+  done < <(cat /etc/environment /home/runner/actions-runner/.env 2>/dev/null)
+  setpriv --reuid=runner --regid=runner --init-groups --reset-env -- \
+    env "${envs[@]}" HOME=/home/runner PATH=/usr/local/bin:/usr/bin:/bin "$@"
+}
+
+echo "crew-conformance: start vm=$(cmdline_arg crew.vm) arch=$arch address=$own checks=${checks[*]:-}"
+
+# -- item 2: sizing --------------------------------------------------------------------
+
+if wants sizing; then
+  n=$(nproc)
+  if [ "$n" = "$size_vcpus" ]; then result 2.nproc ok "$n"; else result 2.nproc fail "nproc=$n want $size_vcpus"; fi
+  mem_kib=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+  mem_mib=$((mem_kib / 1024))
+  short=$((size_mem - mem_mib))
+  # The kernel's own account of where the rest went.
+  why=$(dmesg 2>/dev/null | sed -n 's/.*\] Memory: //p' | head -1 | cut -c1-240)
+  if [ "${short#-}" -le 64 ]; then
+    result 2.memtotal ok "MemTotal=${mem_mib}MiB size=${size_mem}MiB short=${short}MiB ($why)"
+  else
+    result 2.memtotal fail "MemTotal=${mem_mib}MiB size=${size_mem}MiB short=${short}MiB ($why)"
+  fi
+fi
+
+# -- item 3: the root filesystem ---------------------------------------------------------
+
+if wants disk; then
+  dev_bytes=$(($(cat /sys/block/vda/size) * 512))
+  want=$((size_disk * 1073741824))
+  if [ "$dev_bytes" = "$want" ]; then result 3.disk ok "vda=${dev_bytes}"; else result 3.disk fail "vda=$dev_bytes want $want"; fi
+  read -r bcount bsize < <(tune2fs -l /dev/vda 2>/dev/null | awk -F: '/^Block count/ { c=$2 } /^Block size/ { s=$2 } END { print c+0, s+0 }')
+  fs_bytes=$((bcount * bsize))
+  if [ "$fs_bytes" -ge $((dev_bytes / 100 * 99)) ]; then
+    result 3.rootfs_size ok "ext4=${fs_bytes} df=$(df -B1 --output=size / | tail -1 | tr -d ' ')"
+  else
+    result 3.rootfs_size fail "ext4=${fs_bytes} on a ${dev_bytes}-byte disk (not resized?)"
+  fi
+  f=/var/tmp/crew-conformance.bin
+  if dd if=/dev/urandom of=$f bs=1M count=256 conv=fsync status=none &&
+    [ "$(stat -c %s $f)" = 268435456 ] && sync && rm -f $f &&
+    grep -q ' / ext4 rw' /proc/mounts; then
+    result 3.rootfs_write ok "256 MiB written and synced"
+  else
+    result 3.rootfs_write fail "couldn't write 256 MiB to /"
+    rm -f $f
+  fi
+fi
+
+# -- item 4 (and the DNS half of 5): names and HTTPS ----------------------------------------
+
+if wants dns; then
+  ns=$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)
+  addrs=$(getent ahostsv4 github.com | awk '{ print $1 }' | sort -u | tr '\n' ' ')
+  if [ "$ns" = "$service_ip" ] && [ -n "$addrs" ]; then result 4.dns ok "github.com=$addrs via $ns"; else result 4.dns fail "nameserver=$ns github.com='$addrs'"; fi
+  r=$(probe udp-dns "$service_ip" 53 3)
+  if [ "$r" = answered ]; then result 4.dns_udp ok "$service_ip:53/udp"; else result 4.dns_udp fail "$service_ip:53/udp $r"; fi
+fi
+
+if wants https; then
+  code=$(curl -sS -o /dev/null -m 20 -w '%{http_code}' https://github.com 2>&1)
+  case $code in 2?? | 3??) result 4.https_github ok "https://github.com $code" ;; *) result 4.https_github fail "$code" ;; esac
+fi
+
+# -- item 6: the payload, from inside --------------------------------------------------
+
+http() { # method path token [body] -> status
+  curl -s -o /dev/null -m 10 -w '%{http_code}' -X "$1" -H "Authorization: Bearer $3" \
+    -H 'content-type: application/json' ${4:+--data-binary "$4"} "$api$2"
+}
+
+if wants payload; then
+  s=$(http GET /v1/payload "$token")
+  if [ "$s" = 410 ]; then result 6.refetch ok "second GET /v1/payload: 410"; else result 6.refetch fail "second GET /v1/payload: $s"; fi
+fi
+
+if wants foreign_token; then
+  if [ "${#tokens[@]}" = 0 ]; then
+    result 6.foreign_token skip "no other VM's token given"
+  else
+    i=0
+    for t in "${tokens[@]}"; do
+      i=$((i + 1))
+      g=$(http GET /v1/payload "$t")
+      p=$(http POST /v1/state "$t" "{\"state\":\"job_finished\",\"at\":$(date +%s%3N),\"detail\":\"forged\"}")
+      if [ "$g" = 401 ] && [ "$p" = 401 ]; then
+        result "6.foreign_token_$i" ok "payload $g, forged job_finished $p"
+      else
+        result "6.foreign_token_$i" fail "payload $g, forged job_finished $p"
+      fi
+    done
+  fi
+fi
+
+# -- item 5: what the guest must not reach ------------------------------------------------
+
+# The built-in targets: the host on the service address's other ports and
+# on the gateway, link-local and metadata, the tailnet, private ranges.
+builtin_targets() {
+  for p in 22 25 111 2049 3000 4000 5432 6443 7780 8080; do echo "service-$p $service_ip $p"; done
+  for p in 22 53 80 443 7777; do echo "gateway-$p $gateway $p"; done
+  echo "metadata 169.254.169.254 80"
+  echo "tailnet-dns 100.100.100.100 53"
+  echo "cgnat 100.64.0.1 80"
+  echo "rfc1918-10 10.0.0.1 80"
+  echo "rfc1918-172 172.16.0.1 80"
+  echo "rfc1918-192 192.168.0.1 80"
+  echo "home-router 192.168.1.1 80"
+  echo "vmnet 192.168.64.1 22"
+  echo "benchmark 198.18.0.1 80"
+  echo "test-net 192.0.2.1 80"
+}
+
+probe_all() { # file of "label ip port" -> "label ip port outcome", in parallel
+  local out=$1 dir
+  dir=$(mktemp -d)
+  local i=0
+  while read -r label ip port; do
+    [ -n "$label" ] || continue
+    i=$((i + 1))
+    (echo "$label $ip $port $(probe tcp "$ip" "$port" 4)" >"$dir/$i") &
+  done
+  wait
+  cat "$dir"/* 2>/dev/null >"$out"
+  rm -rf "$dir"
+}
+
+if wants isolation; then
+  tmp=$(mktemp)
+  { builtin_targets; [ -n "$targets" ] && echo "$targets"; } | probe_all "$tmp"
+  while read -r label ip port how; do
+    if [ "$how" = connected ]; then
+      result "5.$label" fail "$ip:$port connected"
+    else
+      result "5.$label" ok "$ip:$port $how"
+    fi
+  done <"$tmp"
+  { echo "guest-api $service_ip 7777"; echo "internet 1.1.1.1 443"; [ -n "$reach" ] && echo "$reach"; } | probe_all "$tmp"
+  while read -r label ip port how; do
+    if [ "$how" = connected ]; then
+      result "5.reach_$label" ok "$ip:$port connected"
+    else
+      result "5.reach_$label" fail "$ip:$port $how"
+    fi
+  done <"$tmp"
+  rm -f "$tmp"
+  for t in "100.100.100.100" "$gateway" "192.168.64.1" "10.0.0.1"; do
+    r=$(probe udp-dns "$t" 53 3)
+    if [ "$r" = answered ]; then result "5.udp_dns_$t" fail "$t:53/udp answered"; else result "5.udp_dns_$t" ok "$t:53/udp $r"; fi
+  done
+  # Pings (§14.4): to the service address only, rate-limited.
+  if ping -c 2 -W 2 "$service_ip" >/dev/null 2>&1; then result 5.ping_service ok "$service_ip answers"; else result 5.ping_service fail "$service_ip doesn't answer"; fi
+  r=$(ping -c 2 -W 2 "$gateway" >/dev/null 2>&1 && echo answers || echo silent)
+  echo "crew-conformance: 5.ping_gateway info $gateway $r"
+  r=$(ping -c 2 -W 2 1.1.1.1 >/dev/null 2>&1 && echo answers || echo silent)
+  echo "crew-conformance: 5.ping_internet info 1.1.1.1 $r"
+fi
+
+if wants ipv6; then
+  r=$(probe loop6)
+  if [ "$r" = ok ]; then result 5.ipv6_loopback ok "[::1] works"; else result 5.ipv6_loopback fail "[::1] $r"; fi
+  # The job has root: it turns IPv6 back on and tries.
+  sysctl -qw net.ipv6.conf.eth0.disable_ipv6=0
+  sleep 3
+  ll=$(ip -6 -o addr show dev eth0 scope link | awk '{ split($4, a, "/"); print a[1]; exit }')
+  # Replies only ("64 bytes from <addr>%eth0: ..."), not ping's header;
+  # the guest's own answer to a multicast ping doesn't count.
+  for t in ff02::1 ff02::2 fe80::1 fe80::c7:e0ff:fe00:1; do
+    others=$(ping -6 -c 3 -w 4 -I eth0 "$t" 2>/dev/null |
+      sed -n 's/^[0-9]* bytes from \([0-9a-f:]*[0-9a-f]\)[%:].*/\1/p' | grep -vx "${ll:-none}" | sort -u | tr '\n' ' ')
+    if [ -z "$others" ]; then result "5.ipv6_$t" ok "no answer (own ${ll:-none})"; else result "5.ipv6_$t" fail "answered by $others"; fi
+  done
+  ip -6 route add default via fe80::1 dev eth0 2>/dev/null
+  for t in 2606:4700:4700::1111 2001:4860:4860::8888; do
+    r=$(probe tcp "$t" 443 4)
+    if [ "$r" = connected ]; then result "5.ipv6_$t" fail "[$t]:443 connected"; else result "5.ipv6_$t" ok "[$t]:443 $r"; fi
+  done
+  neigh=$(ip -6 neigh show dev eth0 | grep -v -e FAILED -e INCOMPLETE | tr '\n' ';')
+  if [ -z "$neigh" ]; then result 5.ipv6_neighbours ok "none"; else result 5.ipv6_neighbours fail "$neigh"; fi
+  ip -6 route del default via fe80::1 dev eth0 2>/dev/null
+  sysctl -qw net.ipv6.conf.eth0.disable_ipv6=1
+fi
+
+if wants spoof; then
+  r=$(probe tcp "$service_ip" 7777 3)
+  if [ "$r" = connected ]; then result 5.spoof_control ok "own address $own connects"; else result 5.spoof_control fail "own address $own: $r"; fi
+  for src in "${peers[@]:-}" 10.200.255.254; do
+    [ -n "$src" ] || continue
+    ip addr add "$src/32" dev eth0 2>/dev/null
+    a=$(probe tcp "$service_ip" 7777 3 "$src")
+    b=$(probe tcp 1.1.1.1 443 3 "$src")
+    ip addr del "$src/32" dev eth0 2>/dev/null
+    if [ "$a" = connected ] || [ "$b" = connected ]; then
+      result "5.spoof_$src" fail "as $src: guest API $a, internet $b"
+    else
+      result "5.spoof_$src" ok "as $src: guest API $a, internet $b"
+    fi
+  done
+fi
+
+if wants conntrack; then
+  n=$(probe conns "$ct_ip" "$ct_port" "$ct_count" 8)
+  if [[ $n =~ $re_uint ]] && [ "$n" -lt "$ct_count" ]; then
+    result 5.conntrack ok "established=$n of $ct_count to $ct_ip:$ct_port"
+  else
+    result 5.conntrack fail "established=$n of $ct_count to $ct_ip:$ct_port"
+  fi
+  sleep 3
+fi
+
+# -- item 4: what a job does ---------------------------------------------------------------
+
+if wants tls_clients; then
+  node=$(ls -d /home/runner/actions-runner/externals/node*/bin/node 2>/dev/null | sort -V | tail -1)
+  if [ -z "$node" ]; then
+    result 4.node_fetch fail "no node in the runner's externals"
+  else
+    out=$(as_runner timeout 60 "$node" -e 'fetch("https://ghcr.io/v2/").then(r => console.log(r.status), e => { console.log("error " + ((e.cause && e.cause.code) || e.message)); process.exitCode = 1 })' 2>&1 | tail -1)
+    case $out in 200 | 401) result 4.node_fetch ok "$($node --version) fetch ghcr.io/v2/: $out" ;; *) result 4.node_fetch fail "$out" ;; esac
+  fi
+  venv=/tmp/crew-conformance-venv
+  rm -rf "$venv"
+  if as_runner python3 -m venv "$venv" &&
+    as_runner timeout 180 "$venv/bin/pip" install --quiet --disable-pip-version-check --no-deps \
+      --only-binary :all: --require-hashes -r "$here/requirements.txt" >/tmp/crew-conformance-pip.log 2>&1; then
+    out=$(as_runner timeout 60 "$venv/bin/python" -c 'import requests; print(requests.get("https://ghcr.io/v2/").status_code)' 2>&1 | tail -1)
+    case $out in 200 | 401) result 4.python_requests ok "requests.get ghcr.io/v2/: $out" ;; *) result 4.python_requests fail "$out" ;; esac
+  else
+    result 4.python_requests fail "pip: $(tail -1 /tmp/crew-conformance-pip.log 2>/dev/null)"
+  fi
+  rm -rf "$venv"
+fi
+
+docker_up() {
+  local i
+  for i in $(seq 1 60); do
+    docker info >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+secs() { echo $(($(date +%s%3N) - $1)); }
+
+if wants docker || wants buildx || wants kind; then
+  if docker_up; then
+    echo "crew-conformance: docker $(docker version --format '{{.Server.Version}}')"
+  else
+    result 4.docker fail "dockerd didn't answer within 60 s"
+  fi
+fi
+
+if wants docker; then
+  for i in 1 2; do
+    t0=$(date +%s%3N)
+    if out=$(as_runner timeout 300 docker pull -q "$ALPINE" 2>&1); then
+      result "4.pull$i" ok "$ALPINE in $(secs "$t0") ms"
+    else
+      result "4.pull$i" fail "$(echo "$out" | tail -1)"
+    fi
+    [ "$i" = 1 ] && as_runner docker rmi -f "$ALPINE" >/dev/null 2>&1
+  done
+  t0=$(date +%s%3N)
+  if out=$(as_runner timeout 300 docker run --rm alpine true 2>&1); then
+    result 4.docker_run ok "docker run --rm alpine true in $(secs "$t0") ms"
+  else
+    result 4.docker_run fail "$(echo "$out" | tail -1)"
+  fi
+fi
+
+if wants buildx; then
+  ctx=$(mktemp -d)
+  printf 'FROM %s\nRUN echo built > /built\n' "$ALPINE" >"$ctx/Dockerfile"
+  chmod -R a+rX "$ctx"
+  t0=$(date +%s%3N)
+  if as_runner docker buildx create --name crew-conformance --driver docker-container >/dev/null 2>&1 &&
+    out=$(as_runner timeout 600 docker buildx build --builder crew-conformance --progress plain \
+      --output type=cacheonly "$ctx" 2>&1); then
+    result 4.buildx ok "docker-container driver, FROM $ALPINE, in $(secs "$t0") ms"
+  else
+    result 4.buildx fail "$(echo "${out:-buildx create failed}" | tail -1)"
+  fi
+  as_runner docker buildx rm -f crew-conformance >/dev/null 2>&1
+  rm -rf "$ctx"
+fi
+
+if wants kind; then
+  case $arch in aarch64) karch=arm64 sum=$KIND_SHA256_arm64 ;; *) karch=amd64 sum=$KIND_SHA256_amd64 ;; esac
+  kind=/usr/local/bin/kind
+  t0=$(date +%s%3N)
+  if curl -fsSL -m 120 -o "$kind" "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-linux-$karch" &&
+    echo "$sum  $kind" | sha256sum -c --status && chmod 0755 "$kind"; then
+    if out=$(as_runner timeout 600 "$kind" create cluster --name crew-conformance --wait 5m 2>&1) &&
+      nodes=$(docker exec crew-conformance-control-plane kubectl get nodes --no-headers 2>&1) &&
+      grep -q ' Ready ' <<<"$nodes"; then
+      result 4.kind ok "kind $KIND_VERSION cluster Ready in $(secs "$t0") ms"
+    else
+      result 4.kind fail "after $(secs "$t0") ms: $(echo "$out" | tail -1)"
+    fi
+    as_runner timeout 120 "$kind" delete cluster --name crew-conformance >/dev/null 2>&1
+  else
+    result 4.kind fail "couldn't download kind $KIND_VERSION or its SHA-256 didn't match"
+  fi
+  rm -f "$kind"
+fi
+
+# -- items 9 and 12: lines, and a hostile guest -----------------------------------------------
+
+if wants ticks && [ "$ticks" -gt 0 ]; then
+  for i in $(seq 1 "$ticks"); do
+    echo "crew-conformance: tick $i/$ticks"
+    sleep 0.1
+  done
+  result 9.ticks ok "$ticks lines, 10 a second"
+fi
+
+if wants console_flood && [ "$console_mib" -gt 0 ]; then
+  read -r bytes took < <(probe console "$console_mib" 240)
+  if [ "${bytes:-0}" -gt 0 ]; then
+    result 12.console_flood ok "wrote $bytes bytes to /dev/console in ${took}s"
+  else
+    result 12.console_flood fail "couldn't write to /dev/console"
+  fi
+fi
+
+# The log flood goes last: past the VM's log limit the agent answers 413
+# and crew-guest sends no more lines, this script's own included. The
+# agent's side is what the suite checks.
+if wants api_flood; then
+  for what in "state /v1/state 5 3 state" "steps /v1/steps 5 3 steps" "log /v1/log 6 3 log 1048576"; do
+    # shellcheck disable=SC2086 # the words are this script's own
+    set -- $what
+    out=$(probe flood "$api" "$2" "$3" "$4" "$5" "${6:-0}")
+    result "12.flood_$1" ok "$2 for $3 s: $out"
+  done
+fi
+
+echo "crew-conformance: done pass=$pass fail=$fail skip=$skip"
+status=0
+[ "$fail" = 0 ] || status=1
+
+if wants listen && [ "$listen_port" -gt 0 ] && [ "$hold_s" -gt 0 ]; then
+  probe listen "$listen_port" "$hold_s" >/dev/null &
+  bg+=($!)
+  echo "crew-conformance: listening on $own:$listen_port for ${hold_s}s"
+fi
+if [ "$hold_s" -gt 0 ]; then
+  sleep "$hold_s" &
+  bg+=($!)
+  wait "$!"
+fi
+exit "$status"
