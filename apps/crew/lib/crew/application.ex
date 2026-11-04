@@ -69,7 +69,10 @@ defmodule Crew.Application do
     # The runner's freshness (§13.1) is checked daily; a new deployment
     # checks at once rather than show nothing for a day.
     if Crew.Images.Runner.releases() == [], do: Oban.insert(Crew.Images.Runner.new(%{}))
-    if Crew.Config.dev?(), do: Crew.Images.register_dev_images()
+    # The placeholders stand in only when there's no release to register.
+    if Crew.Config.dev?() and is_nil(Application.get_env(:crew, :image_release_dir)),
+      do: Crew.Images.register_dev_images()
+
     Crew.VMs.boot_servers()
   end
 

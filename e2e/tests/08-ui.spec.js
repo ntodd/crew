@@ -92,7 +92,8 @@ test("a box's controls", async ({page}) => {
   await signIn(page)
   await page.goto("/boxes")
   await page.locator("[id^=box-]", {hasText: "null-ui"}).click()
-  await expect(page.locator("#images")).toContainText("0.0.0-dev")
+  // The release crew-server.sh made (§20.1), prepared on the box.
+  await expect(page.locator("#images")).toContainText("0.9.0")
   await expect(page.locator("#capacity")).toBeVisible()
   await connected(page)
   page.once("dialog", d => d.accept())

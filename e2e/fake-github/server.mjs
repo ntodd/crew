@@ -280,6 +280,15 @@ route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs\/(\d+)\/attempts\/(\d+)\
   const jobs = state.jobs.filter(j => j.run_id === Number(id) && j.run_attempt === Number(n)).map(jobJson)
   send(res, 200, { total_count: jobs.length, jobs })
 })
+// actions/runner's releases (§13.1): a newer runner than the e2e image's
+// came out 16 days ago, so the Images page warns.
+route("GET", /^\/repos\/actions\/runner\/releases$/, (req, res) => {
+  const ago = days => new Date(Date.now() - days * 86_400_000).toISOString()
+  send(res, 200, [
+    {tag_name: "v2.339.0", published_at: ago(16), draft: false, prerelease: false},
+    {tag_name: "v2.338.2", published_at: ago(40), draft: false, prerelease: false},
+  ])
+})
 route("GET", /^\/repos\/([^/]+)\/([^/]+)\/actions\/runs$/, (req, res, url, [, o, r]) => {
   const repo = repoByName(o, r)
   const status = url.searchParams.get("status")

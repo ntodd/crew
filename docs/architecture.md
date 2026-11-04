@@ -244,3 +244,34 @@ The other spikes are recorded here as they run.
   Docker answers at 1.2 s of guest uptime and the runner starts at 1.23
   s. The power button powers the guest off in 0.26 s with the runner up,
   and in 5.3 s while crew-guest is still waiting for its payload.
+
+## Image registry notes
+
+- **Registration** is from a manifest's exact bytes and its signature,
+  checked with `CREW_RELEASE_PUBLIC_KEY`; there's no unsigned path. The
+  control plane registers the manifests in `CREW_IMAGE_RELEASE_DIR` (its
+  image's copy of the release, §20.1) at every boot. The same manifest
+  again is the same image; a different manifest under a registered
+  version and arch is refused.
+- **Mirroring** (`Crew.Images.Mirror`, its own Oban queue of one) uses
+  the kernel and `.rootfs.ext4.zst` beside the manifest when they're
+  there, else downloads them from
+  `<github web>/<CREW_UPDATE_REPO>/releases/download/v<version>/`,
+  streamed to `CREW_IMAGE_DIR/<id>/` and capped at the manifest's size.
+  Either way each file is hashed against the manifest. Until both are
+  in, the image can't be a default, so no box is sent a prepare it
+  can't finish. A boot re-enqueues a mirror that never finished.
+- **Boxes download** from `/images/:id/kernel|rootfs` without
+  credentials, as Foreman's agents download releases: the files are a
+  public release's, and the agent checks them against the signed
+  manifest. `Range` resumes a download.
+- **Keeping images on a box:** the plan sends `image.remove` for ready
+  images past the default, the usable one, any a live VM there started
+  from, and the newest other. The row reads `removing` until the next
+  inventory drops it (or lists it again, and it's sent again).
+- **Runner freshness:** actions/runner's releases are read daily (and at
+  boot when there are none) into the settings table. "Behind" counts
+  from the first release after the image's runner, not the latest.
+- **With a release configured, development skips the placeholder
+  images** (`0.0.0-dev`), which would otherwise be the newest
+  registered and win the default.
