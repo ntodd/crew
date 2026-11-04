@@ -31,7 +31,10 @@ defmodule CrewAgent.Cache do
       enabled_hosts: payload.enabled_hosts,
       allowlist: Map.get(payload, :allowlist, []),
       parent: Map.get(payload, :parent),
-      rotate_ca: Map.get(payload, :rotate_ca, false)
+      rotate_ca: Map.get(payload, :rotate_ca, false),
+      # The box's networks and egress address: the cache refuses to
+      # connect to them (§15.5), as job VMs are refused them.
+      site4: CrewAgent.Site.current(config)
     }
 
     case request(config, :post, "/config", json: body) do

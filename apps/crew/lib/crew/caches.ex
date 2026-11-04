@@ -26,15 +26,14 @@ defmodule Crew.Caches do
 
   # -- config (§15.3) ---------------------------------------------------------------
 
-  @doc "Enables a subset of the hosts Crew knows. Regenerates every box's CA chain (§15.4)."
+  @doc """
+  Enables a subset of the hosts Crew knows. Under Design A the cache's
+  CA chain names its address, not the hosts (§15.4 is written for Design
+  B), so this needs no new chain.
+  """
   def set_hosts(%Scope{} = scope, hosts) do
     admin(scope, fn ->
-      changeset =
-        config()
-        |> Config.hosts_changeset(hosts)
-        |> Ecto.Changeset.change(ca_generation: config().ca_generation + 1)
-
-      with {:ok, config} <- Repo.update(changeset) do
+      with {:ok, config} <- Repo.update(Config.hosts_changeset(config(), hosts)) do
         Audit.log(scope, "cache.hosts", config, %{"enabled_hosts" => config.enabled_hosts})
         push_all()
         {:ok, config}
@@ -300,6 +299,7 @@ defmodule Crew.Caches do
       )
 
     sums = Map.new(sums, fn {k, v} -> {k, to_int(v)} end)
+    sums = %{sums | bytes_stored: stored(box_id, since)}
     total = sums.hits + sums.misses
 
     box = Repo.get(Box, box_id)
@@ -314,6 +314,24 @@ defmodule Crew.Caches do
           }
 
     Map.merge(sums, %{hit_rate: if(total > 0, do: Float.round(sums.hits / total, 3)), top: top})
+  end
+
+  # A level per host: each host's last report in the window.
+  defp stored(box_id, since) do
+    last =
+      from s in Stat,
+        where: s.box_id == ^box_id and s.t >= ^since and s.host != "*",
+        group_by: s.host,
+        select: %{host: s.host, t: max(s.t)}
+
+    Repo.one(
+      from s in Stat,
+        join: l in subquery(last),
+        on: s.host == l.host and s.t == l.t,
+        where: s.box_id == ^box_id,
+        select: coalesce(sum(s.bytes_stored), 0)
+    )
+    |> to_int()
   end
 
   defp to_int(%Decimal{} = d), do: Decimal.to_integer(d)

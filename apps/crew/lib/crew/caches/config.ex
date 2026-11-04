@@ -3,7 +3,7 @@ defmodule Crew.Caches.Config do
   The registry cache's settings, one row for the deployment (§15.3): the
   enabled hosts (a subset of `CrewProtocol.Hosts`), the cacheable
   allowlist, whether boxes use the parent cache, and the CA generation
-  (§15.4), bumped by **Rotate CA** and by any change to the hosts.
+  (§15.4), bumped by **Rotate CA**.
   """
   use Crew.Schema
 

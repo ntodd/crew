@@ -50,8 +50,9 @@ defmodule Crew.CachesTest do
 
     cmd = assert_command("cache.config")
     assert cmd.payload.enabled_hosts == ["ghcr.io", "public.ecr.aws"]
-    # Changing the hosts regenerates the chain (§15.4).
-    assert cmd.payload.rotate_ca
+    # Design A's chain names the cache's address, not the hosts, so a
+    # change of hosts needs no new CA (docs/architecture.md).
+    refute cmd.payload.rotate_ca
     assert Repo.exists?(from e in Crew.Audit.Event, where: e.action == "cache.hosts")
 
     assert {:error, :unauthorized} =
@@ -140,6 +141,8 @@ defmodule Crew.CachesTest do
     assert summary.hits == 8 and summary.misses == 2
     assert summary.hit_rate == 0.8
     assert summary.bytes_served == 2000
+    # What's stored is a level: the last report's, not a sum.
+    assert summary.bytes_stored == 400
     assert [%{repo: "actions/runner", host: "ghcr.io"}] = summary.top
   end
 
