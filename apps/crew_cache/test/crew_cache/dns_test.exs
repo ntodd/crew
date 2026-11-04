@@ -19,7 +19,8 @@ defmodule CrewCache.DNSTest do
     ],
     {"big.example", :a} => for(n <- 1..40, do: {60, {1, 1, 1, n}}),
     {"8.8.8.8.in-addr.arpa", :ptr} => [{60, ~c"dns.google"}],
-    {"short.example", :a} => [{1, {5, 6, 7, 8}}]
+    {"short.example", :a} => [{1, {5, 6, 7, 8}}],
+    {"egress.example", :a} => [{300, {85, 1, 2, 3}}]
   }
 
   setup %{tmp_dir: dir} = tags do
@@ -113,6 +114,12 @@ defmodule CrewCache.DNSTest do
       for msg <- [first, second], rr <- :inet_dns.msg(msg, :anlist) do
         assert :inet_dns.rr(rr, :ttl) <= 300
       end
+    end
+
+    test "a new site4 applies to answers already cached", %{port: port} do
+      assert answers(resolve(port, "egress.example", :a)) == [{85, 1, 2, 3}]
+      {:ok, _} = CrewCache.Settings.apply(%{"site4" => ["85.1.2.3/32"]})
+      assert answers(resolve(port, "egress.example", :a)) == []
     end
 
     test "entries expire with their TTL", %{port: port, fake: fake} do

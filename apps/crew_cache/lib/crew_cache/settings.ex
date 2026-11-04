@@ -22,6 +22,7 @@ defmodule CrewCache.Settings do
   require Logger
 
   alias CrewCache.{Allowlist, Net}
+  alias CrewCache.DNS.Cache, as: DNSCache
   alias CrewProtocol.Hosts
 
   @file_name "config.json"
@@ -153,7 +154,7 @@ defmodule CrewCache.Settings do
       )
 
     state = %{config: config, saved: saved, connected: connected()}
-    publish(state)
+    publish(state, true)
     Process.send_after(self(), :refresh, @refresh_ms)
     {:ok, state}
   end
@@ -248,9 +249,21 @@ defmodule CrewCache.Settings do
     File.rename!(tmp, path)
   end
 
-  defp publish(%{config: config, saved: saved, connected: connected}) do
+  # A new address policy applies at once: the next lookup and dial read
+  # it, cached DNS answers (filtered under the old one) are forgotten,
+  # and when it refuses more, the upstream pool restarts so no open
+  # connection to a newly refused address is reused. At start there's
+  # nothing cached or pooled yet.
+  defp publish(%{config: config, saved: saved, connected: connected}, starting? \\ false) do
     site4 = config.extra_blocked ++ config.site4 ++ saved["site4"] ++ connected
-    Net.put_current(Net.policy(site4, config.net_except))
+    old = Net.current()
+    new = Net.policy(site4, config.net_except)
+    Net.put_current(new)
+
+    if not starting? and new != old do
+      DNSCache.clear()
+      if refuses_more?(old, new), do: restart_upstream_pool()
+    end
 
     parent =
       case saved["parent"] do
@@ -263,5 +276,18 @@ defmodule CrewCache.Settings do
       allow: Allowlist.compile(saved["allowlist"]),
       parent: parent
     })
+  end
+
+  defp refuses_more?(old, new),
+    do: new.refused -- old.refused != [] or old.except -- new.except != []
+
+  # Fetches using the pool fail and their clients retry; this happens
+  # only when site4 grows.
+  defp restart_upstream_pool do
+    with :ok <- Supervisor.terminate_child(CrewCache.Supervisor, :upstream_pool) do
+      Supervisor.restart_child(CrewCache.Supervisor, :upstream_pool)
+    end
+
+    Logger.info("site4 grew: restarted the upstream connection pool")
   end
 end
