@@ -112,7 +112,14 @@ defmodule CrewWeb.RunLive.Show do
             id={"job-#{job.github_id}"}
             class="grid gap-x-4 gap-y-1 px-5 py-3 text-sm md:grid-cols-[minmax(0,1.2fr)_minmax(0,2fr)_auto] md:items-center"
           >
-            <span class="truncate font-medium text-ink">{job.name}</span>
+            <.link
+              navigate={
+                ~p"/runs/#{@attempt.github_run_id}/attempts/#{@attempt.run_attempt}/jobs/#{job.github_id}"
+              }
+              class="truncate font-medium text-ink underline-offset-2 hover:underline"
+            >
+              {job.name}
+            </.link>
             <.job_status job={job} now={@now} />
             <span class="font-mono text-xs text-ink-3">{Enum.join(job.label_key || job.labels, ", ")}</span>
           </li>

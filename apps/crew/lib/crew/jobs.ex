@@ -161,6 +161,50 @@ defmodule Crew.Jobs do
     Map.put(attempt, :earlier_attempts, earlier)
   end
 
+  @doc "A job of a run attempt the scope can read, by its GitHub id, with its attempt."
+  def get_attempt_job!(%Crew.Scope{} = scope, run_id, attempt, job_github_id) do
+    attempt = get_run_attempt!(scope, run_id, attempt)
+
+    job =
+      Enum.find(attempt.jobs, &(&1.github_id == job_github_id)) ||
+        raise Ecto.NoResultsError, queryable: Job
+
+    {attempt, job}
+  end
+
+  @doc """
+  A running job's live steps from the API (§16.2), while someone has its
+  page open: at most every 10 s per job, however many are watching. It's
+  an optional call (§6.6).
+  """
+  def refresh_steps(%Job{gh_state: "in_progress"} = job) do
+    with {:allow, _} <- Crew.RateLimit.hit("steps:#{job.id}", 9_000, 1),
+         repo = job.repo_id |> Repos.get!() |> Repos.with_installation(),
+         {:ok, data} <-
+           Crew.GitHub.Client.get_job(repo.installation.github_id, repo.full_name, job.github_id,
+             class: :optional
+           ) do
+      # Upserts only move a job forward, so steps of a job that's still
+      # running are written on their own.
+      if data["status"] == "in_progress",
+        do: update_steps(job, data["steps"] || []),
+        else: upsert_job(repo, data, source: "api", kind: "steps")
+    end
+
+    :ok
+  end
+
+  def refresh_steps(_job), do: :ok
+
+  defp update_steps(job, steps) do
+    {n, _} =
+      Repo.update_all(from(j in Job, where: j.id == ^job.id and j.gh_state == "in_progress"),
+        set: [steps: steps, updated_at: DateTime.utc_now()]
+      )
+
+    if n == 1, do: broadcast_job(job)
+  end
+
   @doc """
   A run attempt by GitHub run id and attempt number, if `scope` may see
   it. Raises `Ecto.NoResultsError` otherwise, so the page 404s.
@@ -261,7 +305,12 @@ defmodule Crew.Jobs do
 
     after_upsert(repo, job, attempt)
     runner_named(job)
-    if completed_now?(job, state, rank), do: Crew.Jobs.FetchLog.schedule(job)
+
+    if completed_now?(job, state, rank) do
+      Crew.Jobs.FetchLog.schedule(job)
+      summarize(job)
+    end
+
     broadcast_job(job)
     {:ok, job}
   end
@@ -299,12 +348,22 @@ defmodule Crew.Jobs do
 
   defp after_upsert(_repo, _job, _attempt), do: :ok
 
+  # The resource summary (§16.5), from the VM's samples.
+  defp summarize(%Job{vm_id: vm_id} = job) when is_binary(vm_id) do
+    with %{} = summary <- Crew.Metrics.job_summary(vm_id) do
+      Repo.update_all(from(j in Job, where: j.id == ^job.id), set: Map.to_list(summary))
+    end
+  end
+
+  defp summarize(_job), do: :ok
+
   # A Crew job's `completed` (the first one): GitHub's log is fetched.
   defp completed_now?(
          %Job{classification: "ours", gh_state: "completed", log_source: nil},
          "completed",
          _rank
-       ), do: true
+       ),
+       do: true
 
   defp completed_now?(_job, _state, _rank), do: false
 
@@ -540,6 +599,20 @@ defmodule Crew.Jobs do
   end
 
   # -- helpers -----------------------------------------------------------------
+
+  @doc "The last `n` successful completions of the same job (repo, workflow, name), for \"usually X\"."
+  def recent_successes(%Job{} = job, n) do
+    Repo.all(
+      from j in Job,
+        where:
+          j.repo_id == ^job.repo_id and j.workflow_name == ^job.workflow_name and
+            j.name == ^job.name and
+            j.conclusion == "success" and j.id != ^job.id,
+        order_by: [desc: j.completed_at],
+        limit: ^n,
+        select: map(j, [:steps])
+    )
+  end
 
   @doc "Where the job page's log comes from: `github` once GitHub's is stored, else `live`."
   def set_log_source(%Job{} = job, source) when source in ["github", "live"] do

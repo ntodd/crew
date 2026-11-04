@@ -146,3 +146,27 @@ The other spikes are recorded here as they run.
   uninstall stops the agent first, then every job VM. `test-install.sh` checks a dry
   run's plists and env without root. Spike S3 (launchd as `_crewvm`, with
   nobody logged in, after a reboot) still needs a real install.
+
+## Live log notes
+
+- **One stream process per VM** (`Crew.Logs.Stream`) stores its batches in
+  `seq` order; the control plane numbers the lines itself, so `n` carries
+  on across epochs and lost-line markers. Its place (epoch, seq, n) is on
+  the VM's row, so a restarted stream picks up where it was.
+- **Acks and resends are notifications**: the agent handles them at once
+  and sends no `op.result`, and the control plane sends them without an
+  operation row. Every other command is an operation.
+- **Each log keeps an index** (`index.json`: step starts, groups,
+  annotations), saved with each ack. The job page gets it with the page,
+  and again whenever it's saved; the viewer also learns from the lines
+  pushed to it, and merges the two.
+- **GitHub's log** is fetched through its redirect with no token on the
+  second request, capped at `CREW_LOG_LIMIT_BYTES`, and split into steps
+  by timestamp against the API's steps (`step-<number>`).
+- **The viewer** (`assets/js/log_viewer.js`) keeps its logic in
+  `log_core.js` (ANSI, folding, the index, links), tested with `node
+  --test`. Groups fold in finished steps; while a job runs, a group whose
+  step isn't known to be finished stays open.
+- **While someone has a running job's page open,** its steps come from
+  the API every 10 s (rate-limited per job, however many are watching),
+  as an optional call.

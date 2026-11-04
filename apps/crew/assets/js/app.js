@@ -5,6 +5,7 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/crew"
 import topbar from "../vendor/topbar"
+import {LogViewer} from "./log_viewer"
 
 // Keeps a log pinned to its newest line while the reader is at the
 // bottom; scrolling up to read stops the pinning until they come back.
@@ -51,7 +52,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, LogTail, Copy},
+  hooks: {...colocatedHooks, LogTail, Copy, LogViewer},
 })
 
 topbar.config({barColors: {0: "#5b50e8"}, shadowColor: "rgba(0, 0, 0, .15)"})

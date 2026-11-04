@@ -78,11 +78,14 @@ defmodule CrewWeb.Router do
   scope "/", CrewWeb do
     pipe_through [:browser, :signed_in]
 
+    get "/runs/:run_id/attempts/:n/jobs/:job_id/log.txt", JobLogController, :raw
+
     live_session :signed_in,
       on_mount: [{CrewWeb.StaleAssets, :reload}, {CrewWeb.UserAuth, :require_user}] do
       live "/", DashboardLive, :index
       live "/runs", RunLive.Index, :index
       live "/runs/:run_id/attempts/:n", RunLive.Show, :show
+      live "/runs/:run_id/attempts/:n/jobs/:job_id", JobLive.Show, :show
       live "/repos", RepoLive.Index, :index
       live "/repos/:id", RepoLive.Show, :show
       live "/boxes", BoxLive.Index, :index
