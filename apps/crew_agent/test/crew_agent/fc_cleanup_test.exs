@@ -32,6 +32,8 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     Config.put(config)
     Monitor.reset()
     Cleanup.reset()
+    path = System.get_env("PATH")
+    copy_for_clone(root)
 
     image_id = CrewProtocol.uuid7()
     image = Path.join([data, "images", image_id])
@@ -85,6 +87,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     attach()
 
     on_exit(fn ->
+      System.put_env("PATH", path)
       Config.put(base)
       Monitor.reset()
       Cleanup.reset()
@@ -99,6 +102,34 @@ defmodule CrewAgent.FirecrackerCleanupTest do
       jails: jails,
       list_fails: list_fails
     }
+  end
+
+  # A VM's clone is a reflink, which a CI runner's ext4 can't make. There
+  # a cp that copies stands in: these tests are about the cleanup.
+  defp copy_for_clone(root) do
+    unless match?({:unix, :darwin}, :os.type()) or reflinks?(root) do
+      bin = Path.join(root, "bin")
+      File.mkdir_p!(bin)
+      cp = Path.join(bin, "cp")
+
+      File.write!(cp, """
+      #!/bin/sh
+      n=$#
+      for a in "$@"; do [ "$a" = --reflink=always ] || set -- "$@" "$a"; done
+      shift "$n"
+      exec #{System.find_executable("cp")} "$@"
+      """)
+
+      File.chmod!(cp, 0o755)
+      System.put_env("PATH", bin <> ":" <> System.get_env("PATH"))
+    end
+  end
+
+  defp reflinks?(dir) do
+    probe = Path.join(dir, "probe")
+    File.write!(probe, "")
+    args = ["--reflink=always", probe, probe <> ".clone"]
+    match?({_, 0}, System.cmd("cp", args, stderr_to_stdout: true))
   end
 
   defp cgroup(ctx, vm_id),
