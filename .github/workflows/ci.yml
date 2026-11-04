@@ -143,10 +143,13 @@ jobs:
         run: |
           sc="$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck"
           "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh \
-            packaging/release/check.sh packaging/release/test/check-test.sh
+            packaging/release/check.sh packaging/release/test/check-test.sh \
+            packaging/release/smoke.sh packaging/release/test/smoke-test.sh
           "$sc" -x images/guest/sign.sh packaging/release/build-linux.sh
       - name: crew-update's decisions
         run: docker/test/crew-update-test.sh
+      - name: The release's smoke test
+        run: packaging/release/test/smoke-test.sh
       # The release's check job reads every mix.exs with elixir.
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
@@ -154,6 +157,44 @@ jobs:
           otp-version: ${{ env.OTP_VERSION }}
       - name: The release check
         run: packaging/release/test/check-test.sh
+
+  # The workflows themselves (release.yml only runs on a tag, so this is
+  # the only check it gets before one): actionlint at a pinned release
+  # checked against its SHA-256, with the pinned ShellCheck on every run:
+  # script, and every action pinned by a full commit SHA (§20.1).
+  workflows:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: actionlint
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/$SHELLCHECK_VERSION/shellcheck-$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -version
+          "$RUNNER_TEMP/actionlint" -color \
+            -shellcheck "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck"
+      - name: Every action pinned by commit SHA
+        run: |
+          unpinned=$(grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:' .github/workflows/*.yml |
+            grep -vE 'uses:[[:space:]]+(\./[^[:space:]]+|[^[:space:]@]+@[0-9a-f]{40})([[:space:]]|$)' || true)
+          if [ -n "$unpinned" ]; then
+            echo "::error::actions not pinned by a full commit SHA:"
+            echo "$unpinned"
+            exit 1
+          fi
 
   # The UI in a real browser, against a fake GitHub (e2e/).
   browser:
