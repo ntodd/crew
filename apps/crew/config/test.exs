@@ -20,6 +20,7 @@ end
 config :crew, Oban, testing: :manual
 
 config :crew, image_req_options: [plug: {Req.Test, Crew.Images.Mirror}, retry: false]
+config :crew, cache_req_options: [plug: {Req.Test, Crew.Caches}]
 
 # Tests read the charts right after writing their rows.
 config :crew, chart_cache_ms: 0

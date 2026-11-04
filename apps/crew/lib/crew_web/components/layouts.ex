@@ -76,6 +76,13 @@ defmodule CrewWeb.Layouts do
           <.sidebar_link navigate={~p"/admin/sizes"} icon="hero-cube" current_path={@current_path}>
             Sizes & labels
           </.sidebar_link>
+          <.sidebar_link
+            navigate={~p"/admin/caches"}
+            icon="hero-circle-stack"
+            current_path={@current_path}
+          >
+            Caches
+          </.sidebar_link>
           <.sidebar_link navigate={~p"/admin/users"} icon="hero-users" current_path={@current_path}>
             People
           </.sidebar_link>

@@ -99,6 +99,7 @@ defmodule Crew.Metrics do
     cutoff = now - @keep_days * 86_400
     Repo.delete_all(from m in BoxMetric, where: m.t < ^cutoff)
     Repo.delete_all(from m in VMMetric, where: m.t < ^cutoff)
+    Crew.Caches.prune(cutoff)
     :ok
   end
 end

@@ -59,6 +59,8 @@ config :crew, Oban,
        {"*/10 * * * *", Crew.GitHub.RunnerGC},
        # §9.4: log retention and the total cap.
        {"17 * * * *", Crew.Logs.Prune},
+       # §9.4: box, VM and cache samples, 7 days.
+       {"47 * * * *", Crew.Metrics.Prune},
        # §13.1: actions/runner's releases, for the runner's freshness.
        {"23 4 * * *", Crew.Images.Runner},
        # §20.4: the control plane's image files, checked and kept in bounds.

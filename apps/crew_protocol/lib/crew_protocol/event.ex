@@ -164,6 +164,14 @@ defmodule CrewProtocol.Event do
            misses: {:integer, default: 0},
            bytes_served: {:integer, default: 0},
            bytes_stored: {:integer, default: 0}}}, default: [], max: 32},
+      # The repositories served most, for the Caches page's top images.
+      top:
+        {{:list,
+          {:object,
+           host: {{:enum, CrewProtocol.Hosts.names()}, required: true},
+           repo: {:string, required: true, max: 255},
+           hits: {:integer, default: 0},
+           bytes_served: {:integer, default: 0}}}, default: [], max: 10},
       evictions: {:integer, default: 0},
       digest_mismatches: {:integer, default: 0}
     ]
