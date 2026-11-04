@@ -10,7 +10,6 @@ defmodule CrewWeb.ImageController do
 
   alias Crew.Images
 
-  # sobelow_skip ["Traversal.SendFile"]
   # The paths come from the image's row, written by the mirror; the
   # params only pick the row and which of its two files.
   def show(conn, %{"id" => id, "file" => file}) when file in ["kernel", "rootfs"] do
@@ -33,6 +32,8 @@ defmodule CrewWeb.ImageController do
   defp pick(image, "kernel"), do: {image.kernel_path, image.kernel_sha256}
   defp pick(image, "rootfs"), do: {image.rootfs_path, image.rootfs_sha256}
 
+  # sobelow_skip ["Traversal.SendFile"]
+  # `path` is the image row's, never a param (show/2).
   defp send_range(conn, path, size) do
     case get_req_header(conn, "range") do
       ["bytes=" <> spec] ->
