@@ -89,6 +89,17 @@ if config_env() != :test do
           else: "/var/lib/crew/logs"
         )
       ),
+    # §13.1, §20.1: the release's signed image manifests the control
+    # plane's image carries, and where it keeps the files it mirrors.
+    image_release_dir: System.get_env("CREW_IMAGE_RELEASE_DIR"),
+    image_dir:
+      System.get_env(
+        "CREW_IMAGE_DIR",
+        if(config_env() == :dev,
+          do: Path.expand("../../../tmp/images", __DIR__),
+          else: "/var/lib/crew/images"
+        )
+      ),
     log_max_gib: int.("CREW_LOG_MAX_GIB", 20),
     log_retention_days: int.("CREW_LOG_RETENTION_DAYS", 30),
     job_retention_days: int.("CREW_JOB_RETENTION_DAYS", 90),

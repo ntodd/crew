@@ -181,6 +181,46 @@ defmodule Crew.Scheduler.PlanTest do
   end
 
   describe "images (§8.3)" do
+    @images %{
+      "arm64" => %{
+        default: "img-4",
+        recent_defaults: ["img-4", "img-3"],
+        order: ["img-4", "img-3", "img-2", "img-1"]
+      }
+    }
+
+    defp removed(actions), do: for({:remove_image, b, i} <- actions, do: {b, i})
+
+    test "a box keeps the default, the usable one and the newest other; the rest go (§13.1)" do
+      bi = %{
+        {"box-a", "img-4"} => "downloading",
+        {"box-a", "img-3"} => "ready",
+        {"box-a", "img-2"} => "ready",
+        {"box-a", "img-1"} => "ready"
+      }
+
+      actions = Plan.plan(snapshot(images: @images, box_images: bi))
+      assert removed(actions) == [{"box-a", "img-1"}]
+
+      # Once the default is ready, it's also the usable one.
+      actions =
+        Plan.plan(snapshot(images: @images, box_images: %{bi | {"box-a", "img-4"} => "ready"}))
+
+      assert Enum.sort(removed(actions)) == [{"box-a", "img-1"}, {"box-a", "img-2"}]
+    end
+
+    test "an image a VM on the box started from stays, and an offline box is left alone" do
+      bi = for i <- ~w(img-1 img-2 img-3 img-4), into: %{}, do: {{"box-a", i}, "ready"}
+      vms = [vm(1, "box-a", image_id: "img-1")]
+
+      assert removed(Plan.plan(snapshot(images: @images, box_images: bi, vms: vms))) == [
+               {"box-a", "img-2"}
+             ]
+
+      offline = box("a", online: false)
+      assert removed(Plan.plan(snapshot(boxes: [offline], images: @images, box_images: bi))) == []
+    end
+
     test "a box without a usable image isn't eligible, and is sent image.prepare" do
       actions = Plan.plan(snapshot(jobs: [job(1)], box_images: %{}))
       assert placements(actions) == []

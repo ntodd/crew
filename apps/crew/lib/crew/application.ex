@@ -61,9 +61,14 @@ defmodule Crew.Application do
     end
   end
 
-  # A server for every VM that isn't destroyed (§8.6), and in development
-  # the null driver's placeholder images.
+  # A server for every VM that isn't destroyed (§8.6); the guest images
+  # this release carries (§20.1); and in development the null driver's
+  # placeholder images.
   defp boot_vms do
+    if dir = Application.get_env(:crew, :image_release_dir), do: Crew.Images.register_bundle(dir)
+    # The runner's freshness (§13.1) is checked daily; a new deployment
+    # checks at once rather than show nothing for a day.
+    if Crew.Images.Runner.releases() == [], do: Oban.insert(Crew.Images.Runner.new(%{}))
     if Crew.Config.dev?(), do: Crew.Images.register_dev_images()
     Crew.VMs.boot_servers()
   end

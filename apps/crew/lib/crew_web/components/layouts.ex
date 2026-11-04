@@ -66,6 +66,13 @@ defmodule CrewWeb.Layouts do
           >
             Deployment
           </.sidebar_link>
+          <.sidebar_link
+            navigate={~p"/admin/images"}
+            icon="hero-square-3-stack-3d"
+            current_path={@current_path}
+          >
+            Images
+          </.sidebar_link>
           <.sidebar_link navigate={~p"/admin/sizes"} icon="hero-cube" current_path={@current_path}>
             Sizes & labels
           </.sidebar_link>

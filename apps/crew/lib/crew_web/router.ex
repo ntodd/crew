@@ -60,6 +60,12 @@ defmodule CrewWeb.Router do
     post "/api/agents/enroll", AgentController, :enroll
   end
 
+  # Guest image files, for boxes' `image.prepare` (§13.1). Signed, and
+  # checked by the agent; no pipeline, since they're large and binary.
+  scope "/", CrewWeb do
+    get "/images/:id/:file", ImageController, :show
+  end
+
   # Admin pages outside /admin. Before the signed-in scope, so
   # /boxes/new isn't taken for a box id.
   scope "/", CrewWeb do
@@ -107,6 +113,7 @@ defmodule CrewWeb.Router do
       live "/users", AdminLive.Users, :index
       live "/audit", AdminLive.Audit, :index
       live "/sizes", AdminLive.Sizes, :index
+      live "/images", AdminLive.Images, :index
     end
   end
 

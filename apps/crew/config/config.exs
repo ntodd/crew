@@ -42,7 +42,7 @@ config :crew, Oban,
   notifier: if(database == "sqlite", do: Oban.Notifiers.PG, else: Oban.Notifiers.Postgres),
   repo: Crew.Repo,
   # §9.3
-  queues: [hooks: 10, github: 5, reconcile: 1, maintenance: 1, default: 5],
+  queues: [hooks: 10, github: 5, reconcile: 1, maintenance: 1, images: 1, default: 5],
   plugins: [
     {Oban.Plugins.Pruner, max_age: 60 * 60},
     {Oban.Plugins.Lifeline, rescue_after: :timer.minutes(30)},
@@ -58,7 +58,9 @@ config :crew, Oban,
        # §6.3: runners left behind.
        {"*/10 * * * *", Crew.GitHub.RunnerGC},
        # §9.4: log retention and the total cap.
-       {"17 * * * *", Crew.Logs.Prune}
+       {"17 * * * *", Crew.Logs.Prune},
+       # §13.1: actions/runner's releases, for the runner's freshness.
+       {"23 4 * * *", Crew.Images.Runner}
      ]}
   ]
 

@@ -18,7 +18,8 @@ defmodule Crew.Scheduler.Plan do
      `idle_grace`, newest first; any VM idle for `idle_max`; draining
      boxes' idle VMs.
   5. **Images**: a box missing its arch's default image is sent
-     `image.prepare`.
+     `image.prepare`; one holding images past the default, the usable
+     one, those its VMs use and the newest other is sent `image.remove`.
 
   Actions:
   - `{:place, %{job_id, class, repo_id, box_id, size_id, image_id}}`
@@ -26,6 +27,7 @@ defmodule Crew.Scheduler.Plan do
   - `{:reap, vm_id, :excess | :idle_max | :draining}`
   - `{:excess_since, class, ms | nil}`
   - `{:prepare_image, box_id, image_id}`
+  - `{:remove_image, box_id, image_id}`
   """
 
   @active ~w(requested starting booted idle busy)
@@ -58,7 +60,7 @@ defmodule Crew.Scheduler.Plan do
 
     blocked_actions ++
       covered_actions ++
-      placement_actions ++ reap(snap, open) ++ prepare_images(snap)
+      placement_actions ++ reap(snap, open) ++ prepare_images(snap) ++ remove_images(snap)
   end
 
   @doc """
@@ -447,6 +449,37 @@ defmodule Crew.Scheduler.Plan do
         default != nil,
         snap.box_images[{box.id, default}] in [nil, "retry"],
         do: {:prepare_image, box.id, default}
+  end
+
+  # A box keeps its arch's default and usable images, any a live VM there
+  # started from, and the newest other one it has ready (§13.1). The
+  # rest are removed, so each release doesn't leave a root filesystem.
+  defp remove_images(snap) do
+    for box <- snap.boxes,
+        box.online,
+        %{default: default} = arch <- [snap.images[box.guest_arch]],
+        image_id <- removable(snap, box, default, Map.get(arch, :order, [])),
+        do: {:remove_image, box.id, image_id}
+  end
+
+  defp removable(snap, box, default, order) do
+    ready = for {{b, id}, "ready"} <- snap.box_images, b == box.id, do: id
+    {usable, _} = usable_image(snap, box)
+    in_use = for vm <- snap.vms, vm.box_id == box.id, do: Map.get(vm, :image_id)
+    keep = MapSet.new([default, usable | in_use])
+
+    # Newest first; an image the control plane doesn't list is oldest.
+    rank = order |> Enum.with_index() |> Map.new()
+
+    others =
+      ready
+      |> Enum.reject(&MapSet.member?(keep, &1))
+      |> Enum.sort_by(&Map.get(rank, &1, :infinity))
+
+    case others do
+      [_newest | rest] -> rest
+      [] -> []
+    end
   end
 
   # -- reaping (§8.5) ---------------------------------------------------------------
