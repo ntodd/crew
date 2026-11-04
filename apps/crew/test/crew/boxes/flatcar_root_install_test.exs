@@ -174,6 +174,49 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
     assert result(ctx) == "error #{@nonce} the agent tarball isn't staged\n"
   end
 
+  # A rename keeps the inode: an agent that kept a hard link to what it
+  # staged (or a descriptor open on it) could write other bytes in after
+  # root checked the agent tarball, while root checked crew_cache's, and
+  # root would install them. Root checks and unpacks only a copy of its
+  # own. The overwrite comes from an openssl stand-in, during the cache's
+  # signature check.
+  test "bytes written into a staged tarball after it's checked aren't installed", ctx do
+    stage(ctx, "0.4.0")
+    staged = Path.join(ctx.data, "agent/update/agent.tar.gz")
+    kept = Path.join(ctx.root, "agent-kept-link")
+    File.ln!(staged, kept)
+
+    # Same version and size, other bytes: an unsigned crew-vmctl.
+    evil =
+      agent_entries("0.4.0")
+      |> Enum.map(fn
+        {"bin/crew-vmctl", _} -> {"bin/crew-vmctl", "#!/bin/sh\necho EVIL crew-vmctl\n"}
+        entry -> entry
+      end)
+      |> tarball()
+
+    File.write!(Path.join(ctx.root, "evil.tar.gz"), evil)
+    openssl = System.find_executable("openssl")
+
+    File.write!(Path.join(ctx.bin, "openssl"), """
+    #!/bin/sh
+    case "$*" in
+      *cache.sig*) cat "#{Path.join(ctx.root, "evil.tar.gz")}" > "#{kept}" ;;
+    esac
+    exec "#{openssl}" "$@"
+    """)
+
+    File.chmod!(Path.join(ctx.bin, "openssl"), 0o755)
+
+    assert {out, 0} = sh(ctx, "root-install.sh")
+    # The overwrite did happen, to the inode the agent kept...
+    assert File.read!(kept) == evil, out
+    # ...and root installed the bytes it checked.
+    assert result(ctx) == "ok #{@nonce} 0.4.0\n"
+    assert File.read!(Path.join(ctx.data, "root/0.4.0/bin/crew-vmctl")) =~ "crew-vmctl 0.4.0"
+    refute File.read!(Path.join(ctx.data, "root/0.4.0/bin/crew-vmctl")) =~ "EVIL"
+  end
+
   for {field, value} <- [
         VERSION: "../../etc",
         TARGET: "linux-amd64",

@@ -43,20 +43,31 @@ rm -rf "$tmp"
 mkdir -m 0700 "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
-# take <name>: moves agent/update/<name> into root's directory before
-# anything looks at it, so the agent can't swap it for a link or a FIFO
-# between the check and the read (rename moves a link, never what it
-# points at). It counts only if what arrived is a plain file.
+# take <name> <max bytes>: root's own copy of agent/update/<name>, as
+# $tmp/<name>. The staged file is first renamed into root's directory, so
+# it can't be swapped for a link or a FIFO between the check and the read
+# (a rename moves a link, never what it points at), and counts only if
+# it's a plain file. But a rename keeps the inode, which the agent may
+# still write through a hard link or an open descriptor, so what root
+# reads, checks and unpacks is a copy into a new inode of its own; the
+# staged one goes. Whatever bytes the copy got are the ones checked and
+# the ones used.
 take() {
   mv -f "$stage/$1" "$tmp/$1.taken" 2>/dev/null || true
   rm -f "$stage/$1"
-  [ -f "$tmp/$1.taken" ] && [ ! -L "$tmp/$1.taken" ]
+  if [ -f "$tmp/$1.taken" ] && [ ! -L "$tmp/$1.taken" ]; then
+    head -c "$2" "$tmp/$1.taken" > "$tmp/$1"
+    rm -f "$tmp/$1.taken"
+    return 0
+  fi
+  rm -f "$tmp/$1.taken"
+  return 1
 }
 
 # The request is the path unit's trigger, so it's taken whatever it
 # holds: it can't start this again. A link, or anything but a file, is
 # no request.
-if take request; then head -c 4096 "$tmp/request.taken" > "$tmp/request"; fi
+take request 4096 || true
 if [ ! -s "$tmp/request" ]; then
   echo "no request to act on"
   exit 0
@@ -105,12 +116,12 @@ done
 [ -s "$etc/release-key.pem" ] ||
   refuse "this box has no release key ($etc/release-key.pem); reprovision it to update"
 
-# The staged tarballs, taken into root's directory and checked there;
-# crew_cache's too, so root has seen the whole release it's installing
-# (the cache runs as crewcache, from the agent's copy).
+# Root's copies of the staged tarballs (at most 2 GiB each, as the
+# protocol bounds them), checked and unpacked from there only; crew_cache's
+# too, so root has seen the whole release it's installing (the cache runs
+# as crewcache, from the agent's copy).
 for c in agent cache; do
-  take "$c.tar.gz" || refuse "the $c tarball isn't staged"
-  mv -f "$tmp/$c.tar.gz.taken" "$tmp/$c.tar.gz"
+  take "$c.tar.gz" 2147483648 || refuse "the $c tarball isn't staged"
 done
 check_release agent "$tmp/agent.tar.gz" "$version" "$target" "$agent_sha" "$agent_sig" \
   "$etc/release-key.pem" "$tmp" || refuse "$why"

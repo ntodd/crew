@@ -1073,7 +1073,15 @@ plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
     (`root_release`); otherwise only the agent goes back.
   - `root-install.sh` renames the request and the tarballs into its own
     directory before it looks at them, so they can't be swapped for a
-    link or a FIFO between the check and the read.
+    link or a FIFO between the check and the read, and then copies each
+    into a new inode of its own and drops the renamed one. A rename
+    keeps the inode, which the agent can still write through a hard link
+    or an open descriptor: the first version checked the agent tarball,
+    and while it checked crew_cache's the agent wrote other bytes in, and
+    root unpacked those (found in review, reproduced with real
+    signatures; the regression test overwrites through a kept hard link
+    during the cache's check). Root checks and unpacks only its copy, so
+    the bytes it checked are the bytes it installs.
   - What's written into `agent/` is written in root's directory and
     renamed in (the first install's `env`), and a link target printed to
     the consoles is printed only if it's a version.
