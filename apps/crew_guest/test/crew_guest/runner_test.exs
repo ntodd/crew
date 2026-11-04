@@ -71,6 +71,50 @@ defmodule CrewGuest.RunnerTest do
     assert_receive {:exit, 143}, 5_000
   end
 
+  test "stop/1 sends SIGTERM once, however often it's called", %{tmp_dir: dir} do
+    {pid, _jit} = start_runner(config(dir, [{"STUB_HANG", "1"}, {"STUB_CANCEL", "0.5"}]))
+    listener = stub_listener(dir)
+
+    :ok = Runner.stop(pid)
+    eventually(fn -> stub_page(dir) =~ "got SIGTERM" end)
+    # run.sh has dropped its trap: another SIGTERM would kill it now.
+    :ok = Runner.stop(pid)
+
+    assert_receive {:exit, 143}, 5_000
+    assert stub_page(dir) =~ "stub-runner: cancelled"
+    assert stub_page(dir) =~ "stub-runner: done waiting"
+    eventually(fn -> not os_alive?(listener) end, 2_000)
+  end
+
+  test "kill/1 SIGKILLs the runner and every process group it started", %{tmp_dir: dir} do
+    {pid, _jit} = start_runner(config(dir, [{"STUB_HANG", "ignore"}]))
+    listener = stub_listener(dir)
+
+    :ok = Runner.stop(pid)
+    eventually(fn -> stub_page(dir) =~ "ignoring SIGINT" end)
+    :ok = Runner.kill(pid)
+
+    assert_receive {:exit, 137}, 2_000
+    eventually(fn -> not os_alive?(listener) end, 2_000)
+  end
+
+  test "kill_targets/3: the runner's descendants and their groups, never crew-guest's" do
+    ps = """
+        1     0     1
+      100     1   100
+      101   100   100
+      200   101   200
+      201   200   201
+      202   201   201
+      203   202   100
+      300   101   300
+    """
+
+    # 100 is crew-guest (and its group), 200 the runner, 201 run.sh's
+    # listener in its own group (set -m), 300 some other port.
+    assert Runner.kill_targets(ps, 200, 100) == {[200, 201], [200, 201, 202, 203]}
+  end
+
   test "a runner that can't start is an exit", %{tmp_dir: dir} do
     start_runner(config(dir, [], [Path.join(dir, "no-such-runner")]))
     assert_receive {:exit, code}, 5_000

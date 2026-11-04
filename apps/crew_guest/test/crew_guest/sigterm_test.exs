@@ -72,5 +72,7 @@ defmodule CrewGuest.SigtermTest do
     assert FakeAPI.states(api) == ~w(runner_listening job_started job_finished)
     assert List.last(FakeAPI.delivered(api, "/v1/state")).cast.detail == "exit_code=143"
     assert "stub-runner: got SIGTERM" in FakeAPI.log_texts(api)
+    assert "stub-runner: cancelled" in FakeAPI.log_texts(api)
+    assert "stub-runner: done waiting" in FakeAPI.log_texts(api)
   end
 end

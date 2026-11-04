@@ -6,3 +6,7 @@
 +sbwt none
 +sbwtdcpu none
 +sbwtdio none
+## crew-guest stops the job itself (at most 11 s after SIGTERM) and only
+## then the release: init:stop gets 2 s before init kills what's left,
+## which keeps all of it under the unit's TimeoutStopSec (15 s).
+-shutdown_time 2000

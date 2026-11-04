@@ -5,14 +5,19 @@ defmodule CrewGuest.Application do
 
   alias CrewGuest.{Config, Session, Signals}
 
-  # Past SIGTERM's budget, the release itself gets this long to stop.
-  @release_stop_ms 2_000
+  # Past SIGTERM's budget, the release itself gets this long to stop before
+  # the backstop halts it. rel/vm.args.eex caps init:stop on its own too.
+  @release_stop_ms 1_500
 
   @impl true
   def start(_type, _args) do
     children = [finch() | session(Application.get_env(:crew_guest, :autostart, true))]
     Supervisor.start_link(children, strategy: :one_for_one, name: CrewGuest.Supervisor)
   end
+
+  @doc false
+  # When CrewGuest.Signals halts the BEAM after a SIGTERM (12.5 s).
+  def backstop_ms(cfg), do: cfg.sigterm_timeout_ms + @release_stop_ms
 
   # The guest API allows 4 connections per VM (§13.4): the control poll,
   # the outbox's two lanes and metrics. Idle connections are dropped before
@@ -39,7 +44,7 @@ defmodule CrewGuest.Application do
         :ok =
           Signals.install(
             on_sigterm: &Session.sigterm/0,
-            deadline_ms: cfg.sigterm_timeout_ms + @release_stop_ms
+            deadline_ms: backstop_ms(cfg)
           )
 
         [{Session, config: cfg, system: CrewGuest.System.impl(cfg.mode)}]

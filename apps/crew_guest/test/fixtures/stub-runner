@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # A stand-in for actions/runner's run.sh, for crew-guest's tests and the
 # null driver (§11.5). It prints what the real runner prints at the points
 # crew-guest watches, writes a worker log and log pages under _diag the
@@ -9,8 +9,11 @@
 #
 # Environment:
 #   STUB_EXIT=<n>           exit code (default 0)
-#   STUB_HANG=1             after the job's steps, wait for SIGTERM (exit 143)
-#   STUB_HANG=ignore        after the job's steps, ignore SIGTERM and keep going
+#   STUB_HANG=1             after the job's steps, wait for SIGTERM, as
+#                           run.sh does (exit 143); the listener's pid is
+#                           in <dir>/listener.pid
+#   STUB_HANG=ignore        the same, but the listener never finishes
+#   STUB_CANCEL=<seconds>   how long the listener takes to cancel (0.2)
 #   STUB_WORKER_LOG=<file>  a worker log to copy to _diag/Worker_<time>-utc.log
 #   STUB_JIT_OUT=<file>     write the JIT config it was given here
 #   STUB_DELAY=<seconds>    pause between phases (default 0.2)
@@ -84,14 +87,41 @@ tests_page2=$pages/${timeline}_${tests}_2.log
 line "$tests_page2" "ok 2 - second"
 rm -f "$checkout_page" "$tests_page"
 
-if [ "${STUB_HANG:-}" = 1 ]; then
-  trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; exit 143' TERM
-  while :; do sleep 0.1; done
-fi
-
-if [ "${STUB_HANG:-}" = ignore ]; then
-  trap 'line "$tests_page2" "stub-runner: ignoring SIGTERM"' TERM
-  while :; do sleep 0.1; done
+if [ -n "${STUB_HANG:-}" ]; then
+  # From here the stub is run.sh with RUNNER_MANUALLY_TRAP_SIG set
+  # (runWithManualTrap in actions/runner's src/Misc/layoutroot/run.sh):
+  # the listener runs in its own process group (set -m), the first TERM
+  # goes on to that group as INT, and then run.sh drops its trap and waits
+  # for the listener's last output. A second TERM in that wait kills
+  # run.sh, so "done waiting" never comes.
+  set -m
+  (
+    # The INT kills the sleep it's in, which mustn't end the listener.
+    set +e
+    if [ "$STUB_HANG" = ignore ]; then
+      # A cancel that outlasts any grace.
+      trap 'line "$tests_page2" "stub-runner: ignoring SIGINT"' INT
+      trap '' TERM
+      while :; do sleep 0.1; done
+    fi
+    trap 'cancel=1' INT
+    while [ -z "${cancel:-}" ]; do sleep 0.1; done
+    sleep "${STUB_CANCEL:-0.2}"
+    line "$tests_page2" "stub-runner: cancelled"
+    echo "stub-runner: cancelled"
+  ) &
+  PID=$!
+  echo "$PID" > "$dir/listener.pid"
+  trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; kill -INT -$PID || true' TERM
+  code=0
+  wait $PID || code=$?
+  echo "Exiting runner..."
+  trap - TERM
+  # wait for last parts to be logged
+  wait $PID || true
+  # Not run.sh's: it shows run.sh lived through its wait.
+  line "$tests_page2" "stub-runner: done waiting"
+  exit $code
 fi
 
 line "$tests_page2" "Process completed with exit code ${STUB_EXIT:-0}."

@@ -24,9 +24,16 @@ Environment=HOME=/root
 Environment=LANG=C.UTF-8
 # The payload fetch alone may take 60 s.
 TimeoutStartSec=180
-# On SIGTERM crew-guest stops the runner and flushes within 6 s, and halts
-# itself at 8 s if it's still up (CrewGuest.Signals): keep this above that.
+# On SIGTERM crew-guest stops the runner and flushes within 11 s, and
+# halts itself at 12.5 s if it's still up (CrewGuest.Signals; vm.args caps
+# init:stop at 2 s): keep this above that.
 TimeoutStopSec=15
+# SIGTERM to crew-guest alone: it signals the runner itself, once, and
+# run.sh forwards that to the listener. Signalling the whole cgroup would
+# reach run.sh twice (a second SIGTERM kills it while it waits for the
+# listener's last output) and every job process directly. What's left
+# when crew-guest exits, or at the timeout, gets SIGKILL.
+KillMode=mixed
 Restart=no
 # The runner and the job are crew-guest's children and inherit this.
 LimitNOFILE=65536
