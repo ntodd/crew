@@ -56,7 +56,7 @@ defmodule CrewGuest.SystemTest do
         assert :ok = apply(Local, step, [cfg])
       end
 
-      assert :ok = Local.configure_docker(cfg, @pem)
+      assert :ok = Local.configure_docker(cfg, @pem, ["ghcr.io"])
     end
 
     test "runs the configured command as the current user", %{cfg: cfg} do
@@ -136,21 +136,42 @@ defmodule CrewGuest.SystemTest do
       for var <- vars, do: assert(count(env, var) == 1, var)
     end
 
-    test "configures Docker and BuildKit", %{cfg: cfg, root: root, opts: opts} do
+    test "configures Docker and BuildKit to pull through the cache (§15.1, Design A)",
+         %{cfg: cfg, root: root, opts: opts} do
       File.mkdir_p!(Path.join(root, "etc/docker"))
       File.write!(Path.join(root, "etc/docker/daemon.json"), ~s({"features": {"buildkit": true}}))
 
-      assert :ok = Linux.configure_docker(cfg, @pem, opts)
+      assert :ok = Linux.configure_docker(cfg, @pem, ["ghcr.io", "registry-1.docker.io"], opts)
 
       daemon = root |> Path.join("etc/docker/daemon.json") |> File.read!() |> Jason.decode!()
       assert daemon == %{"log-driver" => "local", "features" => %{"buildkit" => true}}
 
-      toml = File.read!(Path.join(root, "etc/buildkit/buildkitd.toml"))
+      # dockerd (containerd store) reads a hosts.toml per registry from
+      # /etc/docker/certs.d; the cache serves /v2/<registry>/... for it.
+      ghcr = File.read!(Path.join(root, "etc/docker/certs.d/ghcr.io/hosts.toml"))
+      assert ghcr =~ ~s(server = "https://ghcr.io")
+      assert ghcr =~ ~s([host."https://10.199.0.1/v2/ghcr.io"])
+      assert ghcr =~ ~s(capabilities = ["pull", "resolve"])
+      assert ghcr =~ "override_path = true"
+      assert ghcr =~ ~s(ca = "/usr/local/share/ca-certificates/crew-cache.crt")
 
-      for host <- ["docker.io", "ghcr.io", "public.ecr.aws", "10.199.0.1"] do
-        assert toml =~
-                 ~s([registry."#{host}"]\n  ca = ["/usr/local/share/ca-certificates/crew-cache.crt"])
-      end
+      hub = File.read!(Path.join(root, "etc/docker/certs.d/docker.io/hosts.toml"))
+      assert hub =~ ~s(server = "https://registry-1.docker.io")
+      assert hub =~ ~s([host."https://10.199.0.1/v2/docker.io"])
+      refute File.exists?(Path.join(root, "etc/docker/certs.d/quay.io"))
+
+      toml = File.read!(Path.join(root, "etc/buildkit/buildkitd.toml"))
+      assert toml =~ ~s([registry."ghcr.io"]\n  mirrors = ["10.199.0.1/ghcr.io"])
+      assert toml =~ ~s([registry."docker.io"]\n  mirrors = ["10.199.0.1/docker.io"])
+
+      assert toml =~
+               ~s([registry."10.199.0.1"]\n  ca = ["/usr/local/share/ca-certificates/crew-cache.crt"])
+    end
+
+    test "without a cache, Docker goes straight upstream", %{cfg: cfg, root: root, opts: opts} do
+      assert :ok = Linux.configure_docker(cfg, nil, ["ghcr.io"], opts)
+      refute File.exists?(Path.join(root, "etc/docker/certs.d"))
+      refute File.exists?(Path.join(root, "etc/buildkit/buildkitd.toml"))
     end
 
     test "starts containerd and Docker", %{cfg: cfg, opts: opts} do

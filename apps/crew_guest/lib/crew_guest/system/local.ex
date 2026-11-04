@@ -22,7 +22,7 @@ defmodule CrewGuest.System.Local do
   end
 
   @impl true
-  def configure_docker(_cfg, _pem), do: :ok
+  def configure_docker(_cfg, _pem, _mirrors), do: :ok
 
   @impl true
   def notify_ready(_cfg) do
