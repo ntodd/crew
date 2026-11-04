@@ -184,6 +184,7 @@ defmodule CrewWeb.BoxLive.New do
           <% "linux-metal" -> %>
             <p class="mb-3 text-sm text-ink-2">
               Download the box's Ignition. It holds the join token (and the box's Tailscale key), so keep it to yourself.
+              Delete it once the box has enrolled.
             </p>
             <form
               id="ignition-download"
@@ -208,10 +209,12 @@ defmodule CrewWeb.BoxLive.New do
                 </.button>
               </div>
             </form>
-            <p class="mb-2 text-sm text-ink-2">Or fetch it on the machine:</p>
+            <p class="mb-2 text-sm text-ink-2">
+              Or fetch it on the machine (readable only by you, with the umask):
+            </p>
             <.command
               id="join-command"
-              command={"curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition > crew-#{@box_name}.ign"}
+              command={"(umask 077; curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o crew-#{@box_name}.ign)"}
             />
             <p class="mb-2 mt-4 text-sm text-ink-2">
               Then, from Flatcar's live image, install it to the OS disk (not the data disk) and reboot:

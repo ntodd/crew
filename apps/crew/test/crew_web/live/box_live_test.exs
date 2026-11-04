@@ -177,6 +177,12 @@ defmodule CrewWeb.BoxLiveTest do
       assert has_element?(view, "#ignition-download select[name=arch] option[value=amd64]")
       assert has_element?(view, "#ignition-download select[name=arch] option[value=arm64]")
       assert has_element?(view, "#join-command", "arch=amd64")
+      # The file holds the join token and the Tailscale key: made 0600,
+      # and deleted once the box has enrolled.
+      assert has_element?(view, "#join-command", "(umask 077; curl ")
+      assert has_element?(view, "#join-command", "-o crew-rack1.ign)")
+      refute render(view) =~ "> crew-rack1.ign"
+      assert has_element?(view, "#join-instructions", "Delete it once the box has enrolled")
       assert has_element?(view, "#flatcar-install", "flatcar-install -d")
 
       assert Crew.Repo.get_by!(Crew.Boxes.JoinToken, box_name: "rack1").data_disk ==
