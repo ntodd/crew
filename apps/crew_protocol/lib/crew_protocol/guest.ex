@@ -129,11 +129,16 @@ defmodule CrewProtocol.Guest do
 
   def cast_metrics(_m, _life), do: {:error, :bad_body}
 
-  @doc "The body of `GET /v1/payload`."
-  def payload(%{jit_config: jit, ca_pem: ca, policy: policy, size: size, labels: labels}) do
+  @doc """
+  The body of `GET /v1/payload`. `mirrors` are the registries the box's
+  cache serves (§15.1, Design A): crew-guest points dockerd at the cache
+  for each, and only for hosts Crew knows.
+  """
+  def payload(%{jit_config: jit, ca_pem: ca, policy: policy, size: size, labels: labels} = p) do
     %{
       "jit_config" => jit,
       "ca_pem" => ca,
+      "mirrors" => Enum.filter(Map.get(p, :mirrors) || [], &(&1 in CrewProtocol.Hosts.names())),
       "policy" => %{
         "fork_prs" => to_string(policy.fork_prs),
         "repo_full_name" => policy.repo_full_name
