@@ -269,8 +269,9 @@ defmodule CrewGuest.MainTest do
       main = boot(hanging(api, dir, "1"))
       await_job(api)
 
-      for path <- ~w(/v1/state /v1/log /v1/steps),
-          do: FakeAPI.respond(api, path, [{:delay, 10_000, {204, nil}}])
+      # States hang: logs and steps still go through, so nothing else is
+      # in flight ahead of job_finished, which hangs when it's sent.
+      FakeAPI.respond(api, "/v1/state", [{:delay, 10_000, {204, nil}}])
 
       ms = sigterm(main)
       assert ms >= 900 and ms < 1_300
