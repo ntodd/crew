@@ -231,13 +231,19 @@ The other spikes are recorded here as they run.
   (`killed_stop`, detail `firewall_not_verified`), and starts nothing
   until it does. An unreachable crew-vmctl or an egress address not yet
   learned holds starts back without killing anything.
-- **site4's egress address:** the agent asks crew-vmctl to refill site4
-  the moment it learns a new one, and reads its last one back at start;
-  crew-vmctl keeps the last valid one in `/run/crew/egress4` when the
-  agent's file is missing or broken. `nft-verify` checks site4 holds
-  what crew-net puts there. With an echo service configured no VM starts
-  until site4 holds the address; without one the capabilities carry
-  `no_egress_echo`.
+- **site4 is built from root's side only,** so a compromised agent can
+  add to it but never weaken it. Egress addresses are add-only: each
+  refill adds the agent's `agent/egress4`, if it's new, to crew-vmctl's
+  list in `/srv/crew/vmctl/egress4` (root's, at most 64, never trimmed
+  by anything the agent writes; full means no more are added), and every
+  address in the list goes into site4. `CREW_EXTRA_BLOCKED` and
+  `CREW_UPLINK` come from `/etc/crew-box/extra-blocked` and
+  `/etc/crew-box/uplink`, which the Ignition writes, not from the
+  agent's env; crew-vmctl doesn't read `agent/env` at all. `nft-verify`
+  checks site4 against the same inputs. The agent asks for a refill the
+  moment it learns a new address. With an echo service configured no VM
+  starts until site4 holds the agent's address; without one the
+  capabilities carry `no_egress_echo`.
 - **VM ids are checked:** crew-vmctl refuses a lease whose uid or gid
   (200000 + the lease) is in `/etc/passwd`, `/etc/group`, Flatcar's
   `/usr/share/baselayout` copies, or an `/etc/subuid`/`/etc/subgid`

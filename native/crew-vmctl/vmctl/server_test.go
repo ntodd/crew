@@ -118,6 +118,10 @@ func (f *fakeSys) WriteFile(path string, data []byte) error {
 	return nil
 }
 
+func (f *fakeSys) WriteState(name string, data []byte) error {
+	return f.WriteFile(paths.State(name), data)
+}
+
 func (f *fakeSys) CreateFile(path string, data []byte) error {
 	if _, ok := f.created[path]; ok {
 		return os.ErrExist
@@ -569,7 +573,8 @@ func TestSite4(t *testing.T) {
 	}
 	sys.root["/run/crew/uplink"] = []byte("eth0\n")
 	sys.root[paths.Egress()] = []byte("198.51.100.20\n")
-	sys.root[paths.AgentEnv()] = []byte("CREW_URL=wss://x\nCREW_EXTRA_BLOCKED=\"192.168.64.0/26, 8.8.8.0/24,not-a-cidr\"\nLD_PRELOAD=/x.so\n")
+	sys.root[paths.State("egress4")] = []byte("198.51.100.20\n")
+	sys.root[ExtraBlockedFile] = []byte("192.168.64.0/26, 8.8.8.0/24,not-a-cidr\n")
 	s := server(t, sys, time.Now())
 	set, err := s.Site4(context.Background())
 	if err != nil {

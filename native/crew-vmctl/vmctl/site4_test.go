@@ -2,6 +2,7 @@ package vmctl
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"strings"
@@ -29,6 +30,8 @@ func newBox(t *testing.T) *testBox {
 	b.ref = ruleset.Listing{Nft: mustRead(t, "../ruleset/testdata/nft-1.1.6-clean.json"), Mangle: mangle}
 	b.root["/run/crew/uplink"] = []byte("eth0\n")
 	b.root[paths.Egress()] = []byte("198.51.100.20\n")
+	// The address crew-vmctl has seen, in its own state.
+	b.root[paths.State("egress4")] = []byte("198.51.100.20\n")
 	b.answer = func(argv []string) (string, error) {
 		switch strings.Join(argv, " ") {
 		case "nft -j list table inet crew":
@@ -71,7 +74,7 @@ func site4JSON(elems []string) string {
 func TestNftVerifyHoldsSite4(t *testing.T) {
 	b := newBox(t)
 	r := handle(t, server(t, b.fakeSys, time.Now()), `{"verb":"nft-verify"}`)
-	if !r.OK || r.Site4 == nil || r.Site4.Egress != "198.51.100.20" {
+	if !r.OK || r.Site4 == nil || !reflect.DeepEqual(r.Site4.Egress, []string{"198.51.100.20"}) {
 		t.Fatalf("%+v %+v", r, r.Site4)
 	}
 
@@ -101,43 +104,116 @@ func TestNftVerifyHoldsSite4(t *testing.T) {
 	}
 }
 
-func TestSite4KeepsTheLastValidEgress(t *testing.T) {
+// The agent can add an egress address to site4, never take one out: the
+// addresses crew-vmctl has seen stay, in its own state, whatever the
+// agent's file says later.
+func TestSite4EgressIsAddOnly(t *testing.T) {
 	b := newBox(t)
 	s := server(t, b.fakeSys, time.Now())
+
+	// A new address from the agent is added to the ones seen.
+	b.root[paths.Egress()] = []byte("203.0.113.5\n")
 	if err := s.RefreshSite4(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if b.wrote[lastEgressFile] != "198.51.100.20\n" {
-		t.Fatalf("last egress: %q", b.wrote[lastEgressFile])
+	if got := string(b.root[paths.State("egress4")]); got != "198.51.100.20\n203.0.113.5\n" {
+		t.Fatalf("history %q", got)
 	}
+	both := []string{"192.168.64.0/24", "198.51.100.20/32", "203.0.113.5/32"}
 
-	// The agent's file goes, or turns to garbage: the address stays.
-	for _, body := range []string{"", "not an address\n", "2001:db8::1\n", "10.0.0.1/8\n"} {
+	// Another address, garbage, or no file: nothing seen goes.
+	for _, body := range []string{"", "not an address\n", "2001:db8::1\n", "10.0.0.1/8\n", "203.0.113.5\n"} {
 		if body == "" {
 			delete(b.root, paths.Egress())
 		} else {
 			b.root[paths.Egress()] = []byte(body)
 		}
+		if err := s.RefreshSite4(t.Context()); err != nil {
+			t.Fatal(err)
+		}
 		set, err := s.Site4(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
-		if want := []string{"192.168.64.0/24", "198.51.100.20/32"}; !reflect.DeepEqual(set, want) {
+		if !reflect.DeepEqual(set, both) {
 			t.Errorf("agent/egress4 %q: site4 %v", body, set)
 		}
 	}
 
-	// A new valid one replaces it.
+	// nft-verify holds site4 to every address seen, not the agent's latest.
+	b.site4 = []string{"192.168.64.0/24", "203.0.113.5/32"}
+	r := handle(t, s, `{"verb":"nft-verify"}`)
+	if r.OK || r.Error != ErrSite4NotReady {
+		t.Fatalf("an address swapped out of site4: %+v", r)
+	}
+	b.site4 = both
+	r = handle(t, s, `{"verb":"nft-verify"}`)
+	if !r.OK || !reflect.DeepEqual(r.Site4.Egress, []string{"198.51.100.20", "203.0.113.5"}) {
+		t.Fatalf("%+v %+v", r, r.Site4)
+	}
+}
+
+func TestSite4EgressHistoryIsBounded(t *testing.T) {
+	b := newBox(t)
+	var seen []string
+	for i := 0; i < MaxEgress; i++ {
+		seen = append(seen, fmt.Sprintf("198.51.100.%d", i+1))
+	}
+	b.root[paths.State("egress4")] = []byte(strings.Join(seen, "\n") + "\n")
 	b.root[paths.Egress()] = []byte("203.0.113.5\n")
+	s := server(t, b.fakeSys, time.Now())
+	// Full: a new address isn't added, and none of the old ones goes to
+	// make room (an agent adding addresses could push the real one out).
 	if err := s.RefreshSite4(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if b.wrote[lastEgressFile] != "203.0.113.5\n" {
-		t.Fatalf("last egress: %q", b.wrote[lastEgressFile])
+	if got := string(b.root[paths.State("egress4")]); got != strings.Join(seen, "\n")+"\n" {
+		t.Fatalf("history changed: %q", got)
 	}
 	set, _ := s.Site4(t.Context())
-	if want := []string{"192.168.64.0/24", "203.0.113.5/32"}; !reflect.DeepEqual(set, want) {
+	if len(set) != MaxEgress+1 {
+		t.Fatalf("site4 has %d prefixes", len(set))
+	}
+}
+
+// What site4 holds comes from root's side: the uplink's subnets, the
+// addresses seen, and the box's extra blocks from /etc/crew-box, which
+// the Ignition writes. Nothing from the agent's env.
+func TestSite4IsFromRootsInputs(t *testing.T) {
+	b := newBox(t)
+	b.root[paths.AgentEnv()] = []byte("CREW_EXTRA_BLOCKED=1.2.3.0/24\nCREW_UPLINK=eth9\n")
+	b.root[ExtraBlockedFile] = []byte("# the site's own\n192.168.64.0/26\n8.8.8.0/24, not-a-cidr\n\n")
+	s := server(t, b.fakeSys, time.Now())
+	set, err := s.Site4(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"8.8.8.0/24", "192.168.64.0/24", "198.51.100.20/32"}; !reflect.DeepEqual(set, want) {
 		t.Fatalf("site4 %v", set)
+	}
+}
+
+func TestUplinkIsRoots(t *testing.T) {
+	b := newBox(t)
+	b.root[paths.AgentEnv()] = []byte("CREW_UPLINK=eth9\n")
+	inner := b.answer
+	b.answer = func(argv []string) (string, error) {
+		if strings.Join(argv, " ") == "ip -j -4 route show default" {
+			return `[{"dst":"default","gateway":"192.168.64.1","dev":"eth0"}]`, nil
+		}
+		return inner(argv)
+	}
+	s := server(t, b.fakeSys, time.Now())
+	if up, err := s.findUplink(t.Context()); err != nil || up != "eth0" {
+		t.Fatalf("the default route's: %q %v", up, err)
+	}
+	b.root[UplinkFile] = []byte("enp3s0\n")
+	if up, err := s.findUplink(t.Context()); err != nil || up != "enp3s0" {
+		t.Fatalf("/etc/crew-box/uplink's: %q %v", up, err)
+	}
+	b.root[UplinkFile] = []byte("tailscale0\n")
+	if _, err := s.findUplink(t.Context()); err == nil {
+		t.Fatal("tailscale0 isn't an uplink")
 	}
 }
 
