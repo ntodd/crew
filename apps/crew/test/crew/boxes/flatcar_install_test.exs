@@ -104,6 +104,53 @@ defmodule Crew.Boxes.FlatcarInstallTest do
     assert out =~ "the agent is installed (0.3.0)"
   end
 
+  # What root runs comes from a tree the agent can't write (it owns
+  # agent/, to update itself), with the units pointed at it.
+  test "puts what root runs in root/, outside the agent's reach", ctx do
+    etc = render_etc(ctx.root, ctx.key, release(ctx.files))
+    assert {_, 0} = install(etc, ctx.data)
+
+    root = Path.join(ctx.data, "root")
+    assert {:ok, "0.3.0"} = File.read_link(Path.join(root, "current"))
+
+    for f <- ~w(bin/crew-vmctl bin/jailer bin/firecracker) do
+      assert File.read!(Path.join([root, "0.3.0", f])) ==
+               File.read!(Path.join([ctx.data, "agent/0.3.0", f]))
+
+      assert Bitwise.band(File.stat!(Path.join([root, "0.3.0", f])).mode, 0o022) == 0, f
+    end
+
+    assert File.read!(Path.join(root, "0.3.0/etc/nft.conf")) =~ "table inet crew"
+    assert File.exists?(Path.join(root, "0.3.0/etc/connlimit.rules"))
+
+    units = File.ls!(Path.join(root, "0.3.0/etc/systemd")) |> Enum.sort()
+    assert units == vmctl_units()
+
+    for unit <- units do
+      text = File.read!(Path.join([root, "0.3.0/etc/systemd", unit]))
+      refute text =~ "/srv/crew/agent/current/bin/", unit
+
+      for line <- String.split(text, "\n"), line =~ ~r/^Exec/ do
+        assert line =~ ~r{=/srv/crew/root/current/bin/crew-vmctl }, "#{unit}: #{line}"
+      end
+    end
+  end
+
+  test "refuses a release without crew-vmctl's units", ctx do
+    entries = Enum.reject(agent_entries("0.3.0"), fn {path, _} -> path =~ "crew-net.service" end)
+    bytes = tarball(entries)
+    File.write!(ctx.files["agent"].path, bytes)
+    sha = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+    sig = CrewProtocol.Auth.sign_release("0.3.0", "linux-arm64", sha, ctx.key.private)
+    files = ctx.files |> put_in(["agent", :sha256], sha) |> put_in(["agent", :signature], sig)
+    etc = render_etc(ctx.root, ctx.key, release(files))
+
+    assert {out, 1} = install(etc, ctx.data)
+    assert out =~ "the release has no etc/systemd/crew-net.service"
+    refute File.exists?(Path.join(ctx.data, "agent/current"))
+    refute File.exists?(Path.join(ctx.data, "root/current"))
+  end
+
   test "refuses a tarball that isn't the one the Ignition names", ctx do
     File.write!(ctx.files["agent"].path, tarball(agent_entries("evil")))
     etc = render_etc(ctx.root, ctx.key, release(ctx.files))

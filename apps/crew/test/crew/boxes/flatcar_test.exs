@@ -83,13 +83,19 @@ defmodule Crew.Boxes.FlatcarTest do
   test "has every unit and file in §12.2's table" do
     config = ignition()
 
-    for name <- ~w(srv-crew.mount crew-format-data.service crew-net.service
+    for name <- ~w(srv-crew.mount crew-format-data.service
                    crew-provision.service crew-agent-install.service crew-agent.service
-                   crew-agent-rollback.service crew-vmctl.socket crew-vmctl@.service
+                   crew-agent-rollback.service crew-root-units.service
                    crew-cache.service tailscaled.service crew-clock-sync.timer
                    crew-clock-sync.service crew-flatcar-update.timer
                    crew-sysext-update.timer crew-quota.service crew-box-status.service) do
       assert unit?(config, name), "no #{name}"
+    end
+
+    # crew-net and crew-vmctl's units come with the release, which also
+    # knows what crew-vmctl needs of them (native/crew-vmctl/etc/systemd).
+    for name <- ~w(crew-net.service crew-vmctl.socket crew-vmctl@.service crew-net-site4.timer) do
+      refute unit?(config, name), "#{name} is the release's"
     end
 
     for path <- ~w(/etc/systemd/network/00-crew.network /etc/crew-box/provision.env
@@ -255,6 +261,15 @@ defmodule Crew.Boxes.FlatcarTest do
       assert script =~ "limit -p bhard="
       assert script =~ "CREW_CACHE_MAX_GIB"
     end
+
+    # crew-vmctl refuses a jail anyone but root can write, and root/ is
+    # what root runs.
+    test "keeps the data disk's top, jail/ and root/ root's" do
+      script = contents(ignition(), "/etc/crew-box/quota.sh")
+      assert script =~ ~s(dir 0755 root:root "$data"\n)
+      assert script =~ ~s(dir 0755 root:root "$data/jail")
+      assert script =~ ~s(dir 0755 root:root "$data/root")
+    end
   end
 
   describe "the network" do
@@ -263,18 +278,31 @@ defmodule Crew.Boxes.FlatcarTest do
                "[Match]\nName=crewt* crew0\n\n[Link]\nUnmanaged=yes\n"
     end
 
-    test "crew0 gets 10.199.0.1/32, then the release's ruleset, once" do
+    # crew-net (crew0, the ruleset, site4) is crew-vmctl's, with its units
+    # in the release; the box installs and enables them at every boot.
+    test "installs the release's crew-net and crew-vmctl units, and enables them" do
       config = ignition()
-      net = body(config, "crew-net.service")
-      assert net =~ "ExecStart=/bin/sh /etc/crew-box/net.sh"
-      assert net =~ "RemainAfterExit=yes"
-      refute unit?(config, "crew-net.timer")
+      root = body(config, "crew-root-units.service")
+      assert unit(config, "crew-root-units.service")["enabled"]
+      assert root =~ "ExecStart=/bin/sh /etc/crew-box/root-units.sh"
+      assert root =~ "ConditionPathExists=/srv/crew/root/current/etc/systemd"
+      assert root =~ "Before=crew-agent.service"
 
-      script = contents(config, "/etc/crew-box/net.sh")
-      assert script =~ "ip link add crew0 type dummy"
-      assert script =~ "ip addr replace 10.199.0.1/32 dev crew0"
-      assert script =~ "rules=/srv/crew/agent/current/etc/nft.conf"
-      assert script =~ ~s(nft -f "$rules")
+      script = contents(config, "/etc/crew-box/root-units.sh")
+      assert script =~ "src=/srv/crew/root/current/etc/systemd"
+
+      for unit <-
+            ~w(crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.service crew-net-site4.timer) do
+        assert script =~ unit
+      end
+
+      assert script =~ "systemctl enable crew-net.service crew-vmctl.socket crew-net-site4.timer"
+      assert script =~ "systemctl daemon-reload"
+    end
+
+    test "loads what crew-net's ruleset needs" do
+      modules = contents(ignition(), "/etc/modules-load.d/crew.conf")
+      for m <- ~w(nf_conntrack nft_compat xt_connlimit), do: assert(modules =~ m)
     end
 
     test "asks DHCP for an address by MAC, as the mac-vm launcher looks it up" do
@@ -404,12 +432,14 @@ defmodule Crew.Boxes.FlatcarTest do
             "SupplementaryGroups=crewvm",
             "NoNewPrivileges=true",
             "ProtectSystem=strict",
-            "ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images",
+            # The jail's console files are the agent's to cap (crew-vmctl's README).
+            "ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images /srv/crew/jail",
             "OOMScoreAdjust=-900",
             "EnvironmentFile=/srv/crew/agent/env",
             "ExecStart=/srv/crew/agent/current/bin/crew_agent start",
             "OnFailure=crew-agent-rollback.service",
             "Requires=crew-net.service",
+            "After=network-online.target crew-net.service crew-vmctl.socket",
             "ConditionPathExists=/srv/crew/agent/current/bin/crew_agent"
           ] do
         assert agent =~ line, line
@@ -419,19 +449,29 @@ defmodule Crew.Boxes.FlatcarTest do
                "ExecStart=/bin/sh /etc/crew-box/agent-rollback.sh"
     end
 
-    test "crew-vmctl is socket-activated, for _crewagent only" do
-      config = ignition()
-      assert unit(config, "crew-vmctl.socket")["enabled"]
-      socket = body(config, "crew-vmctl.socket")
-      assert socket =~ "ListenStream=/run/crew/vmctl.sock"
-      assert socket =~ "SocketUser=root"
+    # The agent can write agent/ (it updates itself, §20.2), so nothing
+    # root runs may come from there.
+    test "no root unit runs anything from the agent's directory" do
+      for config <- [ignition(), reprovision()],
+          u <- units(config),
+          text = u["contents"],
+          is_binary(text),
+          not (text =~ ~r/^User=/m) do
+        refute text =~ ~r{^Exec[A-Za-z]*=.*/srv/crew/agent/}m, u["name"]
+      end
+    end
+
+    test "crew-vmctl's socket is for _crewagent only" do
+      assert contents(ignition(), "/etc/crew-box/root-units.sh") =~ "crew-vmctl.socket"
+
+      [socket] =
+        Crew.AgentReleaseFixtures.agent_entries("0")
+        |> Enum.filter(fn {path, _} -> path == "etc/systemd/crew-vmctl.socket" end)
+        |> Enum.map(&elem(&1, 1))
+
       assert socket =~ "SocketGroup=_crewagent"
       assert socket =~ "SocketMode=0660"
-      assert socket =~ "Accept=yes"
-
-      service = body(config, "crew-vmctl@.service")
-      assert service =~ "ExecStart=/srv/crew/agent/current/bin/crew-vmctl"
-      assert service =~ "StandardInput=socket"
+      assert Enum.any?(ignition()["passwd"]["groups"], &(&1["name"] == "_crewagent"))
     end
 
     test "crew_cache runs as crewcache, binding 53 and 443 and kept by the OOM killer" do
@@ -535,7 +575,7 @@ defmodule Crew.Boxes.FlatcarTest do
       config = reprovision()
       assert unit(config, "srv-crew.mount")["enabled"]
       assert unit(config, "crew-agent.service")["enabled"]
-      assert unit(config, "crew-net.service")["enabled"]
+      assert unit(config, "crew-root-units.service")["enabled"]
       assert unit(config, "crew-cache.service")["enabled"]
       assert unit(config, "crew-box-status.service")["enabled"]
       assert contents(config, "/etc/crew-box/status.sh") =~ ~s[say "agent started]

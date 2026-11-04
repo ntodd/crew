@@ -31,7 +31,10 @@ dir 0755 root:root "$data"
 dir 0711 _crewagent:_crewagent "$data/agent"
 dir 0750 _crewagent:crewvm "$data/vms"
 dir 0750 _crewagent:_crewagent "$data/images"
-dir 0711 root:root "$data/jail"
+# jailer's chroots: crew-vmctl refuses one anyone but root can write.
+dir 0755 root:root "$data/jail"
+# What root runs (crew-agent-install): out of the agent's reach.
+dir 0755 root:root "$data/root"
 dir 0750 crewcache:crewcache "$data/cache"
 # tailscaled's state, so the node keeps its identity across a
 # reprovisioned OS disk (§12.2).
