@@ -187,6 +187,7 @@ defmodule CrewCache.Settings do
         state = %{state | saved: saved}
         save(state)
         publish(state)
+        if Map.has_key?(params, "parent"), do: CrewCache.Parent.reconfigure()
         if rotate?, do: :ok = CrewCache.CA.rotate()
         {:reply, {:ok, %{ca_rotated: rotate?}}, state}
 

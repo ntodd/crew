@@ -267,7 +267,8 @@ defmodule CrewCache.Fetcher do
     {:noreply, %{state | written: written}}
   end
 
-  def handle_info({:finished, result}, state), do: finish(verify(result, state), state)
+  def handle_info({:finished, source, result}, state),
+    do: finish(verify(result, source, state), source, state)
 
   def handle_info({:EXIT, worker, reason}, %{worker: worker, done: nil} = state)
       when reason != :normal do
@@ -275,7 +276,7 @@ defmodule CrewCache.Fetcher do
       "fetch of #{state.spec.digest} crashed: #{inspect(reason) |> String.slice(0, 300)}"
     )
 
-    finish({:error, :fetch_failed}, state)
+    finish({:error, :fetch_failed}, :upstream, state)
   end
 
   def handle_info({:EXIT, _, _}, state), do: {:noreply, state}
@@ -292,11 +293,11 @@ defmodule CrewCache.Fetcher do
     {:noreply, %{state | subs: subs}}
   end
 
-  defp verify({:ok, hex, size, media_type}, %{spec: spec} = state) do
+  defp verify({:ok, hex, size, content_type}, source, %{spec: spec} = state) do
     if "sha256:" <> hex == spec.digest do
       meta = %{
         kind: spec.kind,
-        media_type: media_type,
+        media_type: media_type(spec.kind, state.tmp, content_type),
         host: spec.host.host,
         repo: spec.repo,
         size: size
@@ -305,26 +306,51 @@ defmodule CrewCache.Fetcher do
       with :ok <- Store.commit(state.tmp, spec.digest, meta), do: {:ok, size}
     else
       Stats.mismatch(spec.host.host)
-      Logger.warning("digest mismatch from #{spec.host.host} for #{spec.repo}@#{spec.digest}")
+
+      Logger.warning(
+        "digest mismatch from the #{source} (#{spec.host.host}) for #{spec.repo}@#{spec.digest}"
+      )
+
+      if source == :parent, do: CrewCache.Parent.skip(spec.digest)
       File.rm(state.tmp)
       {:error, :digest_mismatch}
     end
   end
 
-  defp verify({:error, _} = error, state) do
+  defp verify({:error, _} = error, _source, state) do
     File.rm(state.tmp)
     error
   end
 
-  defp finish({:ok, size}, state) do
+  # A manifest's own mediaType, when it has one, over the Content-Type it
+  # came with: the bytes are verified, the header isn't.
+  defp media_type(:manifest, path, content_type) do
+    with {:ok, json} <- File.read(path),
+         {:ok, %{"mediaType" => type}} when is_binary(type) <- Jason.decode(json) do
+      type
+    else
+      _ -> content_type
+    end
+  end
+
+  defp media_type(:blob, _path, content_type), do: content_type
+
+  defp finish({:ok, size}, _source, state) do
     state = %{state | written: size, headers: state.headers || {size, nil}}
     notify(state, :ok)
     {:stop, :normal, %{state | done: :ok}}
   end
 
-  defp finish({:error, _} = error, state) do
+  # A failure from the upstream lingers, so requests get a 502 for a
+  # while without asking again. One from the parent doesn't: the next
+  # try goes upstream.
+  defp finish({:error, _} = error, source, state) do
     notify(state, error)
-    Process.send_after(self(), :linger_over, @failed_linger_ms)
+
+    if source == :parent,
+      do: send(self(), :linger_over),
+      else: Process.send_after(self(), :linger_over, @failed_linger_ms)
+
     {:noreply, %{state | done: error, waiting: []}}
   end
 
@@ -349,20 +375,28 @@ defmodule CrewCache.Fetcher do
       written: 0,
       limit: limit,
       media_type: nil,
-      error: nil
+      error: nil,
+      started: false
     }
 
     headers = if spec.accept, do: [{"accept", spec.accept}], else: []
     path = if spec.kind == :manifest, do: "manifests/", else: "blobs/"
 
-    result =
-      Upstream.request(spec.host, spec.repo, "GET", path <> spec.digest,
-        headers: headers,
-        sink: {&sink/2, acc}
-      )
+    {source, result} =
+      case CrewCache.Parent.fetch(spec, headers, {&sink/2, acc}) do
+        fallback when fallback in [:skip, :fallback] ->
+          {:upstream,
+           Upstream.request(spec.host, spec.repo, "GET", path <> spec.digest,
+             headers: headers,
+             sink: {&sink/2, acc}
+           )}
+
+        from_parent ->
+          {:parent, from_parent}
+      end
 
     File.close(io)
-    send(parent, {:finished, outcome(result)})
+    send(parent, {:finished, source, outcome(result)})
   end
 
   defp outcome({:ok, %{status: status, sink: %{error: nil} = acc}}) when status in 200..299,
@@ -372,6 +406,7 @@ defmodule CrewCache.Fetcher do
 
   defp outcome({:ok, %{sink: %{error: error}}}) when error != nil, do: {:error, error}
   defp outcome({:ok, %{status: status}}), do: {:error, {:status, status}}
+  defp outcome({:error, reason, _sink}), do: {:error, reason}
   defp outcome({:error, reason}), do: {:error, reason}
 
   defp sink({:headers, _status, headers}, acc) do
@@ -386,7 +421,7 @@ defmodule CrewCache.Fetcher do
     else
       content_type = Upstream.header(headers, "content-type")
       send(acc.parent, {:headers, size, content_type})
-      {:cont, %{acc | media_type: content_type}}
+      {:cont, %{acc | media_type: content_type, started: true}}
     end
   end
 
