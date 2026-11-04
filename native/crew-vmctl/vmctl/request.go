@@ -58,6 +58,7 @@ var verbs = map[string]args{
 	"cleanup":       {required: []string{"vm_id"}},
 	"restart-cache": {},
 	"info":          {},
+	"site4":         {},
 }
 
 // Error is an error with a response code.

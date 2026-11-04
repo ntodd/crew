@@ -46,6 +46,7 @@ defmodule CrewAgent.Driver.Firecracker do
     {area, _free} = HostMetrics.disk(Config.vms_dir(config))
     info = info()
     {virtualized, vendor} = virtualization()
+    firewall_ok = firewall_ok?()
 
     {:ok,
      %{
@@ -62,7 +63,7 @@ defmodule CrewAgent.Driver.Firecracker do
        features: features(config, info),
        virtualized: virtualized,
        hypervisor_vendor: vendor,
-       firewall_ok: firewall_ok?()
+       firewall_ok: firewall_ok
      }}
   end
 
@@ -94,10 +95,17 @@ defmodule CrewAgent.Driver.Firecracker do
       {"xfs_reflink", xfs_reflink?(config)},
       {"systemd", (info["systemd"] || 0) >= @min_systemd},
       {"rate_limits", true}
+      | site4_features(Monitor.status())
     ]
     |> Enum.filter(&elem(&1, 1))
     |> Enum.map(&elem(&1, 0))
   end
+
+  # site4 holds the egress address the agent learned; or there's no echo
+  # service to learn it from, so site4 has the site's subnets only.
+  defp site4_features(%{egress: :ok}), do: [{"site4_egress", true}]
+  defp site4_features(%{egress: :not_required}), do: [{"no_egress_echo", true}]
+  defp site4_features(_), do: []
 
   # XFS, and a reflink copy that works, in the data directory (§12.5).
   # Checked once per boot of the agent: neither changes under it.
@@ -185,9 +193,11 @@ defmodule CrewAgent.Driver.Firecracker do
     config = Config.get()
     lease = spec.net
 
-    # The tap and the pair first: without the pair the VM's traffic is
-    # dropped, so the start is aborted (§11.2).
-    with {:ok, _} <- vmctl_ok(%{"verb" => "tap-add", "lease_index" => lease.index}),
+    # Not without a verified packet filter and site4 (§14.2). Then the
+    # tap and the pair: without the pair the VM's traffic is dropped, so
+    # the start is aborted (§11.2).
+    with :ok <- firewall_ready(),
+         {:ok, _} <- vmctl_ok(%{"verb" => "tap-add", "lease_index" => lease.index}),
          {:ok, _} <- vmctl_ok(%{"verb" => "pair-add", "lease_index" => lease.index}),
          :ok <-
            SafeFS.write_atomic(
@@ -198,6 +208,23 @@ defmodule CrewAgent.Driver.Firecracker do
          {:ok, _} <- vmctl_ok(%{"verb" => "start", "vm_id" => spec.vm_id}) do
       :ok
     end
+  end
+
+  defp firewall_ready do
+    case Monitor.ready() do
+      :ok -> :ok
+      {:error, why} -> {:error, "firewall_not_ready: #{why}"}
+    end
+  end
+
+  @doc """
+  Asks crew-vmctl to refill site4 now (a new egress address), and the
+  monitor for a verdict on it.
+  """
+  def refresh_site4 do
+    result = vmctl_ok(%{"verb" => "site4"})
+    Monitor.verify_soon()
+    result
   end
 
   @doc """
