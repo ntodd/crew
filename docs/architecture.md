@@ -10,6 +10,7 @@ the build.
 |---|---|
 | S2 | Resolved before the build, by ntodd/foreman#132 (spec §24). |
 | S8 | **Mirrors (Design A).** dockerd 29.9.2 with the containerd image store (`driver-type=io.containerd.snapshotter.v1`, the default for a fresh daemon) reads `/etc/docker/certs.d/<registry>/hosts.toml` for any registry, not `/etc/containerd/certs.d` (moby#47380, since 28.0). `e2e/s8/run.sh` pulls `ghcr.io/actions/actions-runner`, `docker.io/library/alpine` and `public.ecr.aws/docker/library/busybox` through crew_cache at 10.199.0.1 from a dind daemon with crew-guest's files: the first pulls are misses, the second all hits, and a repo off the allowlist (a 404 from the cache) falls back to the registry. Mirrors get `capabilities = ["pull", "resolve"]` explicitly, since without them containerd sends pushes to the first host too. |
+| S10 | **Partly, on Flatcar rather than a hosted runner.** jailer `exec`s Firecracker: the unit's main PID is the VMM (systemd logs `Sent signal SIGKILL to main process … (firecracker)`), so no `PIDFile=` is needed. `--no-api` covers start, a guest power-off, a forced stop and a deadline kill. Whether GitHub-hosted Ubuntu runners have `/dev/kvm` is still open. Run on the M3's Flatcar 4757.2.3 arm64 VM (nested virtualization) by `native/crew-vmctl/kvm/run.sh`. |
 
 The other spikes are recorded here as they run.
 
@@ -147,6 +148,104 @@ The other spikes are recorded here as they run.
   uninstall stops the agent first, then every job VM. `test-install.sh` checks a dry
   run's plists and env without root. Spike S3 (launchd as `_crewvm`, with
   nobody logged in, after a reboot) still needs a real install.
+
+## Firecracker driver notes
+
+- **crew-vmctl** (`native/crew-vmctl`, Go, standard library and the
+  already-vendored `x/sys/unix`) is the root helper and crew-net. Its
+  README is the contract with the agent: the verbs, the files in
+  `vms/<id>/` and `jail/firecracker/<id>/`, the unit, the exit record,
+  the packet filter and what a box's Ignition must install.
+- **Socket-activated, as §10.8 says, not sudo:** the agent's
+  `NoNewPrivileges` rules out setuid helpers. `crew-vmctl.socket` accepts
+  each connection and starts one `crew-vmctl serve` for it. Its settings
+  (`--data-dir`, `CREW_VM_NET`) come from its unit; it clears its
+  environment and runs `ip`, `nft`, `iptables-nft-*`, `systemctl` and
+  `systemd-run` with a fixed `PATH` only.
+- **Nothing the agent leaves can steer root.** Files under the data
+  directory are opened with `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`;
+  the clone must be a regular file with one link, owned by the connecting
+  uid, and is hard-linked into the jail through the descriptor that was
+  checked (`AT_EMPTY_PATH`). `agent/env` is parsed for `CREW_UPLINK` and
+  `CREW_EXTRA_BLOCKED` only, never given to systemd as an
+  `EnvironmentFile`.
+- **`fc.json`:** the agent writes it in Firecracker's own format with host
+  paths and the size's rate limiters (a bucket of one second's worth,
+  refilled each second; `*_mbps` limits are Mbit/s). crew-vmctl decodes
+  it against the part of the schema Crew uses, so a vsock, an initrd or
+  a second drive is refused, holds every value to `vm.json` and fixed
+  bounds, and writes the chroot's copy from what it checked, with chroot
+  paths and its own logger (`/fc.log`, `Warning`) and metrics.
+- **Where it differs from §11.3's unit, and why:**
+  - the console and stderr go to `jail/firecracker/<id>/`, not
+    `vms/<id>/`. systemd opens them as root and follows symlinks, and the
+    agent owns `vms/`, so a compromised agent could have had the guest's
+    console appended to any file. The agent owns the two files, so it
+    still caps the console, and `crew-agent.service` needs
+    `/srv/crew/jail` in `ReadWritePaths` for that (the directories stay
+    root's). `cleanup` moves them into `vms/<id>/`.
+  - `ExecStopPost` runs `crew-vmctl exited`, which records
+    `SERVICE_RESULT`, `EXIT_CODE` and `EXIT_STATUS` before `--collect`
+    drops the unit. That's how a deadline kill (`timeout`) is told from a
+    power-off or a crash after the agent was down.
+  - a forced stop is `systemctl kill --kill-whom=main --signal=SIGKILL`.
+    Killing the whole unit goes through `cgroup.kill`, which on a real
+    host also killed the `ExecStopPost` forked into the cgroup a moment
+    later, and the exit record with it.
+- **The packet filter** differs from §14.2's text in two places, both
+  forced: `blocked4` leaves out `255.255.255.255/32` (inside
+  `240.0.0.0/4`; nft refuses overlapping intervals, so the spec's set
+  doesn't load), and the 2048-connection cap is in iptables-nft's mangle
+  table (`etc/connlimit.rules`, `xt_connlimit`) because Flatcar's kernel
+  has no `nft_connlimit` for `ct count`. Both use `nf_conncount`.
+- **`nft-verify`** compares the box's listings with the same files loaded
+  into a fresh network namespace by the same binaries, not with a stored
+  hash: nft 1.0.6 and 1.1.6 print the same table in different orders,
+  so a hash would break on a Flatcar update. crew-vmctl embeds the files,
+  so what crew-net loads and what's verified are one copy.
+- **crew-net is crew-vmctl:** `net-up` at boot (crew0, the filter loaded
+  once, pairs for taps that exist, site4), `site4` every 10 minutes. The
+  egress address reaches it as `agent/egress4`, which `CrewAgent.Site`
+  writes on Firecracker boxes.
+- **`alive?` and `stats`** read the unit's cgroup
+  (`/sys/fs/cgroup/system.slice/crew-vm-<id>.service`): alive while it
+  exists, which is until systemd is done with the unit, exit record
+  included; CPU from `cpu.stat` deltas, memory from `memory.current`.
+  Neither needs a root call.
+- **The console cap** runs in the agent every second: past 8 MiB the file
+  keeps its first 4 MiB, a fixed-width marker counting what was dropped
+  and a rolling last 4 MiB, rewritten in place (systemd appends with
+  `O_APPEND`). Output written between reading the tail and truncating is
+  lost.
+- **arm64 guests boot with `console=ttyS0`,** not §13.3's `ttyAMA0`:
+  Firecracker's serial port is an 8250 UART on arm64 too, and with
+  `ttyAMA0` the kernel found no console for init. Firecracker adds
+  `pci=off` itself on arm64, which the kernel doesn't know there.
+- **Requirements** are reported as features (`kvm`, `tun`, `cgroup2`,
+  `xfs_reflink`, `systemd` for 252 or newer, plus `rate_limits`);
+  `firewall_ok` is the last `nft-verify`, at start and every 60 s.
+  `driver_version` is Firecracker's and crew-vmctl's, from crew-vmctl's
+  `info` verb, which also gives systemd's version.
+- **`box.restart`** goes through `crew-vmctl reboot` on Firecracker
+  boxes, and `box.reboot` reports `can_restart: true` there.
+- **Firecracker 1.17.0** is pinned in `native/crew-vmctl/firecracker.env`
+  by its release tarballs' SHA-256s (the newest release; 6.18 guests
+  need 1.16.1 or newer).
+- **Measured** on the M3's Flatcar VM (arm64, nested): crew-guest fetches
+  its payload about 1.9 s after `vm.start`; a forced stop's `vm.exited`
+  comes about 1.2 s after `vm.stop`, mostly the agent's 1 s poll.
+- **A gap in the root boundary:** the units run
+  `/srv/crew/agent/current/bin/crew-vmctl` as root, and the agent can
+  write `/srv/crew/agent` (it updates itself, §20.2). §11.3 has `bin/`
+  owned by root, which an updater running as `_crewagent` can't produce.
+  Until a root-side step installs releases (crew-vmctl checking the
+  release signature itself, say), a compromised agent can replace the
+  binaries root runs.
+- **Not yet tested on a real VM:** a graceful stop through the guest API
+  (the guest image needs a JIT config it accepts, or a test mode like
+  crew-vz's guest), the network matrix of conformance items 4 and 5
+  beyond `vm_pairs` failing closed, and the console cap against a guest
+  that floods its console.
 
 ## Live log notes
 
