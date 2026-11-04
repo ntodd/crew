@@ -5,10 +5,14 @@ defmodule CrewImage.MixProject do
   # signature and their check, and the smoke boot. Signing goes through
   # CrewProtocol.Auth, the same code the control plane and the agent
   # verify with.
+  # The release's version, like every other mix.exs here: the release
+  # workflow's check (packaging/release/check.sh) holds them to the tag.
+  @version System.get_env("CREW_VERSION", "0.1.0")
+
   def project do
     [
       app: :crew_image,
-      version: "0.1.0",
+      version: @version,
       elixir: "~> 1.20",
       start_permanent: false,
       deps: deps(),
