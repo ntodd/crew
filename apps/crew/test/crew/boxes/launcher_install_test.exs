@@ -295,6 +295,58 @@ defmodule Crew.Boxes.LauncherInstallTest do
       refute File.read!(Path.join(ctx.state, "curl.log")) =~ "flatcar_production_image"
     end
 
+    # The installer may be gone (a closed terminal, its 10 minutes up)
+    # when the box enrolls: the box's own service deletes the config, with
+    # the join token and the Tailscale key, while the box keeps running.
+    test "the box's service deletes the first-boot config once the box has enrolled", ctx do
+      qemu =
+        stub(ctx, "qemu-enrolls", """
+        for a in "$@"; do case "$a" in *path=*serial.log) log=${a##*path=} ;; esac; done
+        sleep 1
+        echo "crew-box: enrolled" >> "$log"
+        sleep 8
+        """)
+
+      File.mkdir_p!(ctx.box)
+
+      File.write!(Path.join(ctx.box, "box.conf"), """
+      name=devbox
+      cpus=2
+      memory=4
+      mac=52:54:00:00:00:01
+      ssh_port=2222
+      qemu=#{qemu}
+      firmware=/nonexistent/OVMF_CODE.fd
+      aio=threads
+      """)
+
+      config = Path.join(ctx.box, "config.ign")
+      File.write!(config, ~s({"ignition":{"version":"3.4.0"}}))
+
+      run =
+        Task.async(fn ->
+          System.cmd("sh", [ctx.launcher, "run"],
+            env: [{"CREW_BOX_DIR", ctx.box}],
+            stderr_to_stdout: true
+          )
+        end)
+
+      deadline = System.monotonic_time(:millisecond) + 7_000
+
+      gone =
+        Stream.repeatedly(fn -> Process.sleep(200) end)
+        |> Enum.find_value(fn _ ->
+          cond do
+            not File.exists?(config) -> true
+            System.monotonic_time(:millisecond) > deadline -> false
+            true -> nil
+          end
+        end)
+
+      assert gone, "config.ign was still there with the box enrolled and running"
+      assert {_, 0} = Task.await(run, 15_000)
+    end
+
     test "refuses a host without nested virtualization, and says how to turn it on", ctx do
       File.write!(Path.join(ctx.root, "sys/module/kvm_intel/parameters/nested"), "N\n")
       {out, 1} = linux_install(ctx)
