@@ -1,25 +1,32 @@
 #!/bin/sh
 # Installs a mac-vz box (§10.2, §11.4) and enrolls it with Crew.
 #
-#   sudo ./install-macos.sh --url wss://crew.example.ts.net/agent/websocket --token cj_...
+#   sudo ./install-macos.sh --url wss://crew.example.ts.net/agent/websocket --token cj_... \
+#     --release-key <base64>
 #
-# Run from the unpacked darwin release, which holds agent/ (the agent's
-# release), bin/crew-vz, share/sandbox.sb and launchd/. It:
+# Run from the unpacked darwin release (packaging/release/build-darwin.sh):
+# the agent's release, with bin/crew-vz, bin/crew-launch, share/sandbox.sb,
+# launchd/ and VERSION beside it. It:
 #   - creates the crewvm group and the _crewagent and _crewvm users;
 #   - lays out the data directory (default /Library/Application Support/Crew);
-#   - installs the binaries under /usr/local/crew;
+#   - puts the release in agent/<version>, the agent's (it updates itself
+#     there, §20.2), with agent/current pointing at it;
 #   - writes agent/env (0600, _crewagent) and the two LaunchDaemons,
-#     com.crew.vzd (_crewvm) and com.crew.agent (_crewagent), and starts them;
+#     com.crew.vzd (_crewvm, agent/current/bin/crew-vz) and com.crew.agent
+#     (_crewagent, through agent/current/bin/crew-launch), and starts them;
 #   - waits for the agent to enroll, then drops the spent join token.
 #
-# Re-running it updates the binaries and keeps the box's identity. Other
-# options:
+# --release-key is the release key (base64, as Add box shows it) the agent
+# checks its updates against; without one it refuses updates.
+#
+# Re-running it installs the release it's run from and keeps the box's
+# identity and settings. Other options:
 #   --name NAME        the box's name (default: this Mac's short host name)
 #   --data-dir DIR     where VMs, images and the agent's state live
 #   --no-sandbox       run crew-vz's helpers without the sandbox-exec profile
 #   --disable-sleep    pmset -a sleep 0 (a sleeping Mac pauses its jobs)
 #   --reenroll         enroll again with a new --token (after a revoke)
-#   --uninstall        stop and remove the services and binaries (keeps the data)
+#   --uninstall        stop and remove the services (keeps the data)
 #   --dry-run          print what would be done, change nothing
 set -eu
 
@@ -27,8 +34,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 URL=""
 TOKEN=""
 NAME=""
+KEY=""
 DATA="/Library/Application Support/Crew"
-PREFIX="/usr/local/crew"
 DAEMONS="/Library/LaunchDaemons"
 SANDBOX=1
 DISABLE_SLEEP=""
@@ -41,8 +48,8 @@ while [ $# -gt 0 ]; do
     --url) URL="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
+    --release-key) KEY="$2"; shift 2 ;;
     --data-dir) DATA="$2"; shift 2 ;;
-    --prefix) PREFIX="$2"; shift 2 ;;
     --no-sandbox) SANDBOX=""; shift ;;
     --disable-sleep) DISABLE_SLEEP=1; shift ;;
     --reenroll) REENROLL=1; shift ;;
@@ -101,8 +108,7 @@ if [ -n "$UNINSTALL" ]; then
   if [ -z "$DRY" ] && pgrep -U _crewvm -f 'crew-vz run' >/dev/null 2>&1; then
     fail "job VMs are still running (pgrep -U _crewvm -f 'crew-vz run')"
   fi
-  run rm -rf "$PREFIX"
-  say "removed the services and $PREFIX, and stopped every job VM; $DATA is kept"
+  say "removed the services and stopped every job VM; $DATA (with the agent's releases) is kept"
   exit 0
 fi
 
@@ -110,8 +116,17 @@ fi
 
 major=$(sw_vers -productVersion | cut -d. -f1)
 [ "$major" -ge 14 ] || fail "macOS 14 or later is needed (this is $(sw_vers -productVersion))"
-[ -x "$here/agent/bin/crew_agent" ] || [ -n "$DRY" ] || fail "agent/bin/crew_agent is missing: run this from the unpacked release"
-[ -x "$here/bin/crew-vz" ] || [ -n "$DRY" ] || fail "bin/crew-vz is missing: run this from the unpacked release"
+for f in bin/crew_agent bin/crew-vz bin/crew-launch; do
+  [ -x "$here/$f" ] || [ -n "$DRY" ] || fail "$f is missing: run this from the unpacked release"
+done
+version=$(cat "$here/VERSION" 2>/dev/null || true)
+if [ -z "$version" ] && [ -n "$DRY" ]; then version=0.0.0; fi
+echo "$version" | grep -Eqx '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z.]{1,32})?' ||
+  fail "VERSION is missing or isn't a release version: run this from the unpacked release"
+if [ -n "$KEY" ]; then
+  [ "$(printf '%s' "$KEY" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" = 32 ] ||
+    fail "--release-key must be the release key in base64 (32 bytes), as Add box shows it"
+fi
 
 identity="$DATA/agent/identity.json"
 enroll=1
@@ -162,9 +177,17 @@ for user in _crewagent _crewvm; do
   run dseditgroup -o edit -a "$user" -t user crewvm
 done
 
+# The services stop before their release is replaced; job VMs keep
+# running (their helpers outlive crew-vzd, §10.7).
+for label in com.crew.agent com.crew.vzd; do
+  run launchctl bootout "system/$label" 2>/dev/null || true
+done
+
 # -- the data directory (§10.1, §11.2) ------------------------------------------
 #
-#   agent/   _crewagent 0700: identity.json, env
+#   agent/   _crewagent:crewvm 0750: identity.json and env (0600), and the
+#            releases: <version>/, current (§20.2). _crewvm runs crew-vz
+#            from agent/current/bin.
 #   vms/     _crewagent:crewvm 0770: each VM's directory, which the helper writes in
 #   images/  _crewagent:crewvm 0750: kernels and root filesystems the helper reads
 #   run/     _crewvm:crewvm 0770: vzd.sock
@@ -175,31 +198,39 @@ run chown root:wheel "$DATA"
 run chmod 0755 "$DATA"
 run chown _crewagent:crewvm "$DATA/agent" "$DATA/vms" "$DATA/images" "$DATA/logs"
 run chown _crewvm:crewvm "$DATA/run"
-run chmod 0700 "$DATA/agent"
+run chmod 0750 "$DATA/agent"
 run chmod 0770 "$DATA/vms" "$DATA/run" "$DATA/logs"
 run chmod 0750 "$DATA/images"
 
-# -- binaries ---------------------------------------------------------------------
+# -- the release (§20.2) ----------------------------------------------------------
+#
+# The agent's own, as an update leaves it: agent/<version>, current
+# pointing at it, nothing pending.
 
-run mkdir -p "$PREFIX/bin" "$PREFIX/share"
-run rm -rf "$PREFIX/agent.new"
-run ditto "$here/agent" "$PREFIX/agent.new"
-run rm -rf "$PREFIX/agent"
-run mv "$PREFIX/agent.new" "$PREFIX/agent"
-run install -m 0755 "$here/bin/crew-vz" "$PREFIX/bin/crew-vz"
-run install -m 0644 "$here/share/sandbox.sb" "$PREFIX/share/sandbox.sb"
-run chown -R root:wheel "$PREFIX"
+staged="$DATA/agent/.install.$version"
+run rm -rf "$staged"
+run ditto "$here" "$staged"
+run chown -R _crewagent:crewvm "$staged"
+run chmod -R go-w "$staged"
+run rm -rf "${DATA:?}/agent/$version"
+run mv "$staged" "$DATA/agent/$version"
+run ln -sfn "$version" "$DATA/agent/current"
+run chown -h _crewagent:crewvm "$DATA/agent/current"
+run rm -f "$DATA/agent/previous" "$DATA/agent/update-pending" "$DATA/agent/rolled-back" "$DATA/agent/crashes"
 
 # -- the agent's settings -----------------------------------------------------------
 
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 existing_url=$(env_value CREW_URL || true)
+existing_key=$(env_value CREW_RELEASE_PUBLIC_KEY || true)
 # The admin's own settings (CREW_EXTRA_BLOCKED, reserves...) survive a
 # reinstall; only these lines are the installer's.
-owned='^(CREW_URL|CREW_JOIN_TOKEN|CREW_BOX_NAME|CREW_DATA_DIR|CREW_DRIVER|CREW_VZD_SOCKET|CREW_VZ_BIN|RELEASE_DISTRIBUTION|HOME)='
+owned='^(CREW_URL|CREW_JOIN_TOKEN|CREW_BOX_NAME|CREW_DATA_DIR|CREW_DRIVER|CREW_VZD_SOCKET|CREW_VZ_BIN|CREW_RELEASE_PUBLIC_KEY|RELEASE_DISTRIBUTION|HOME)='
 kept=""
 if [ -f "$DATA/agent/env" ]; then kept=$(grep -Ev "$owned" "$DATA/agent/env" || true); fi
+KEY=${KEY:-$existing_key}
+[ -n "$KEY" ] || say "no --release-key: this box won't take agent updates until it has one"
 
 {
   echo "CREW_URL=$(q "${URL:-$existing_url}")"
@@ -208,7 +239,8 @@ if [ -f "$DATA/agent/env" ]; then kept=$(grep -Ev "$owned" "$DATA/agent/env" || 
   echo "CREW_DATA_DIR=$(q "$DATA")"
   echo "CREW_DRIVER=vz"
   echo "CREW_VZD_SOCKET=$(q "$DATA/run/vzd.sock")"
-  echo "CREW_VZ_BIN=$(q "$PREFIX/bin/crew-vz")"
+  echo "CREW_VZ_BIN=$(q "$DATA/agent/current/bin/crew-vz")"
+  [ -z "$KEY" ] || echo "CREW_RELEASE_PUBLIC_KEY=$(q "$KEY")"
   echo "RELEASE_DISTRIBUTION=none"
   echo "HOME=/var/empty"
   [ -z "$kept" ] || printf '%s\n' "$kept"
@@ -220,17 +252,16 @@ if [ -n "$REENROLL" ]; then run rm -f "$identity"; fi
 
 sandbox_args=""
 if [ -n "$SANDBOX" ]; then
-  sandbox_args="    <string>--sandbox</string>\n    <string>$PREFIX/share/sandbox.sb</string>\n"
+  sandbox_args="    <string>--sandbox</string>\n    <string>$DATA/agent/current/share/sandbox.sb</string>\n"
 fi
 
 render() {
-  sed -e "s|__PREFIX__|$PREFIX|g" -e "s|__DATA__|$DATA|g" -e "s|__GID__|$gid|g" \
+  sed -e "s|__DATA__|$DATA|g" -e "s|__GID__|$gid|g" \
       -e "s|__SANDBOX__|$sandbox_args|" "$here/launchd/$1.plist" | sed 's/\\n/\
 /g'
 }
 
 for label in com.crew.vzd com.crew.agent; do
-  run launchctl bootout "system/$label" 2>/dev/null || true
   render "$label" | put "$DAEMONS/$label.plist" 0644 root:wheel
   run plutil -lint "$DAEMONS/$label.plist"
 done

@@ -1,0 +1,44 @@
+#!/bin/sh
+# How launchd starts the agent on a mac-vz box (docs/crew_spec.md §20.2):
+# com.crew.agent runs <data>/agent/current/bin/crew-launch, KeepAlive.
+#
+# Foreman's systemd OnFailure rollback, done for launchd. While an update
+# is pending (agent/update-pending, which CrewAgent.Updater writes when it
+# switches current), each start is counted in agent/crashes; at the third
+# within 120 s, current goes back to previous, and the marker is renamed
+# rolled-back for the release it lands on to report when it joins. A
+# release that joins clears both. Then it runs current's agent.
+#
+# CREW_DATA_DIR is the data directory (agent/env sets it).
+set -eu
+
+data=${CREW_DATA_DIR:-"/Library/Application Support/Crew"}
+agent="$data/agent"
+
+if [ -f "$agent/update-pending" ] && [ -L "$agent/previous" ]; then
+  now=$(date +%s)
+  echo "$now" >> "$agent/crashes"
+  recent=$(awk -v now="$now" '$1 > now - 120' "$agent/crashes" | wc -l | tr -d ' ')
+  if [ "$recent" -ge 3 ]; then
+    failed=$(readlink "$agent/current" || true)
+    previous=$(readlink "$agent/previous")
+    case "$previous" in
+      "" | */* | *[!0-9A-Za-z.-]*)
+        echo "crew-launch: previous points at '$previous', which isn't a release" >&2
+        ;;
+      *)
+        ln -sfn "$previous" "$agent/.current.new"
+        # -h: don't follow current (a link to a directory) into it.
+        mv -fh "$agent/.current.new" "$agent/current" 2>/dev/null ||
+          mv -Tf "$agent/.current.new" "$agent/current"
+        mv -f "$agent/update-pending" "$agent/rolled-back"
+        rm -f "$agent/previous" "$agent/crashes"
+        echo "crew-launch: $failed started 3 times within 120 s of its update; rolled back to $previous" >&2
+        ;;
+    esac
+  fi
+else
+  rm -f "$agent/crashes"
+fi
+
+exec "$agent/current/bin/crew_agent" start

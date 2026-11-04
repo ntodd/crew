@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The Crew agent (§10, §11.4), unprivileged. Its settings are in
-     agent/env, which only _crewagent can read. -->
+     agent/env, which only _crewagent can read. It runs from its own
+     release, which it updates (§20.2), through crew-launch, which rolls
+     an update that keeps crashing back. -->
 <plist version="1.0">
 <dict>
   <key>Label</key>
@@ -10,7 +12,7 @@
   <array>
     <string>/bin/sh</string>
     <string>-c</string>
-    <string>set -a; . "__DATA__/agent/env"; set +a; exec "__PREFIX__/agent/bin/crew_agent" start</string>
+    <string>set -a; . "__DATA__/agent/env"; set +a; exec "__DATA__/agent/current/bin/crew-launch"</string>
   </array>
   <key>UserName</key>
   <string>_crewagent</string>

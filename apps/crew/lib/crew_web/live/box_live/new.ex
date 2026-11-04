@@ -59,6 +59,15 @@ defmodule CrewWeb.BoxLive.New do
     String.replace_prefix(base, "https://", "wss://") |> String.replace_prefix("http://", "ws://")
   end
 
+  # The key the Mac's agent checks its updates against (§20.2), the one
+  # whose fingerprint is shown above.
+  defp release_key_option do
+    case Crew.Config.release_public_key() do
+      nil -> ""
+      key -> " --release-key #{Base.encode64(key)}"
+    end
+  end
+
   @impl true
   def render(assigns) do
     assigns = assign(assigns, :type, assigns.form[:box_type].value)
@@ -167,7 +176,7 @@ defmodule CrewWeb.BoxLive.New do
             </ol>
             <.command
               id="join-command"
-              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token}"}
+              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token}#{release_key_option()}"}
             />
           <% type when type in ["linux-vm", "mac-vm"] -> %>
             <p class="mb-2 text-sm text-ink-2">On the host, run:</p>
