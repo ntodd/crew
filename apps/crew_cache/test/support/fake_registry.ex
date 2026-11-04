@@ -54,6 +54,7 @@ defmodule CrewCache.FakeRegistry do
             blobs: %{},
             corrupt: MapSet.new(),
             slow: %{},
+            chunked: MapSet.new(),
             redirect_host: %{},
             requests: [],
             tokens: %{},
@@ -144,6 +145,9 @@ defmodule CrewCache.FakeRegistry do
 
   def corrupt(digest), do: update(&%{&1 | corrupt: MapSet.put(&1.corrupt, digest)})
   def slow(digest, chunk_ms), do: update(&%{&1 | slow: Map.put(&1.slow, digest, chunk_ms)})
+
+  @doc "Serve a blob chunked, without a Content-Length."
+  def chunked(digest), do: update(&%{&1 | chunked: MapSet.put(&1.chunked, digest)})
 
   @doc "Redirect a blob to another host name (e.g. one resolving into blocked4)."
   def redirect_host(digest, host),
@@ -240,14 +244,16 @@ defmodule CrewCache.FakeRegistry do
         {:ok, body} ->
           body = if MapSet.member?(state.corrupt, digest), do: flip(body), else: body
 
+          chunked? = MapSet.member?(state.chunked, digest)
+
           case Map.get(state.slow, digest) do
-            nil ->
+            nil when not chunked? ->
               conn
               |> put_resp_content_type("application/octet-stream", nil)
               |> send_resp(200, body)
 
             ms ->
-              drip(conn, body, ms)
+              drip(conn, body, ms || 0, not chunked?)
           end
 
         :error ->
@@ -319,11 +325,12 @@ defmodule CrewCache.FakeRegistry do
       end
     end
 
-    defp drip(conn, body, ms) do
+    # With length? false, chunked transfer encoding and no Content-Length.
+    defp drip(conn, body, ms, length?) do
       conn =
-        conn
-        |> put_resp_header("content-length", "#{byte_size(body)}")
-        |> send_chunked(200)
+        if length?, do: put_resp_header(conn, "content-length", "#{byte_size(body)}"), else: conn
+
+      conn = send_chunked(conn, 200)
 
       body
       |> chunks(64 * 1024)

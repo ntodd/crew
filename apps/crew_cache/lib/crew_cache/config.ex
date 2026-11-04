@@ -20,6 +20,7 @@ defmodule CrewCache.Config do
   | `tag_ttl_ms` | 60000 | The tag micro-cache (§15.3) |
   | `parent_first_byte_ms` | 5000 | How long the parent gets (§15.7) |
   | `max_fetches` | 512 | Upstream fetches at once; past that a miss is a 503 |
+  | `reserve_step` | 8 MiB | How far ahead a download without a length reserves |
 
   For tests only, and never set by `config/runtime.exs`: `net_except`
   (loopback CIDRs the address policy lets through), `resolve` (a map of
@@ -45,6 +46,7 @@ defmodule CrewCache.Config do
             tag_ttl_ms: 60_000,
             parent_first_byte_ms: 5_000,
             max_fetches: 512,
+            reserve_step: 8 * 1024 * 1024,
             net_except: [],
             resolve: nil,
             origins: %{},
