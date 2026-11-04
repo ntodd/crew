@@ -3,14 +3,21 @@ defmodule CrewAgent.Images do
   Guest images on this box (§13.1): `images/<image_id>/` holds `kernel`,
   `rootfs.ext4` (read-only), `manifest.json` and `manifest.sig`.
 
-  Preparing (download, verify, decompress) comes with the guest image;
-  this is what VMs need from it: whether an image is ready, and a clone
-  of its root filesystem (§12.5), which is never a full copy.
+  Preparing one (download, verify, decompress) is
+  `CrewAgent.Images.Prepare`, which builds it in `images/.<image_id>.tmp/`
+  and renames it into place. This is what VMs need from it: whether an
+  image is ready, and a clone of its root filesystem (§12.5), which is
+  never a full copy.
   """
 
   alias CrewAgent.Config
+  alias CrewAgent.Images.Prepare
+  alias CrewProtocol.Text
 
   def dir(config, image_id), do: Path.join(Config.images_dir(config), image_id)
+
+  @doc "Where a prepare builds the image. Not a UUID, so never in the inventory."
+  def tmp_dir(config, image_id), do: Path.join(Config.images_dir(config), ".#{image_id}.tmp")
 
   @doc "Whether the image is prepared here."
   def ready?(config, image_id) do
@@ -61,13 +68,12 @@ defmodule CrewAgent.Images do
   end
 
   @doc """
-  `image.prepare` (§13.1). The null driver has nothing to download, so
-  the image is marked ready. The real drivers' download, verify and
-  convert come with the guest image.
+  `image.prepare` (§13.1): download, verify and convert
+  (`CrewAgent.Images.Prepare`, which takes `opts`). An image that's
+  already ready is reported ready at once. The null driver has nothing to
+  download, so the image is marked ready.
   """
-  def prepare(image) do
-    config = Config.get()
-
+  def prepare(image, config \\ Config.get(), opts \\ []) do
     cond do
       config.driver == "null" ->
         d = dir(config, image.id)
@@ -79,13 +85,19 @@ defmodule CrewAgent.Images do
       config.dev and is_binary(config.dev_image_dir) ->
         prepare_from_dir(config, image, config.dev_image_dir)
 
+      ready?(config, image.id) ->
+        report(image.id, "ready", 100, nil)
+        :ok
+
       true ->
-        {:error, "unsupported", "image preparation isn't in this agent yet"}
+        Prepare.run(config, image, opts)
     end
   end
 
   def remove(image_id) do
-    File.rm_rf(dir(Config.get(), image_id))
+    config = Config.get()
+    File.rm_rf(dir(config, image_id))
+    File.rm_rf(tmp_dir(config, image_id))
     :ok
   end
 
@@ -116,13 +128,14 @@ defmodule CrewAgent.Images do
     end
   end
 
-  defp report(id, state, progress, error) do
+  @doc false
+  def report(id, state, progress, error) do
     {:ok, event} =
       CrewProtocol.Event.new("image.state", %{
         image_id: id,
         state: state,
         progress: progress,
-        error: error
+        error: error && error |> Text.scrub() |> Text.cut(1024) |> elem(0)
       })
 
     CrewAgent.Outbox.push(event)

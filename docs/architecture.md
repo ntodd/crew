@@ -138,7 +138,7 @@ The other spikes are recorded here as they run.
   VM. The test guest's `crew` mode walks the guest API from inside the VM.
 - **Development images:** with `CREW_DEV=1`, `CREW_DEV_IMAGE_DIR` makes
   `image.prepare` clone a local `Image` and `rootfs.ext4` instead of
-  downloading (the download comes with the guest image).
+  downloading.
 - **`install-macos.sh`** (`packaging/macos/`) creates `_crewagent`,
   `_crewvm` and `crewvm`, lays out the data directory, installs the two
   LaunchDaemons and waits for enrollment. A reinstall keeps the box's
@@ -275,3 +275,37 @@ The other spikes are recorded here as they run.
 - **With a release configured, development skips the placeholder
   images** (`0.0.0-dev`), which would otherwise be the newest
   registered and win the default.
+
+## Image preparation notes
+
+- **Verify before downloading.** The manifest's signature is checked
+  with `CREW_RELEASE_PUBLIC_KEY`; with no key the prepare fails
+  (`no_release_key`), never skipping the check. The manifest must then
+  agree with the command on version, arch and the kernel's and
+  compressed rootfs's SHA-256 and size (`manifest_mismatch`). An image
+  that's already ready is reported ready at once.
+- **Room first:** `df -Pk` on `images/` must show the kernel, the
+  compressed rootfs and `rootfs_ext4_size`, plus 1 GiB (`no_space`).
+- **Downloads** stream through Req into `images/.<id>.tmp/*.part`,
+  hashed as they arrive and capped at the expected size: a server that
+  sends more fails the prepare. Connection errors, timeouts, 408, 429,
+  5xx and short bodies are retried 5 times (backoff 1 to 8 s), resuming
+  with `Range: bytes=<n>-`; a 200 starts the part over. Requests to the
+  control plane's own origin (`CREW_URL`'s host and port) carry the
+  socket's signed `x-crew-agent-*` headers, fresh per request; other
+  hosts, redirect targets included, get none.
+- **Converting** streams the `.zst` through OTP's `:zstd` with
+  `windowLogMax` 27 (`zstd --long=27`), hashing what comes out and
+  capping it at `rootfs_ext4_size`. The 0.1.0-dev arm64 image (734 MB to
+  3.8 GiB) prepares from a local server in about 5 s on the M4 Max.
+- **Layout:** `kernel`, `rootfs.ext4`, `manifest.json` (the signed
+  bytes) and `manifest.sig`, all 0444 and synced, then `ready`, then the
+  directory is renamed to `images/<id>/`. The temporary name isn't a
+  UUID, so the inventory and `ready?` never see it. A failure removes
+  it; a killed prepare (`op.cancel`, an agent restart) leaves its parts
+  for the next prepare to resume, checked with the rest.
+- **Progress:** `image.state` goes out on each change of state
+  (downloading, verifying, converting, then ready or failed with the
+  error), and while working at most every 2 s as the percentage moves
+  (bytes of both downloads, then compressed bytes decompressed), or
+  every 30 s when it doesn't.
