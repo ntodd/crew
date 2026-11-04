@@ -69,12 +69,17 @@ defmodule CrewAgent.CacheTest do
 
     assert_received {:mgmt, "POST", "/config", ["Bearer tok"], body}
 
-    assert Jason.decode!(body) == %{
+    assert %{
              "enabled_hosts" => ["ghcr.io", "quay.io"],
              "allowlist" => ["ghcr.io/actions/*"],
              "parent" => nil,
-             "rotate_ca" => true
-           }
+             "rotate_ca" => true,
+             # The box's own networks and egress address, which the cache
+             # refuses to connect to (§15.5), as VMs are refused them.
+             "site4" => site4
+           } = Jason.decode!(body)
+
+    assert is_list(site4)
 
     assert Cache.mirrors(config) == ["ghcr.io", "quay.io"]
   end
@@ -120,6 +125,8 @@ defmodule CrewAgent.CacheTest do
     {report, _} = Cache.Stats.delta(first, second)
     assert [%{hits: 4, misses: 0, bytes_served: 0}] = report.hosts
     assert report.evictions == 0
+    # What's stored now is a level, not a count: it's sent as it is.
+    assert [%{bytes_stored: 40}] = report.hosts
 
     # The cache restarted: its counters start over.
     restarted = put_in(first, ["hosts", Access.at(0), "hits"], 2)

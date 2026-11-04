@@ -49,7 +49,7 @@ defmodule CrewWeb.AdminLive.Caches do
 
     case Caches.set_hosts(socket.assigns.current_scope, hosts) do
       {:ok, _} ->
-        {:noreply, socket |> put_flash(:info, "Hosts saved; box caches get a new CA.") |> load()}
+        {:noreply, socket |> put_flash(:info, "Hosts saved.") |> load()}
 
       {:error, :unauthorized} ->
         {:noreply, put_flash(socket, :error, "Only admins can do that.")}
@@ -177,7 +177,7 @@ defmodule CrewWeb.AdminLive.Caches do
       <div class="mt-4 grid gap-4 xl:grid-cols-2">
         <.panel id="hosts-panel" title="Hosts">
           <:subtitle>
-            The registries box caches serve. A change gives every cache a new CA.
+            The registries box caches serve.
           </:subtitle>
           <.form for={%{}} id="hosts" phx-submit="hosts" class="space-y-2">
             <label :for={h <- Hosts.names()} class="flex items-center gap-2 text-sm text-ink">

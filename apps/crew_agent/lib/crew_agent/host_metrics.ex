@@ -4,6 +4,8 @@ defmodule CrewAgent.HostMetrics do
   Linux from /proc, macOS from sysctl, vm_stat, top and df.
   """
 
+  alias CrewAgent.Cache.Stats
+
   @type cpu :: %{total: non_neg_integer(), idle: non_neg_integer()} | nil
 
   @doc "One sample, and the CPU reading to pass next time."
@@ -24,7 +26,7 @@ defmodule CrewAgent.HostMetrics do
        disk_used_mib: max(disk_total - disk_free, 0),
        disk_total_mib: disk_total,
        vm_area_free_mib: vm_area_free,
-       cache_used_mib: 0,
+       cache_used_mib: Stats.store_mib(),
        vms_running: CrewAgent.VMs.running_count()
      }, cpu}
   end

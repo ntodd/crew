@@ -9,7 +9,8 @@ defmodule CrewAgent.Cache.Stats do
   alias CrewAgent.{Cache, Config, Outbox}
 
   @every_ms 60_000
-  @counters ~w(hits misses bytes_served bytes_stored)
+  # Counters run from the cache's start; bytes_stored is a level.
+  @counters ~w(hits misses bytes_served)
 
   def start_link(_), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
 
@@ -25,6 +26,7 @@ defmodule CrewAgent.Cache.Stats do
 
     case Cache.stats(Config.get()) do
       {:ok, current} ->
+        :persistent_term.put({__MODULE__, :store_bytes}, int(get_in(current, ["store", "bytes"])))
         {report, current} = delta(previous, current)
 
         {:ok, event} =
@@ -37,6 +39,9 @@ defmodule CrewAgent.Cache.Stats do
         {:noreply, previous}
     end
   end
+
+  @doc "How much the cache holds, from its last `GET /stats` (0 before one)."
+  def store_mib, do: div(:persistent_term.get({__MODULE__, :store_bytes}, 0), 1_048_576)
 
   @doc "The report between two `GET /stats` answers, and the one to compare the next against."
   def delta(previous, current) do
@@ -58,11 +63,10 @@ defmodule CrewAgent.Cache.Stats do
     {report, current}
   end
 
-  defp host_delta(h, was),
-    do:
-      Map.new([
-        {:host, h["host"]} | for(k <- @counters, do: {String.to_atom(k), diff(h[k], was[k])})
-      ])
+  defp host_delta(h, was) do
+    counters = for k <- @counters, do: {String.to_atom(k), diff(h[k], was[k])}
+    Map.new([{:host, h["host"]}, {:bytes_stored, int(h["bytes_stored"])} | counters])
+  end
 
   defp top(entries) do
     for t <- Enum.take(entries, 10), is_binary(t["host"]) and is_binary(t["repo"]) do
