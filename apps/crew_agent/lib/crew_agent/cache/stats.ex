@@ -108,7 +108,12 @@ defmodule CrewAgent.Cache.Stats do
 
   @doc "The report between two `GET /stats` answers, and the one to compare the next against."
   def delta(previous, current) do
-    previous = previous || %{}
+    # A cache that restarted since the last report counts from 0.
+    previous =
+      if same_instance?((previous || %{})["instance"], current["instance"]),
+        do: previous || %{},
+        else: %{}
+
     before = Map.new(previous["hosts"] || [], &{&1["host"], &1})
 
     report = %{
