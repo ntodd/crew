@@ -2,6 +2,7 @@ defmodule CrewAgent.UnitsTest do
   use ExUnit.Case, async: true
 
   alias CrewAgent.{Config, HostMetrics, Identity, Net, Ops}
+  alias CrewAgent.Driver.Null
 
   describe "leases (§14.1)" do
     test "lease n is the n-th /30: .1 gateway, .2 guest" do
@@ -52,6 +53,13 @@ defmodule CrewAgent.UnitsTest do
         "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:      1000.\nPages inactive:    1000.\nPages speculative:  48.\n"
 
       assert HostMetrics.parse_vm_stat_free(vm_stat) == 32
+    end
+
+    test "a null box's VM area is all free: its VMs take no disk" do
+      config = %{Config.get() | driver: "null"}
+      {:ok, caps} = Null.capabilities()
+      {sample, _} = HostMetrics.sample(config, nil)
+      assert sample.vm_area_free_mib == caps.vm_area_mib
     end
 
     test "macOS load" do
