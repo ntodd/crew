@@ -54,10 +54,6 @@ defmodule CrewWeb.AdminLive.Images do
          {:ok, _} <- act(action, scope, image) do
       {:noreply, load(socket)}
     else
-      {:error, :not_mirrored} ->
-        {:noreply,
-         put_flash(socket, :error, "That image's files aren't on the control plane yet.")}
-
       {:error, :unauthorized} ->
         {:noreply, put_flash(socket, :error, "Only admins can do that.")}
 
@@ -181,18 +177,23 @@ defmodule CrewWeb.AdminLive.Images do
                 </div>
                 <div class="shrink-0 text-xs">
                   <button
-                    :if={image.mirror_state == "ready" and not image.pinned}
+                    :if={not image.pinned}
                     id={"pin-#{image.id}"}
                     type="button"
                     phx-click="pin"
                     phx-value-id={image.id}
-                    data-confirm={"Pin #{image.version} as the #{a.arch} default?"}
+                    data-confirm={
+                      if image.mirror_state == "ready",
+                        do: "Pin #{image.version} as the #{a.arch} default?",
+                        else:
+                          "Fetch #{image.version}'s files again and pin it as the #{a.arch} default?"
+                    }
                     class="underline-offset-2 hover:underline"
                   >
                     Pin
                   </button>
                   <button
-                    :if={image.mirror_state in ["evicted", "failed"]}
+                    :if={image.mirror_state == "failed"}
                     id={"fetch-#{image.id}"}
                     type="button"
                     phx-click="fetch"
