@@ -422,6 +422,7 @@ defmodule CrewWeb.JobLive.Show do
 
       <div
         id="timing"
+        phx-hook="Grow"
         class="mb-4 flex h-7 w-full overflow-hidden rounded-md border border-line text-[11px]"
       >
         <% total = max(Enum.sum_by(@phases, fn {_, s} -> phase_seconds(s) end), 1) %>
@@ -430,7 +431,8 @@ defmodule CrewWeb.JobLive.Show do
           :if={phase_seconds(s) > 0 or match?({:other, _}, s)}
           data-phase={name}
           title={phase_title(name, s)}
-          style={"flex-grow: #{max(phase_seconds(s), 1)}; flex-basis: 0; min-width: #{if phase_seconds(s) * 100 / total > 6, do: "4rem", else: "0.5rem"}"}
+          data-grow={max(phase_seconds(s), 1)}
+          data-min={if phase_seconds(s) * 100 / total > 6, do: "4rem", else: "0.5rem"}
           class={["flex items-center truncate px-2", phase_class(i)]}
         >
           <span class="truncate">{name} · {JobStatus.format(phase_seconds(s))}</span>

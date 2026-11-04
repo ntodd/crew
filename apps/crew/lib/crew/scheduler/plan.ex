@@ -61,6 +61,70 @@ defmodule Crew.Scheduler.Plan do
       placement_actions ++ reap(snap, open) ++ prepare_images(snap)
   end
 
+  @doc """
+  The Queue page's view of a pass (§17.3): the units in the order they'd
+  be placed, each placed or with its wait reason; the covered jobs; the
+  blocked ones with their reasons; and per class its demand, supply,
+  deficit, and whether it's stalled or backing off.
+  """
+  def queue(snap) do
+    snap = Map.put(snap, :placements, [])
+
+    jobs =
+      snap.jobs
+      |> Enum.sort_by(&{&1.queued_at, &1.github_id})
+      |> Enum.reject(&(&1.blocked_reason == @checking_fork))
+
+    {blocked, open} =
+      Enum.split_with(Enum.map(jobs, &{&1, static_reason(snap, &1)}), fn {_, r} -> r end)
+
+    open = Enum.map(open, &elem(&1, 0))
+    {covered, units} = units(snap, open)
+    {_snap, actions} = place_all(snap, units)
+
+    by_id = Map.new(units, &{&1.id, &1})
+    placed = MapSet.new(for {:place, p} <- actions, do: p.job_id)
+
+    ordered =
+      for {:reasons, id, blocked_reason, wait} <- actions, unit = by_id[id] do
+        %{
+          job_id: id,
+          class: unit.class,
+          placed: MapSet.member?(placed, id),
+          wait_reason: wait,
+          blocked_reason: blocked_reason
+        }
+      end
+
+    demand = Enum.frequencies_by(open, & &1.class)
+    blocked_by_class = Enum.frequencies_by(blocked, fn {job, _} -> job.class end)
+
+    classes =
+      for class <- Enum.uniq(Map.keys(demand) ++ Map.keys(blocked_by_class)), into: %{} do
+        cs = snap.class_state[class] || %{}
+        sup = supply(snap, class)
+        n = Map.get(demand, class, 0)
+
+        {class,
+         %{
+           demand: n,
+           blocked: Map.get(blocked_by_class, class, 0),
+           supply: sup,
+           deficit: max(n - sup, 0),
+           stalled: is_integer(cs[:stalled_until]) and cs[:stalled_until] > snap.now,
+           backoff: is_integer(cs[:backoff_until]) and cs[:backoff_until] > snap.now,
+           last_error: cs[:last_error]
+         }}
+      end
+
+    %{
+      units: ordered,
+      covered: Enum.map(covered, & &1.id),
+      blocked: for({job, reason} <- blocked, do: {job.id, reason}),
+      classes: classes
+    }
+  end
+
   # -- capacity (§8.3) -------------------------------------------------------------
 
   @doc "vCPUs the box offers job VMs, overcommit included."

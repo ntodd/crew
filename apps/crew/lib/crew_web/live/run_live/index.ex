@@ -146,7 +146,7 @@ defmodule CrewWeb.RunLive.Index do
               </p>
             </div>
             <div class="flex min-w-0 items-center gap-3">
-              <.job_bar jobs={run.jobs} now={@now} />
+              <.job_bar id={"bar-#{run.id}"} jobs={run.jobs} now={@now} />
               <span class="text-xs text-ink-3">{length(run.jobs)} {if length(run.jobs) == 1,
                 do: "job",
                 else: "jobs"}</span>
