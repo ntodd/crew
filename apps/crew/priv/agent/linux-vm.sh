@@ -148,6 +148,20 @@ run() {
   fi
   # Keep the previous boot's console for a look after a crash.
   [ ! -s "$DIR/serial.log" ] || mv -f "$DIR/serial.log" "$DIR/serial.log.1"
+  # And delete it as soon as this boot says the box has used it, whether
+  # or not the installer is still watching: QEMU read it when it started.
+  # The watcher goes when QEMU does ($$ is this shell, which QEMU
+  # replaces) or the config does.
+  if [ -f "$DIR/config.ign" ]; then
+    (
+      while kill -0 $$ 2>/dev/null && [ -f "$DIR/config.ign" ]; do
+        if grep -aqsE 'crew-box: (enrolled|agent started)' "$DIR/serial.log"; then
+          rm -f "$DIR/config.ign"
+        fi
+        sleep 2
+      done
+    ) </dev/null >/dev/null 2>&1 &
+  fi
   exec "$(conf qemu)" "$@"
 }
 
