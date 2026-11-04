@@ -4,7 +4,7 @@
 // prepares the default; the Images page shows the rollout, and pinning
 // and unpinning roll back and forward.
 import {expect, test} from "@playwright/test"
-import {addBox, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, connected, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "09-guest-image"
 let agent
@@ -37,6 +37,7 @@ test("the release's image is registered, fetched and prepared on a box", async (
 test("pinning and unpinning", async ({page}) => {
   await signIn(page)
   await page.goto("/admin/images")
+  await connected(page)
   const pin = page.locator("#arch-arm64 [id^=pin-]").first()
   page.once("dialog", d => d.accept())
   await pin.click()
