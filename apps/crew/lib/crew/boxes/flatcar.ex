@@ -53,7 +53,8 @@ defmodule Crew.Boxes.Flatcar do
 
   @scripts_dir Path.expand("../../../priv/flatcar", __DIR__)
   @script_names ~w(lib.sh provision.sh agent-install.sh format-data.sh quota.sh root-units.sh
-                   agent-rollback.sh flatcar-update-check update-sysexts.sh clock-sync.sh status.sh)
+                   root-install.sh agent-rollback.sh flatcar-update-check update-sysexts.sh
+                   clock-sync.sh status.sh)
   for name <- @script_names, do: @external_resource(Path.join(@scripts_dir, name))
   @scripts Map.new(@script_names, &{&1, File.read!(Path.join(@scripts_dir, &1))})
 
@@ -197,6 +198,7 @@ defmodule Crew.Boxes.Flatcar do
         text("/etc/crew-box/box.env", env(CREW_BOX_NAME: opts.name, CREW_BOX_TYPE: opts.type))
       ] ++
         for({name, script} <- @scripts, do: text("/etc/crew-box/#{name}", script)) ++
+        release_key_file(opts[:release_key]) ++
         if(provision?, do: provision_files(opts), else: [])
 
     %{
@@ -237,14 +239,22 @@ defmodule Crew.Boxes.Flatcar do
             CREW_RELEASE_KEY_FINGERPRINT: CrewProtocol.Auth.fingerprint(key)
           ] ++ if(dev?(opts), do: [CREW_DEV: "1"], else: [])
         )
-      ),
-      text("/etc/crew-box/release-key.pem", public_key_pem(key))
+      )
     ] ++
       case opts[:tailscale_auth_key] do
         key when is_binary(key) and key != "" -> [secret("/etc/crew-box/tailscale-authkey", key)]
         _ -> []
       end
   end
+
+  # Root's copy of the release key, root's (Ignition's default) in /etc:
+  # the first install checks the tarballs against it, and so does every
+  # update's root half (root-install.sh), so a reprovisioned box gets it
+  # too. The agent's own copy is CREW_RELEASE_PUBLIC_KEY in agent/env.
+  defp release_key_file(<<_::binary-size(32)>> = key),
+    do: [text("/etc/crew-box/release-key.pem", public_key_pem(key))]
+
+  defp release_key_file(_), do: []
 
   # ws:// only for a development control plane on plain HTTP (§5.3): the
   # agent refuses it otherwise.
@@ -365,6 +375,8 @@ defmodule Crew.Boxes.Flatcar do
       unit("crew-quota.service", quota()),
       unit("crew-agent-install.service", agent_install(), enabled: false),
       unit("crew-root-units.service", root_units()),
+      unit("crew-root-install.path", root_install_path()),
+      unit("crew-root-install.service", root_install(), enabled: false),
       unit("crew-agent.service", agent()),
       unit("crew-agent-rollback.service", agent_rollback(), enabled: false),
       unit("crew-cache.service", cache()),
@@ -475,6 +487,41 @@ defmodule Crew.Boxes.Flatcar do
     """
   end
 
+  # An agent update's root half (§10.8, §20.2): the agent stages the
+  # tarballs and a request in agent/update/, and root installs crew-vmctl,
+  # Firecracker, the ruleset and the units from them, checked against its
+  # own copy of the release key. PathExists, so a request made before a
+  # reboot is still acted on; the script takes it, so it can't loop.
+  defp root_install_path do
+    """
+    [Unit]
+    Description=Watch for an agent update's root half to install
+    RequiresMountsFor=/srv/crew
+    After=crew-quota.service
+
+    [Path]
+    PathExists=/srv/crew/agent/update/request
+    Unit=crew-root-install.service
+
+    [Install]
+    WantedBy=multi-user.target
+    """
+  end
+
+  defp root_install do
+    """
+    [Unit]
+    Description=Install an agent update's root half from its signed tarballs
+    RequiresMountsFor=/srv/crew
+
+    [Service]
+    Type=oneshot
+    ExecStart=/bin/sh /etc/crew-box/root-install.sh
+    StandardOutput=journal
+    StandardError=journal
+    """
+  end
+
   defp provision do
     """
     [Unit]
@@ -549,6 +596,9 @@ defmodule Crew.Boxes.Flatcar do
     ExecStart=/srv/crew/agent/current/bin/crew_agent start
     Restart=always
     RestartSec=3
+    # An update that hasn't joined within 5 minutes exits 75: failed, so
+    # the rollback unit runs and moves root's half back too (§20.2).
+    RestartPreventExitStatus=75
     OOMScoreAdjust=-900
     NoNewPrivileges=true
     ProtectSystem=strict

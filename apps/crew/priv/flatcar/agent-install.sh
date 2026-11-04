@@ -68,20 +68,13 @@ rm -rf "$tmp"
 mkdir -m 0700 "$tmp"
 trap 'rm -rf "$tmp"' EXIT
 
-sha256() { openssl dgst -sha256 -r "$1" | cut -d' ' -f1; }
-
 # fetch <name> <url> <sha256> <signature>
 fetch() {
   say "downloading the $1 $CREW_VERSION ($CREW_TARGET)"
   curl -fsSL --retry 5 --retry-delay 2 -o "$tmp/$1.tar.gz" "$2" </dev/null ||
     fail "couldn't download the $1 from $2"
-  [ "$(sha256 "$tmp/$1.tar.gz")" = "$3" ] || fail "the $1 doesn't match its SHA-256"
-  printf 'crew-release-v1\n%s\n%s\n%s' "$CREW_VERSION" "$CREW_TARGET" "$3" > "$tmp/$1.msg"
-  printf '%s' "$4" | openssl base64 -d -A > "$tmp/$1.sig" 2>/dev/null ||
-    fail "the $1's signature isn't base64"
-  openssl pkeyutl -verify -pubin -inkey "$etc/release-key.pem" -rawin \
-    -in "$tmp/$1.msg" -sigfile "$tmp/$1.sig" >/dev/null 2>&1 ||
-    fail "the $1's signature doesn't verify against the release key ($CREW_RELEASE_KEY_FINGERPRINT)"
+  check_release "$1" "$tmp/$1.tar.gz" "$CREW_VERSION" "$CREW_TARGET" "$3" "$4" \
+    "$etc/release-key.pem" "$tmp" || fail "$why ($CREW_RELEASE_KEY_FINGERPRINT)"
 }
 
 fetch agent "$CREW_AGENT_URL" "$CREW_AGENT_SHA256" "$CREW_AGENT_SIG"
@@ -94,33 +87,13 @@ tar -xzf "$tmp/agent.tar.gz" -C "$new" --no-same-owner
 tar -xzf "$tmp/cache.tar.gz" -C "$new/cache" --no-same-owner
 
 # What the agent tarball holds (native/crew-vmctl's README): the agent,
-# crew-vmctl, Firecracker's jailer and VMM, the ruleset and the units.
-units="crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.service crew-net-site4.timer"
-for f in bin/crew_agent bin/crew-vmctl bin/jailer bin/firecracker cache/bin/crew_cache; do
-  [ -x "$new/$f" ] || fail "the release has no $f"
-done
-for f in etc/nft.conf etc/connlimit.rules; do
-  [ -f "$new/$f" ] || fail "the release has no $f"
-done
-for u in $units; do
-  [ -f "$new/etc/systemd/$u" ] || fail "the release has no etc/systemd/$u"
-done
-
-# The root half, copied out of the agent's release: the binaries root
-# runs, the ruleset, and the units pointed at root/current.
+# crew-vmctl, Firecracker's jailer and VMM, the ruleset and the units;
+# the cache's, crew_cache. The root half is copied out of the agent's
+# release: the binaries root runs, the ruleset, and the units pointed at
+# root/current (lib.sh's root_half, which root-install.sh uses too).
+[ -x "$new/cache/bin/crew_cache" ] || fail "the release has no cache/bin/crew_cache"
 priv="$tmp/root"
-mkdir -p "$priv/bin" "$priv/etc/systemd"
-for b in crew-vmctl jailer firecracker; do
-  cp "$new/bin/$b" "$priv/bin/$b"
-  chmod 0755 "$priv/bin/$b"
-done
-cp "$new/etc/nft.conf" "$new/etc/connlimit.rules" "$priv/etc/"
-for u in $units; do
-  sed 's|/srv/crew/agent/current/bin/|/srv/crew/root/current/bin/|g' "$new/etc/systemd/$u" > "$priv/etc/systemd/$u"
-  if grep -q '/srv/crew/agent/' "$priv/etc/systemd/$u"; then
-    fail "the release's $u takes something from the agent's directory, which root mustn't"
-  fi
-done
+root_half "$new" "$priv" || fail "$why"
 
 # Both root's and read-only: crew_cache runs as crewcache from agent/,
 # and the agent from agent/ as itself.

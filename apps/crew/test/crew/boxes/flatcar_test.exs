@@ -308,11 +308,14 @@ defmodule Crew.Boxes.FlatcarTest do
       assert root =~ "Before=crew-agent.service"
 
       script = contents(config, "/etc/crew-box/root-units.sh")
-      assert script =~ "src=/srv/crew/root/current/etc/systemd"
+      assert script =~ "data=${CREW_BOX_DATA:-/srv/crew}"
+      assert script =~ ~s(src="$data/root/current/etc/systemd")
+      assert script =~ "for name in $root_units"
+      lib = contents(config, "/etc/crew-box/lib.sh")
 
       for unit <-
             ~w(crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.service crew-net-site4.timer) do
-        assert script =~ unit
+        assert lib =~ unit
       end
 
       assert script =~ "systemctl enable crew-net.service crew-vmctl.socket crew-net-site4.timer"
@@ -413,9 +416,11 @@ defmodule Crew.Boxes.FlatcarTest do
       [{:SubjectPublicKeyInfo, der, _}] = :public_key.pem_decode(pem)
       assert binary_part(der, byte_size(der) - 32, 32) == @release_key
 
-      script = contents(config, "/etc/crew-box/agent-install.sh")
-      assert script =~ "openssl pkeyutl -verify -pubin"
-      assert script =~ "printf 'crew-release-v1\\n%s\\n%s\\n%s'"
+      # lib.sh's check_release, which root's update step uses too.
+      assert contents(config, "/etc/crew-box/agent-install.sh") =~ "check_release"
+      lib = contents(config, "/etc/crew-box/lib.sh")
+      assert lib =~ "openssl pkeyutl -verify -pubin"
+      assert lib =~ "printf 'crew-release-v1\\n%s\\n%s\\n%s'"
     end
 
     test "for amd64, the linux-amd64 target" do
@@ -466,6 +471,36 @@ defmodule Crew.Boxes.FlatcarTest do
 
       assert body(config, "crew-agent-rollback.service") =~
                "ExecStart=/bin/sh /etc/crew-box/agent-rollback.sh"
+    end
+
+    # §20.2: a release that hasn't joined within 5 minutes exits 75, and
+    # systemd fails it rather than restarting it, so the rollback unit
+    # moves root's half back too.
+    test "the agent's exit for a rollback isn't restarted" do
+      assert body(ignition(), "crew-agent.service") =~ "RestartPreventExitStatus=75"
+    end
+
+    # §10.8, §20.2: an update's root half is installed by root, from the
+    # tarballs the agent stages, checked against root's copy of the key.
+    test "root installs an update's root half when the agent stages one" do
+      for config <- [ignition(), reprovision()] do
+        path = unit(config, "crew-root-install.path")
+        assert path["enabled"]
+        assert path["contents"] =~ "PathExists=/srv/crew/agent/update/request"
+        assert path["contents"] =~ "Unit=crew-root-install.service"
+        assert path["contents"] =~ "RequiresMountsFor=/srv/crew"
+
+        service = body(config, "crew-root-install.service")
+        assert service =~ "ExecStart=/bin/sh /etc/crew-box/root-install.sh"
+        assert service =~ "Type=oneshot"
+        refute service =~ ~r/^User=/m
+
+        assert contents(config, "/etc/crew-box/root-install.sh") =~ "check_release"
+        # Root's copy of the release key, in both: a reprovisioned box
+        # still updates.
+        assert contents(config, "/etc/crew-box/release-key.pem") =~ "BEGIN PUBLIC KEY"
+        assert file(config, "/etc/crew-box/release-key.pem")["mode"] == 0o644
+      end
     end
 
     # The agent can write agent/ (it updates itself, §20.2), so nothing
