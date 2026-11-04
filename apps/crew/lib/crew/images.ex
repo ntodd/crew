@@ -79,6 +79,9 @@ defmodule Crew.Images do
   Registers the signed manifests in `dir` (`crew-guest-*.manifest.json`,
   each with its `.manifest.sig`): the control plane's bundled release.
   """
+  # sobelow_skip ["Traversal.FileModule"]
+  # `dir` is CREW_IMAGE_RELEASE_DIR, the operator's; the files are the
+  # manifests found in it.
   def register_bundle(dir) do
     results =
       for path <- Path.wildcard(Path.join(dir, "crew-guest-*.manifest.json")) do

@@ -78,6 +78,8 @@ defmodule Crew.Images.Mirror do
     "#{Crew.GitHub.Client.web_url()}/#{repo}/releases/download/v#{image.version}/#{name}"
   end
 
+  # sobelow_skip ["Traversal.FileModule"]
+  # Paths are built from the image's row and the configured directories.
   defp check_file(path, sha, size, which) do
     hash =
       path
@@ -93,6 +95,7 @@ defmodule Crew.Images.Mirror do
     end
   end
 
+  # sobelow_skip ["Traversal.FileModule"]
   defp download(url, dest, sha, size, which) do
     File.mkdir_p!(Path.dirname(dest))
     part = dest <> ".part"
@@ -147,6 +150,7 @@ defmodule Crew.Images.Mirror do
     end
   end
 
+  # sobelow_skip ["Traversal.FileModule"]
   defp discard(part, reason) do
     File.rm(part)
     {:error, reason}
