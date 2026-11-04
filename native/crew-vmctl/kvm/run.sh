@@ -220,28 +220,28 @@ ip -br addr show crew0
 
 # -- 5. the tests ---------------------------------------------------------------------
 
-tests="--only kvm"
+paths=""
+only=kvm
 if [ "$conformance" = 1 ]; then
   # Item 4's cache, on 10.199.0.1 as a box's (crew0 is crew-net's now).
   "$here/cache.sh" up
   export CREW_CONFORMANCE_DRIVER=firecracker CREW_CONFORMANCE_CACHE_MGMT=http://127.0.0.1:7780
   CREW_CONFORMANCE_CACHE_TOKEN=$(cat "$work/cache.token")
   export CREW_CONFORMANCE_CACHE_TOKEN
-  if [ -n "${CREW_CONFORMANCE_ONLY:-}" ]; then
-    tests="test/conformance --only test:$CREW_CONFORMANCE_ONLY"
-  else
-    tests="test/conformance --only conformance"
-  fi
+  paths=test/conformance
+  only=conformance
+  # One argument: the name has spaces.
+  [ -z "${CREW_CONFORMANCE_ONLY:-}" ] || only="test:test $CREW_CONFORMANCE_ONLY"
 fi
 pass_env="CREW_CONFORMANCE_DRIVER CREW_CONFORMANCE_CACHE_MGMT CREW_CONFORMANCE_CACHE_TOKEN
   CREW_CONFORMANCE_TARGETS CREW_CONFORMANCE_EGRESS CREW_CONFORMANCE_KIND CREW_CONFORMANCE_STARTS"
 
-say "mix test $tests"
+say "mix test $paths --only $only"
 status=0
 if [ "$native" = 1 ]; then
-  # shellcheck disable=SC2086 # $tests is words
+  # shellcheck disable=SC2086 # $paths is words
   (cd "$repo/apps/crew_agent" && export MIX_ENV=test CREW_REAL_IMAGE_DIR="$image" &&
-    mix deps.get && mix test $tests) || status=$?
+    mix deps.get && mix test $paths --only "$only") || status=$?
 else
   # The image, plus make and a compiler (muontrap compiles a C port) and
   # nft (a test changes the ruleset, as root on the host's network, so the
@@ -254,14 +254,14 @@ else
   mkdir -p "$work/mix" "$work/hex"
   envs=""
   for v in $pass_env; do envs="$envs -e $v"; done
-  # shellcheck disable=SC2086,SC2016 # $envs is words (-e NAME passes NAME through); $TESTS is the container's
+  # shellcheck disable=SC2086,SC2016 # $envs is words (-e NAME passes NAME through); $PATHS and $ONLY are the container's
   dock run --rm --network host --cgroupns host --cap-add NET_ADMIN --device /dev/kvm --device /dev/net/tun \
     -v "$data:$data" -v /run/crew:/run/crew -v "$image:$image:ro" -v "$repo:/src" \
     -v "$work/mix:/root/.mix" -v "$work/hex:/root/.hex" $envs \
-    -e MIX_ENV=test -e CREW_REAL_IMAGE_DIR="$image" -e TESTS="$tests" -w /src/apps/crew_agent \
+    -e MIX_ENV=test -e CREW_REAL_IMAGE_DIR="$image" -e PATHS="$paths" -e ONLY="$only" -w /src/apps/crew_agent \
     "$tag" sh -c 'mix local.hex --force --if-missing >/dev/null &&
       mix local.rebar --force --if-missing >/dev/null && mix deps.get >/dev/null &&
-      mix test $TESTS' || status=$?
+      mix test $PATHS --only "$ONLY"' || status=$?
 fi
 
 # -- 6. nothing left ---------------------------------------------------------------------
