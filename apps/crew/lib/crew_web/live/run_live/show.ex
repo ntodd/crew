@@ -188,7 +188,7 @@ defmodule CrewWeb.RunLive.Show do
           <table class="w-full min-w-[44rem] text-sm">
             <thead class="text-left text-xs text-ink-3">
               <tr>
-                <th class="px-5 py-2 font-medium">Job</th>
+                <th class="w-[32%] px-5 py-2 font-medium">Job</th>
                 <th class="px-2 py-2 font-medium">State</th>
                 <th class="px-2 py-2 font-medium">Size</th>
                 <th class="px-2 py-2 font-medium">Box</th>

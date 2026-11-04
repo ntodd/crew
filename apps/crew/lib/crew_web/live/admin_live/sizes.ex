@@ -186,8 +186,12 @@ defmodule CrewWeb.AdminLive.Sizes do
                   <.badge :if={Size.retired?(size)} size="sm">retired</.badge>
                 </td>
                 <td class="px-2 py-2 text-right tabular-nums">{size.vcpus}</td>
-                <td class="px-2 py-2 text-right tabular-nums">{gib(size.memory_mib)} GiB</td>
-                <td class="px-2 py-2 text-right tabular-nums">{size.disk_gib} GiB</td>
+                <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                  {gib(size.memory_mib)} GiB
+                </td>
+                <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                  {size.disk_gib} GiB
+                </td>
                 <td class="space-x-2 whitespace-nowrap px-5 py-2 text-right text-xs">
                   <button
                     :if={!size.is_default and !Size.retired?(size)}

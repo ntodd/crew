@@ -31,8 +31,11 @@ defmodule CrewWeb.Plugs.SecurityHeaders do
     dev? = Application.get_env(:crew, :dev_routes, false)
     oban? = String.starts_with?(conn.request_path, "/admin/oban")
 
+    # CREW_STRICT_CSP=1 keeps production's styles policy in development,
+    # so the browser tests see any inline style the way production would.
+    strict? = Application.get_env(:crew, :strict_csp, false)
     script = if dev?, do: "'self' 'unsafe-inline'", else: "'self'"
-    style = if dev? or oban?, do: "'self' 'unsafe-inline'", else: "'self'"
+    style = if (dev? and not strict?) or oban?, do: "'self' 'unsafe-inline'", else: "'self'"
 
     Enum.join(
       [

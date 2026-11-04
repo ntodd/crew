@@ -74,6 +74,7 @@ if config_env() != :test do
     base_url: System.get_env("CREW_BASE_URL"),
     # §21.1
     dev: System.get_env("CREW_DEV") == "1",
+    strict_csp: System.get_env("CREW_STRICT_CSP") == "1",
     hook_port: int.("CREW_HOOK_PORT", 4001),
     webhooks: webhooks == "on",
     idle_grace_s: int.("CREW_IDLE_GRACE", 30),
