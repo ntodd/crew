@@ -158,4 +158,38 @@ defmodule Crew.RuntimeConfigTest do
 
     assert_raise RuntimeError, ~r/CREW_ENCRYPTION_KEYS_RETIRED/, fn -> vault_keys() end
   end
+
+  # A development Flatcar VM reaches the Mac's control plane on the
+  # vmnet bridge (192.168.64.1), not loopback.
+  describe "development" do
+    setup do
+      saved = System.get_env("CREW_LISTEN_IP")
+
+      on_exit(fn ->
+        if saved,
+          do: System.put_env("CREW_LISTEN_IP", saved),
+          else: System.delete_env("CREW_LISTEN_IP")
+      end)
+
+      System.delete_env("CREW_LISTEN_IP")
+    end
+
+    defp dev_http do
+      Config.Reader.read!(@runtime, env: :dev, target: :host)[:crew][CrewWeb.Endpoint][:http]
+    end
+
+    test "listens where CREW_LISTEN_IP says" do
+      System.put_env("CREW_LISTEN_IP", "0.0.0.0")
+      assert dev_http()[:ip] == {0, 0, 0, 0}
+    end
+
+    test "otherwise leaves dev.exs's loopback alone" do
+      refute Keyword.has_key?(dev_http(), :ip)
+    end
+
+    test "refuses a CREW_LISTEN_IP that isn't an address" do
+      System.put_env("CREW_LISTEN_IP", "everywhere")
+      assert_raise RuntimeError, ~r/CREW_LISTEN_IP/, fn -> dev_http() end
+    end
+  end
 end

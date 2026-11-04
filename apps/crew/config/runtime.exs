@@ -20,6 +20,20 @@ config :crew, CrewWeb.Endpoint,
   ]
 
 if config_env() == :dev do
+  # A Flatcar VM in development reaches this control plane over its
+  # host's network (a Mac's vmnet bridge is 192.168.64.1), not loopback:
+  # CREW_LISTEN_IP=0.0.0.0, or the bridge's address.
+  case System.get_env("CREW_LISTEN_IP") do
+    ip when ip in [nil, ""] ->
+      :ok
+
+    ip ->
+      case ip |> String.to_charlist() |> :inet.parse_address() do
+        {:ok, address} -> config :crew, CrewWeb.Endpoint, http: [ip: address]
+        {:error, _} -> raise "CREW_LISTEN_IP is #{inspect(ip)}, which isn't an IP address"
+      end
+  end
+
   config :crew, CrewWeb.Endpoint,
     live_reload: [
       web_console_logger: true,
