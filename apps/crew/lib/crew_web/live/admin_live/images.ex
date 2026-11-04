@@ -67,7 +67,15 @@ defmodule CrewWeb.AdminLive.Images do
     end
   end
 
-  defp stale(arches), do: Enum.filter(arches, &(&1.freshness && &1.freshness.level != :ok))
+  # One warning per runner version, naming the arches whose default has it.
+  defp stale(arches) do
+    arches
+    |> Enum.filter(&(&1.freshness && &1.freshness.level != :ok))
+    |> Enum.group_by(&{&1.default.runner_version, &1.freshness})
+    |> Enum.map(fn {{runner, freshness}, group} ->
+      %{runner: runner, freshness: freshness, arches: Enum.map(group, & &1.arch)}
+    end)
+  end
 
   defp registered(at), do: Calendar.strftime(at, "%b %-d, %Y")
 
@@ -88,12 +96,13 @@ defmodule CrewWeb.AdminLive.Images do
 
       <div :if={stale(@arches) != []} id="runner-freshness" class="mb-4 space-y-2">
         <.callout
-          :for={a <- stale(@arches)}
-          kind={if a.freshness.level == :alert, do: "danger", else: "warning"}
+          :for={w <- stale(@arches)}
+          kind={if w.freshness.level == :alert, do: "danger", else: "warning"}
           icon="hero-exclamation-triangle"
         >
-          The {a.arch} image's runner ({a.default.runner_version}) is {a.freshness.days} days behind
-          actions/runner {a.freshness.latest}. GitHub stops giving jobs to runners that fall too far
+          The runner in the {Enum.join(w.arches, " and ")} {if length(w.arches) == 1,
+            do: "image",
+            else: "images"} ({w.runner}) is {w.freshness.days} days behind actions/runner {w.freshness.latest}. GitHub stops giving jobs to runners that fall too far
           behind: release an image with the new runner.
         </.callout>
       </div>

@@ -26,6 +26,20 @@ export CREW_STRICT_CSP="${CREW_STRICT_CSP:-1}"
 # mise pins the toolchain locally; CI sets it up directly.
 run() { if command -v mise >/dev/null 2>&1; then mise exec -- "$@"; else "$@"; fi; }
 
+# The guest image release the control plane's image would carry (§20.1),
+# signed with the development test key: a small made-up one, or a real
+# build (E2E_IMAGE_RELEASE_DIR=images/guest/out/arm64/release).
+export CREW_RELEASE_PUBLIC_KEY="$(grep -v '^#' "$root/images/guest/keys/test-signing.pub" | tr -d ' \n')"
+export CREW_IMAGE_DIR="$root/tmp/e2e/images"
+rm -rf "$CREW_IMAGE_DIR"
+if [ -n "$E2E_IMAGE_RELEASE_DIR" ]; then
+  export CREW_IMAGE_RELEASE_DIR="$E2E_IMAGE_RELEASE_DIR"
+else
+  export CREW_IMAGE_RELEASE_DIR="$root/tmp/e2e/release"
+  rm -rf "$CREW_IMAGE_RELEASE_DIR"
+  run mix run --no-start "$root/e2e/make_release.exs" "$CREW_IMAGE_RELEASE_DIR"
+fi
+
 run mix ecto.create --quiet
 run mix ecto.migrate --quiet
 if [ -n "$E2E_SEED" ]; then run mix run "$root/e2e/$E2E_SEED"; fi
