@@ -63,6 +63,21 @@ defmodule CrewAgent.VMs do
     end
   end
 
+  @doc """
+  Kills a VM now, recording why in its `vm.exited` detail. A VM the
+  agent holds no server for, but the driver has, is killed through the
+  driver.
+  """
+  def kill(vm_id, detail) do
+    case VM.call(vm_id, {:kill, detail}) do
+      :ok -> :ok
+      {:error, :no_vm} -> Driver.impl().stop(vm_id, true)
+    end
+  end
+
+  @doc "The VMs this agent holds that haven't exited."
+  def running_ids, do: Enum.filter(vm_ids(), &(VM.whereis(&1) != nil and not exited?(&1)))
+
   def log_ack(vm_id, epoch, seq) do
     case VM.call(vm_id, {:log_ack, epoch, seq}) do
       {:error, :no_vm} -> :ok
@@ -111,7 +126,7 @@ defmodule CrewAgent.VMs do
   end
 
   @doc "VMs whose VMM is running: a VM that exited keeps its server while its logs drain."
-  def running_count, do: Enum.count(vm_ids(), &(VM.whereis(&1) != nil and not exited?(&1)))
+  def running_count, do: length(running_ids())
 
   # box.inventory carries at most this many VMs (CrewProtocol.Event).
   @inventory_max 1000
