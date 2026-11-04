@@ -45,6 +45,9 @@ done
 # Idempotent: it does nothing once agent/current is there.
 systemctl start crew-agent-install.service ||
   fail "the agent's install failed (journalctl -u crew-agent-install)"
+# crew-net and crew-vmctl's units, from the release just installed.
+systemctl start crew-root-units.service ||
+  fail "the release's units didn't install (journalctl -u crew-root-units)"
 
 say "starting the agent"
 # On a retry the agent may have hit its start limit.

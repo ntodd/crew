@@ -687,28 +687,48 @@ The other spikes are recorded here as they run.
   Boxes download from the GitHub release; with `CREW_DEV=1` and the file
   here, from `/agent/releases/:version/:target/:file`.
 - **What the agent tarball must hold:** `bin/crew_agent` (an Elixir
-  release, `start`), `bin/crew-vmctl` and `etc/nft.conf`; the cache's,
-  `bin/crew_cache`. The install refuses a release without them.
+  release, `start`), `bin/crew-vmctl`, `bin/jailer`, `bin/firecracker`,
+  `etc/nft.conf`, `etc/connlimit.rules`, and crew-vmctl's five units in
+  `etc/systemd/` (`native/crew-vmctl/etc/systemd`); the cache's,
+  `bin/crew_cache`. The install refuses a release without any of them.
 - **On the data disk:** `/srv/crew/agent/<version>/` is the agent
   tarball and `<version>/cache/` the cache's, both root's and read-only;
   `agent/current` points at the version, `agent/env` is root's 0600.
   §10.1 names `agent/releases/<version>/`; the brief for this layer put
-  them directly under `agent/`. Units run `current/bin/crew_agent`,
-  `current/bin/crew-vmctl` and `current/cache/bin/crew_cache`, with
+  them directly under `agent/`. The agent and crew_cache run from there
+  (`current/bin/crew_agent`, `current/cache/bin/crew_cache`), with
   `RELEASE_TMP` in their runtime directories (the release itself is
   read-only) and `RELEASE_DISTRIBUTION=none`.
+- **What root runs is in `/srv/crew/root/<version>/`,** not `agent/`:
+  the agent owns `agent/` (to update itself, §20.2), so it could rename
+  `current` to a release of its own. `crew-agent-install` stages the
+  tarballs in `root/` (root's 0755, as `/srv/crew` is), checks them, and
+  copies `bin/crew-vmctl`, `bin/jailer`, `bin/firecracker`, the ruleset
+  and the units there, with the units' `agent/current/bin/` rewritten to
+  `root/current/bin/` (a unit still naming `agent/` refuses the
+  release). `crew-root-units` copies the units into `/etc/systemd/system`
+  and enables `crew-net`, `crew-vmctl.socket` and `crew-net-site4.timer`
+  at every boot, so a reprovisioned OS disk gets them back from the data
+  disk; it starts them itself, since units installed mid-boot aren't in
+  the boot's transaction. A rollback moves `root/current` with
+  `agent/current`. `agent.update` (§20.2) has to put a new release's
+  root half in `root/` through the same root step.
+- **What's still the agent's to change:** crew-vmctl's `Paths.bin`
+  names `agent/current/bin` for jailer, Firecracker and the VM unit's
+  `ExecStopPost=crew-vmctl exited`, so root (systemd-run, jailer before
+  it drops to the VM's uid) still runs those from `agent/`. The copies
+  are in `root/current/bin` for when it points there.
+- **crew-net's shipped units have an ordering cycle:** `crew-net.service`
+  (default dependencies, so after `basic.target`) is `Before=` the socket,
+  which (also with defaults) is before `sockets.target` and so before
+  `basic.target`. systemd breaks it at boot by dropping one of the jobs;
+  `crew-root-units` starting both again after `basic.target` brings them
+  up either way. The units want `DefaultDependencies=no` on one side, or
+  no `Before=crew-vmctl.socket`.
 - **`agent/` is 0711:** `CrewAgent.Identity.save/2` makes it 0700, which
   would cut crewcache off from its release in `current/cache`, so
   `crew-quota` sets it back at every boot and `provision.sh` right after
   enrollment.
-- **Known gap: the agent owns `agent/`,** so it can rename `current` to
-  a release of its own, and `crew-vmctl@.service` runs
-  `current/bin/crew-vmctl` as root (and `crew-net` loads `current/etc/nft.conf`
-  as root). Root-owned release directories stop it changing a release in
-  place, not swapping the link. The fix is a root-owned release tree
-  outside `agent/` (or crew-vmctl from a root-owned path), and an
-  `agent.update` that installs through crew-vmctl; until then §10.8's
-  "no root powers" doesn't hold against a compromised agent.
 - **The data disk** is formatted (`mkfs.xfs -L crew-data -m reflink=1`)
   only when it has no filesystem and no partition table and no disk
   already has the label, and mounted by the label with `prjquota` and
@@ -727,8 +747,9 @@ The other spikes are recorded here as they run.
 - **Users** have fixed ids (`_crewagent` 9100, `crewcache` 9101,
   `crewvm` 9110), so a reprovisioned OS disk owns the data disk's files.
 - **First boot:** `crew-provision` joins the tailnet (with a key),
-  waits for `/healthz`, starts `crew-agent-install`, then `crew-net`,
-  `crew-cache` and `crew-agent`, and waits up to 3 minutes for
+  waits for `/healthz`, starts `crew-agent-install` and
+  `crew-root-units`, then `crew-net` and `crew-agent` (which wants
+  `crew-cache`, and enrolls without it), and waits up to 3 minutes for
   `agent/identity.json`. Then it drops `CREW_JOIN_TOKEN` from
   `agent/env` and deletes `provision.env` and `/oem/config.ign`. Later
   boots (and a reprovisioned one) start the installed agent directly,

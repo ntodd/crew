@@ -3,9 +3,16 @@ defmodule Crew.AgentReleaseFixtures do
   Signed agent and cache tarballs for tests (§20.1), named and laid out
   as CI publishes them: `crew-<component>-<version>-<target>.tar.gz`,
   each with its `.sha256` and `.sig`. The tarballs are tiny but real:
-  the agent's has `bin/crew_agent`, `bin/crew-vmctl` and `etc/nft.conf`,
-  the cache's `bin/crew_cache`.
+  the agent's has stand-ins for `bin/crew_agent`, `bin/crew-vmctl`,
+  `bin/jailer` and `bin/firecracker`, and crew-vmctl's real `etc/`
+  (`native/crew-vmctl/etc`: the ruleset and the units); the cache's has
+  `bin/crew_cache`.
   """
+
+  @vmctl_etc Path.expand("../../../../native/crew-vmctl/etc", __DIR__)
+
+  @doc "crew-vmctl's units, as the agent tarball's `etc/systemd/` ships them."
+  def vmctl_units, do: @vmctl_etc |> Path.join("systemd") |> File.ls!() |> Enum.sort()
 
   @doc "A .tar.gz of `{path, contents}` entries, every file 0755."
   def tarball(entries) do
@@ -44,8 +51,13 @@ defmodule Crew.AgentReleaseFixtures do
     [
       {"bin/crew_agent", "#!/bin/sh\necho crew_agent #{version}\n"},
       {"bin/crew-vmctl", "#!/bin/sh\necho crew-vmctl #{version}\n"},
-      {"etc/nft.conf", "table inet crew {}\n"}
-    ]
+      {"bin/jailer", "#!/bin/sh\necho jailer\n"},
+      {"bin/firecracker", "#!/bin/sh\necho firecracker\n"},
+      {"etc/nft.conf", File.read!(Path.join(@vmctl_etc, "nft.conf"))},
+      {"etc/connlimit.rules", File.read!(Path.join(@vmctl_etc, "connlimit.rules"))}
+    ] ++
+      for unit <- vmctl_units(),
+          do: {"etc/systemd/#{unit}", File.read!(Path.join([@vmctl_etc, "systemd", unit]))}
   end
 
   def cache_entries(version), do: [{"bin/crew_cache", "#!/bin/sh\necho crew_cache #{version}\n"}]

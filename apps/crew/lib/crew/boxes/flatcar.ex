@@ -17,17 +17,22 @@ defmodule Crew.Boxes.Flatcar do
   - **The data disk** at `/srv/crew` (XFS, reflink, project quotas),
     formatted only when it's empty and mounted by its label, laid out
     with three quota areas (§12.4) on every boot.
-  - **`crew0`** with 10.199.0.1/32 and the agent release's firewall.
   - **The first boot** (`crew-provision`): the tailnet, the control
     plane, the agent's install from the release (checked against its
     SHA-256s and the release key the Ignition embeds), the enrollment,
     and then the secrets deleted.
-  - **The agent** (`_crewagent`), **crew_cache** (`crewcache`) and
-    **crew-vmctl** (socket-activated, root) as §10.8 has them.
+  - **The agent** (`_crewagent`) and **crew_cache** (`crewcache`) as
+    §10.8 has them.
+  - **crew-net and crew-vmctl** (crew0, the ruleset, site4, the root
+    helper's socket) are the release's own units
+    (`native/crew-vmctl/etc/systemd`), which `crew-root-units` installs
+    from `/srv/crew/root` at every boot.
 
   Flatcar mounts `/etc` noexec, so every script is written there 0644
-  and run as `/bin/sh /etc/crew-box/<script>`; binaries run from
-  `/srv/crew/agent/current`. The scripts are `priv/flatcar/`.
+  and run as `/bin/sh /etc/crew-box/<script>`. The agent and crew_cache
+  run from `/srv/crew/agent/current`; what runs as root runs from
+  `/srv/crew/root/current`, root's copy, since the agent can write
+  `agent/`. The scripts are `priv/flatcar/`.
 
   **Reprovision** (`mode: :reprovision`) is the same box without a join
   token, a Tailscale key or a release: for a new OS disk over the data
@@ -47,7 +52,7 @@ defmodule Crew.Boxes.Flatcar do
             do: {key, value}
 
   @scripts_dir Path.expand("../../../priv/flatcar", __DIR__)
-  @script_names ~w(lib.sh provision.sh agent-install.sh format-data.sh quota.sh net.sh
+  @script_names ~w(lib.sh provision.sh agent-install.sh format-data.sh quota.sh root-units.sh
                    agent-rollback.sh flatcar-update-check update-sysexts.sh clock-sync.sh status.sh)
   for name <- @script_names, do: @external_resource(Path.join(@scripts_dir, name))
   @scripts Map.new(@script_names, &{&1, File.read!(Path.join(@scripts_dir, &1))})
@@ -184,7 +189,9 @@ defmodule Crew.Boxes.Flatcar do
           "[Match]\nName=crewt* crew0\n\n[Link]\nUnmanaged=yes\n"
         ),
         text("/etc/sysctl.d/90-crew.conf", sysctls()),
-        text("/etc/modules-load.d/crew.conf", "nf_conntrack\ndummy\n"),
+        # crew-net's ruleset: the connection cap is xt_connlimit through
+        # nft_compat (Flatcar's kernel has no nft_connlimit).
+        text("/etc/modules-load.d/crew.conf", "nf_conntrack\nnft_compat\nxt_connlimit\ndummy\n"),
         text("/etc/sysupdate.tailscale.d/tailscale.conf", sysupdate()),
         sysext,
         text("/etc/crew-box/box.env", env(CREW_BOX_NAME: opts.name, CREW_BOX_TYPE: opts.type))
@@ -356,12 +363,10 @@ defmodule Crew.Boxes.Flatcar do
       unit("srv-crew.mount", srv_crew_mount()),
       unit("crew-format-data.service", format_data(disk), enabled: false),
       unit("crew-quota.service", quota()),
-      unit("crew-net.service", net()),
       unit("crew-agent-install.service", agent_install(), enabled: false),
+      unit("crew-root-units.service", root_units()),
       unit("crew-agent.service", agent()),
       unit("crew-agent-rollback.service", agent_rollback(), enabled: false),
-      unit("crew-vmctl.socket", vmctl_socket()),
-      unit("crew-vmctl@.service", vmctl_service(), enabled: false),
       unit("crew-cache.service", cache()),
       unit("crew-box-status.service", status()),
       %{
@@ -444,19 +449,23 @@ defmodule Crew.Boxes.Flatcar do
     """
   end
 
-  defp net do
+  # crew-net (crew0, the ruleset, site4) and crew-vmctl's socket are
+  # crew-vmctl's, and their units come with the release
+  # (native/crew-vmctl/etc/systemd); this puts them in place from
+  # /srv/crew/root, root's copy, at every boot.
+  defp root_units do
     """
     [Unit]
-    Description=Crew's service address and firewall
+    Description=Install the release's crew-net and crew-vmctl units
     RequiresMountsFor=/srv/crew
-    After=crew-quota.service crew-agent-install.service network-pre.target
+    After=crew-quota.service crew-agent-install.service
     Before=crew-agent.service crew-cache.service
-    ConditionPathExists=/srv/crew/agent/current/etc/nft.conf
+    ConditionPathExists=/srv/crew/root/current/etc/systemd
 
     [Service]
     Type=oneshot
     RemainAfterExit=yes
-    ExecStart=/bin/sh /etc/crew-box/net.sh
+    ExecStart=/bin/sh /etc/crew-box/root-units.sh
 
     [Install]
     WantedBy=multi-user.target
@@ -508,12 +517,15 @@ defmodule Crew.Boxes.Flatcar do
 
   # Foreman's foreman-agent.service, as _crewagent (§10.8). The release
   # is root's; RELEASE_TMP is where the release writes its runtime config.
+  # /srv/crew/jail: the agent caps the console files it owns there
+  # (crew-vmctl's README); the directories are root's.
   defp agent do
     """
     [Unit]
     Description=Crew agent
     Wants=network-online.target
-    After=network-online.target crew-net.service crew-agent-install.service crew-vmctl.socket
+    After=network-online.target crew-net.service crew-vmctl.socket
+    After=crew-agent-install.service crew-root-units.service
     Requires=crew-net.service
     Wants=crew-vmctl.socket crew-cache.service
     RequiresMountsFor=/srv/crew
@@ -539,7 +551,7 @@ defmodule Crew.Boxes.Flatcar do
     ProtectSystem=strict
     ProtectHome=true
     PrivateTmp=true
-    ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images
+    ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images /srv/crew/jail
     ProtectKernelModules=true
     RestrictSUIDSGID=true
     LockPersonality=true
@@ -559,44 +571,6 @@ defmodule Crew.Boxes.Flatcar do
     [Service]
     Type=oneshot
     ExecStart=/bin/sh /etc/crew-box/agent-rollback.sh
-    """
-  end
-
-  # §10.8: one JSON request per connection, from _crewagent only.
-  defp vmctl_socket do
-    """
-    [Unit]
-    Description=Crew's root helper (crew-vmctl)
-
-    [Socket]
-    ListenStream=/run/crew/vmctl.sock
-    SocketUser=root
-    SocketGroup=_crewagent
-    SocketMode=0660
-    DirectoryMode=0755
-    Accept=yes
-    MaxConnections=64
-
-    [Install]
-    WantedBy=sockets.target
-    """
-  end
-
-  # The connection is fd 3 ($LISTEN_FDS) and stdin/stdout.
-  defp vmctl_service do
-    """
-    [Unit]
-    Description=Crew's root helper (crew-vmctl), one request
-    RequiresMountsFor=/srv/crew
-    CollectMode=inactive-or-failed
-
-    [Service]
-    ExecStart=/srv/crew/agent/current/bin/crew-vmctl
-    Environment=CREW_DATA_DIR=/srv/crew
-    StandardInput=socket
-    StandardOutput=socket
-    StandardError=journal
-    RuntimeMaxSec=300
     """
   end
 

@@ -13,6 +13,13 @@
 #   /srv/crew/agent/<version>/cache/    the crew_cache tarball
 #   /srv/crew/agent/current -> <version>
 #   /srv/crew/agent/env                 the agent's settings (0600)
+#   /srv/crew/root/<version>/           what root runs: bin/crew-vmctl,
+#                                       bin/jailer, bin/firecracker, etc/
+#                                       (the ruleset and crew-vmctl's units)
+#   /srv/crew/root/current -> <version>
+#
+# The agent owns agent/ (it updates itself, §20.2), so root never runs
+# anything from there: root/ is root's, and the units are pointed at it.
 #
 # CREW_BOX_ETC and CREW_BOX_DATA move /etc/crew-box and /srv/crew, for
 # the control plane's tests.
@@ -49,8 +56,14 @@ case "$CREW_TARGET" in linux-amd64 | linux-arm64) ;; *) fail "the target '$CREW_
 root=""
 if [ "$(id -u)" -eq 0 ]; then root=1; fi
 
-# On the data disk, not /tmp, which is memory.
-tmp="$agent/.install.$$"
+root_dir="$data/root"
+mkdir -p "$root_dir"
+if [ -n "$root" ]; then chown root:root "$root_dir"; fi
+chmod 0755 "$root_dir"
+
+# On the data disk, not /tmp, which is memory, and in root's directory,
+# out of the agent's reach.
+tmp="$root_dir/.install.$$"
 rm -rf "$tmp"
 mkdir -m 0700 "$tmp"
 trap 'rm -rf "$tmp"' EXIT
@@ -79,18 +92,47 @@ new="$tmp/release"
 mkdir -p "$new/cache"
 tar -xzf "$tmp/agent.tar.gz" -C "$new" --no-same-owner
 tar -xzf "$tmp/cache.tar.gz" -C "$new/cache" --no-same-owner
-for f in bin/crew_agent bin/crew-vmctl cache/bin/crew_cache; do
+
+# What the agent tarball holds (native/crew-vmctl's README): the agent,
+# crew-vmctl, Firecracker's jailer and VMM, the ruleset and the units.
+units="crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.service crew-net-site4.timer"
+for f in bin/crew_agent bin/crew-vmctl bin/jailer bin/firecracker cache/bin/crew_cache; do
   [ -x "$new/$f" ] || fail "the release has no $f"
 done
-[ -f "$new/etc/nft.conf" ] || fail "the release has no etc/nft.conf"
+for f in etc/nft.conf etc/connlimit.rules; do
+  [ -f "$new/$f" ] || fail "the release has no $f"
+done
+for u in $units; do
+  [ -f "$new/etc/systemd/$u" ] || fail "the release has no etc/systemd/$u"
+done
 
-# Root's and read-only: crew-vmctl and the firewall rules run as root from
-# here, and crew_cache as crewcache.
-if [ -n "$root" ]; then chown -R root:root "$new"; fi
-chmod -R go-w "$new"
-chmod 0755 "$new"
-rm -rf "$dest"
+# The root half, copied out of the agent's release: the binaries root
+# runs, the ruleset, and the units pointed at root/current.
+priv="$tmp/root"
+mkdir -p "$priv/bin" "$priv/etc/systemd"
+for b in crew-vmctl jailer firecracker; do
+  cp "$new/bin/$b" "$priv/bin/$b"
+  chmod 0755 "$priv/bin/$b"
+done
+cp "$new/etc/nft.conf" "$new/etc/connlimit.rules" "$priv/etc/"
+for u in $units; do
+  sed 's|/srv/crew/agent/current/bin/|/srv/crew/root/current/bin/|g' "$new/etc/systemd/$u" > "$priv/etc/systemd/$u"
+  if grep -q '/srv/crew/agent/' "$priv/etc/systemd/$u"; then
+    fail "the release's $u takes something from the agent's directory, which root mustn't"
+  fi
+done
+
+# Both root's and read-only: crew_cache runs as crewcache from agent/,
+# and the agent from agent/ as itself.
+for d in "$new" "$priv"; do
+  if [ -n "$root" ]; then chown -R root:root "$d"; fi
+  chmod -R go-w "$d"
+  chmod 0755 "$d"
+done
+rm -rf "$dest" "${root_dir:?}/${CREW_VERSION:?}"
+mv "$priv" "$root_dir/$CREW_VERSION"
 mv "$new" "$dest"
+ln -sfn "$CREW_VERSION" "$root_dir/current"
 ln -s "$CREW_VERSION" "$agent/current"
 rm -f "$agent/previous" "$agent/update-pending"
 
