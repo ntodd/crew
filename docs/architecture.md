@@ -807,3 +807,28 @@ The other spikes are recorded here as they run.
   sending bad join tokens could hold up a real enrollment for the
   window. Foreman's image has the same property. Trusting the gateway
   would need a configured proxy list; not done.
+- **`crew-update`** (`docker/crew-update`) is Foreman's `foreman-update`
+  with Crew's names (`/var/lib/crew-update`, `/etc/crew/update.conf`,
+  `CREW_IMAGE` in compose's `.env`, the `crew` service), and:
+  - **The request is renamed out of the container's directory before
+    it's read,** then read only if it's a regular file. Foreman checks
+    for a symlink and then reads, which leaves a moment for the
+    container to swap in a symlink (read as root) or a FIFO (which
+    would hang the run).
+  - **Versions compare field by field in sh**, not with `sort -V`, and
+    `is_version` refuses leading zeros and anything that isn't a digit
+    or a dot before the pattern runs, so a multi-line value can't pass
+    on one good line. `Crew.Updates` only offers versions this accepts.
+  - **The backup leaves out `images/`:** mirrored guest images are
+    large and the control plane downloads them again, checked against
+    their signed manifests. The restore keeps the directory. With
+    Postgres there's no volume backup, as in Foreman (the logs would
+    no longer match a database that isn't restored).
+  - **It can be sourced** (`CREW_UPDATE_SOURCED=1`) by
+    `docker/test/crew-update-test.sh`, which runs its decisions against
+    a fake docker in CI: request parsing (symlinks, FIFOs, extra lines,
+    32 bytes), version comparison, refused requests, a healthy update, a
+    rollback with the backup restored, a crash loop, Postgres, a
+    registry with a port. The backup's tar, the units and a real pull
+    and recreate need a Docker host; Foreman's DinD run
+    (`e2e/updater/run.sh` there) isn't copied yet.

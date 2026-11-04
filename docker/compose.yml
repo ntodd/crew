@@ -53,6 +53,12 @@ services:
     volumes:
       # The database (SQLite), logs and mirrored guest images.
       - crew-data:/var/lib/crew
+      # Updating from the Deployment page (§20.3): the control plane asks
+      # for a version in request/, and the host's updater (crew-update)
+      # reports in status/. Without the updater installed, these stay
+      # empty.
+      - /var/lib/crew-update/request:/var/lib/crew-update/request
+      - /var/lib/crew-update/status:/var/lib/crew-update/status:ro
 
 volumes:
   crew-data:
