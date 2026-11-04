@@ -114,7 +114,8 @@ The agent writes, in `vms/<vm_id>/`:
   (`vsock`, `initrd_path`, `mmds-config`, `balloon`, `cpu-config`,
   `huge_pages`, `io_engine`, a second drive or interface, a logger or
   metrics of its own) is refused. Every value is checked:
-  - `boot-source.kernel_image_path` is `images/<image.id>/kernel`;
+  - `boot-source.kernel_image_path` is `vms/<vm_id>/kernel`, the VM's
+    own copy of its image's kernel;
     `boot_args` is 1 to 2048 bytes of printable ASCII;
   - `drives` is one: `rootfs`, `vms/<vm_id>/rootfs.ext4`, the read-write
     root device;
@@ -126,9 +127,12 @@ The agent writes, in `vms/<vm_id>/`:
     to 60,000 ms.
 - `rootfs.ext4`: the clone. A regular file with one link, owned by the
   agent (the connecting uid), on the jail's filesystem.
-
-And `images/<image_id>/kernel`: a regular file owned by the agent,
-world-readable and not group- or world-writable.
+- `kernel`: the agent's copy of the image's kernel (a reflink where the
+  filesystem can make one, else a copy). A regular file with one link,
+  owned by the agent, world-readable and not group- or world-writable.
+  Not the image's own: with §12.4's XFS project quotas, `images/` and
+  `vms/` + `jail/` are different projects, and XFS refuses a hard link
+  between projects (EXDEV), which is how the kernel gets into the jail.
 
 Files under the data directory are opened with
 `openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS)`, so a symlink anywhere in
@@ -150,7 +154,7 @@ gid when it sets up the chroot.
 |---|---|
 | `root/` | jailer's chroot (the VM's once jailer runs) |
 | `root/rootfs.ext4` | A hard link to the clone, which is given to the VM's uid and gid, 0600 |
-| `root/kernel` | A hard link to the image's kernel |
+| `root/kernel` | A hard link to the VM's copy of the kernel |
 | `root/fc.json` | Rebuilt from the checked values: chroot paths, and crew-vmctl's own `logger` (`/fc.log`, `Warning`) and `metrics` (`/fc.metrics`). 0400, the VM's. |
 | `root/fc.log`, `root/fc.metrics` | Empty regular files, 0600, the VM's |
 | `lease` | The lease index, for `cleanup` |
@@ -337,6 +341,11 @@ sudo CREW_REAL_IMAGE_DIR=/srv/crew/kvm-image native/crew-vmctl/kvm/run.sh   # --
   script refuses an `agent/` or `root/` it didn't make.
 - It fetches and checks the pinned Firecracker, builds crew-vmctl,
   installs both into `root/kvm-test` with `root/current` linking to it,
+  sets up §12.4's XFS project quotas as a box's Ignition does (`vms/` and
+  `jail/` in project 10, `agent/` and `images/` in 12; it remounts
+  `/srv/crew` with `prjquota` first if it isn't, since XFS turns quotas
+  on only at mount), so a hard link across projects fails here as it
+  does on a box,
   checks the units with `systemd-analyze verify` in one boot transaction
   (a target that wants them with `sockets.target` and `basic.target`;
   any output fails the run, so an ordering cycle between them does),

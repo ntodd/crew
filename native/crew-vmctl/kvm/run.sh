@@ -55,12 +55,12 @@ die() {
 image=$(cd "$CREW_REAL_IMAGE_DIR" && pwd)
 [ -f "$image/rootfs.ext4" ] || die "$image has no rootfs.ext4"
 [ -f "$image/Image" ] || [ -f "$image/kernel" ] || die "$image has no Image or kernel"
-for t in systemctl systemd-run nft iptables-nft-restore iptables-nft ip curl sha256sum tar; do
+for t in systemctl systemd-run nft iptables-nft-restore iptables-nft ip curl sha256sum tar findmnt xfs_quota; do
   command -v "$t" >/dev/null || die "this host has no $t"
 done
 [ -d "$data" ] || die "$data doesn't exist (an XFS with reflink=1)"
 [ "$(stat -f -c %T "$data")" = xfs ] || die "$data must be an XFS (with reflink=1)"
-for d in agent root; do
+for d in agent root vmctl; do
   if [ -e "$data/$d" ] && [ ! -e "$marker" ]; then
     die "$data/$d exists and this script didn't make it: is this a Crew box? Not here."
   fi
@@ -95,7 +95,11 @@ teardown() {
     nft delete table inet crew 2>/dev/null || true
     nft delete table ip mangle 2>/dev/null || true
     ip link del crew0 2>/dev/null || true
-    rm -rf "$data/agent" "$data/root" "$data/vms" "$data/images" "$data/jail" "$marker" /run/crew
+    # Taps a failed test left (a passing run leaves none: step 6 checks).
+    for t in $(ip -o link show | sed -n 's/^[0-9]*: \(crewt[0-9]*\)[:@].*/\1/p'); do
+      ip link del "$t" 2>/dev/null || true
+    done
+    rm -rf "$data/agent" "$data/root" "$data/vms" "$data/images" "$data/jail" "$data/vmctl" "$marker" /run/crew
   else
     say "--keep: leaving crew-net, crew-vmctl.socket and $data as they are"
   fi
@@ -148,7 +152,26 @@ fi
 # link, as the box's Ignition installs a release; agent/ is the agent's.
 say "installing into $data/root/kvm-test and /run/systemd/system"
 release=$data/root/kvm-test
-install -d -m 0755 "$release/bin" "$release/etc/systemd" "$data/agent" "$data/vms" "$data/images"
+install -d -m 0755 "$release/bin" "$release/etc/systemd" "$data/agent" "$data/vms" "$data/images" "$data/jail"
+
+# §12.4's XFS project quotas, as a box's Ignition sets them
+# (crew-quota.service): vms/ + jail/ are one project, agent/ + images/
+# another. XFS refuses a hard link from one project to another (EXDEV),
+# which a data disk without quotas never shows.
+if ! findmnt -no OPTIONS "$data" | tr , '\n' | grep -qx 'prjquota\|pquota'; then
+  dev=$(findmnt -no SOURCE "$data")
+  say "remounting $data ($dev) with prjquota: XFS turns quotas on only at mount"
+  umount "$data" || die "couldn't unmount $data to turn on project quotas"
+  mount -o noatime,prjquota "$dev" "$data" || die "couldn't mount $dev on $data with prjquota"
+fi
+project() { # id dir
+  xfs_quota -x -c "project -s -p $data/$2 $1" "$data" >/dev/null || die "couldn't put $data/$2 in project $1"
+}
+project 10 vms
+project 10 jail
+project 12 agent
+project 12 images
+say "project quotas: vms/ and jail/ in 10, agent/ and images/ in 12"
 install -m 0755 "$work/firecracker/firecracker" "$work/firecracker/jailer" "$work/bin/crew-vmctl" "$release/bin/"
 cp "$vmctl_src/etc/nft.conf" "$vmctl_src/etc/connlimit.rules" "$release/etc/"
 cp "$vmctl_src/etc/systemd/"* "$release/etc/systemd/"

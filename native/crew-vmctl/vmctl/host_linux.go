@@ -350,9 +350,10 @@ func (h *LinuxSys) PrepareJail(j Jail) (err error) {
 		return fmt.Errorf("linking the clone into the jail: %w", err)
 	}
 
-	// The kernel: the agent's, read-only to everyone, shared by the
-	// image's VMs.
-	kernel, err := beneathAt(dfd, filepath.Join("images", vm.ImageID, "kernel"), unix.O_RDONLY, 0)
+	// The kernel: the VM's own copy beside the clone (images/ may be
+	// another XFS project, which can't be hard-linked from), the agent's,
+	// read-only to everyone, with no other links.
+	kernel, err := beneathAt(dfd, filepath.Join("vms", vm.ID, "kernel"), unix.O_RDONLY, 0)
 	if err != nil {
 		return fail(ErrInvalidConfig, "the kernel: %v", err)
 	}
@@ -387,8 +388,8 @@ func checkFile(fd, owner int, dev uint64, clone bool) error {
 		return fmt.Errorf("owned by uid %d, not the agent's %d", st.Uid, owner)
 	case st.Dev != dev:
 		return fmt.Errorf("not on the jail's filesystem")
-	case clone && st.Nlink != 1:
-		return fmt.Errorf("has %d links; a clone has one", st.Nlink)
+	case st.Nlink != 1:
+		return fmt.Errorf("has %d links; a VM's own copy has one", st.Nlink)
 	case !clone && st.Mode&0o022 != 0:
 		return fmt.Errorf("is group- or world-writable")
 	case !clone && st.Mode&0o004 == 0:

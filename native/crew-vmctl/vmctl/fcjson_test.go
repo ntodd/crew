@@ -25,7 +25,7 @@ func agentFC() map[string]any {
 	limiter := map[string]any{"bandwidth": map[string]any{"size": 125000000, "refill_time": 1000}}
 	return map[string]any{
 		"boot-source": map[string]any{
-			"kernel_image_path": "/srv/crew/images/" + imageID + "/kernel",
+			"kernel_image_path": "/srv/crew/vms/" + vmID + "/kernel",
 			"boot_args":         "console=ttyS0 panic=1 quiet loglevel=4 root=/dev/vda rw crew.vm=" + vmID,
 		},
 		"drives": []any{map[string]any{
@@ -180,20 +180,23 @@ func TestChrootConfigRefusesWhatTheAgentMustNotChoose(t *testing.T) {
 	cases := map[string]func(fc map[string]any){
 		"kernel elsewhere": func(fc map[string]any) { bs(fc)["kernel_image_path"] = "/etc/shadow" },
 		"kernel traversal": func(fc map[string]any) {
-			bs(fc)["kernel_image_path"] = "/srv/crew/images/" + imageID + "/../../agent/identity.json"
+			bs(fc)["kernel_image_path"] = "/srv/crew/vms/" + vmID + "/../../agent/identity.json"
 		},
-		"another image's kernel": func(fc map[string]any) { bs(fc)["kernel_image_path"] = "/srv/crew/images/" + other + "/kernel" },
-		"an initrd":              func(fc map[string]any) { bs(fc)["initrd_path"] = "/srv/crew/images/" + imageID + "/kernel" },
-		"boot args newline":      func(fc map[string]any) { bs(fc)["boot_args"] = "console=ttyS0\ninit=/bin/sh" },
-		"boot args empty":        func(fc map[string]any) { bs(fc)["boot_args"] = "" },
-		"boot args too long":     func(fc map[string]any) { bs(fc)["boot_args"] = strings.Repeat("a", 2049) },
-		"boot args non-ascii":    func(fc map[string]any) { bs(fc)["boot_args"] = "console=ttyS0 é" },
-		"another VM's disk":      func(fc map[string]any) { drv(fc)["path_on_host"] = "/srv/crew/vms/" + other + "/rootfs.ext4" },
-		"the image's disk":       func(fc map[string]any) { drv(fc)["path_on_host"] = "/srv/crew/images/" + imageID + "/rootfs.ext4" },
-		"a block device":         func(fc map[string]any) { drv(fc)["path_on_host"] = "/dev/vda" },
-		"read-only root":         func(fc map[string]any) { drv(fc)["is_read_only"] = true },
-		"not the root":           func(fc map[string]any) { drv(fc)["is_root_device"] = false },
-		"another drive id":       func(fc map[string]any) { drv(fc)["drive_id"] = "data" },
+		"another VM's kernel": func(fc map[string]any) { bs(fc)["kernel_image_path"] = "/srv/crew/vms/" + other + "/kernel" },
+		// The image's own: on a box with quotas it's another XFS project,
+		// which the jail can't hard-link from (README).
+		"the image's kernel":  func(fc map[string]any) { bs(fc)["kernel_image_path"] = "/srv/crew/images/" + imageID + "/kernel" },
+		"an initrd":           func(fc map[string]any) { bs(fc)["initrd_path"] = "/srv/crew/images/" + imageID + "/kernel" },
+		"boot args newline":   func(fc map[string]any) { bs(fc)["boot_args"] = "console=ttyS0\ninit=/bin/sh" },
+		"boot args empty":     func(fc map[string]any) { bs(fc)["boot_args"] = "" },
+		"boot args too long":  func(fc map[string]any) { bs(fc)["boot_args"] = strings.Repeat("a", 2049) },
+		"boot args non-ascii": func(fc map[string]any) { bs(fc)["boot_args"] = "console=ttyS0 é" },
+		"another VM's disk":   func(fc map[string]any) { drv(fc)["path_on_host"] = "/srv/crew/vms/" + other + "/rootfs.ext4" },
+		"the image's disk":    func(fc map[string]any) { drv(fc)["path_on_host"] = "/srv/crew/images/" + imageID + "/rootfs.ext4" },
+		"a block device":      func(fc map[string]any) { drv(fc)["path_on_host"] = "/dev/vda" },
+		"read-only root":      func(fc map[string]any) { drv(fc)["is_read_only"] = true },
+		"not the root":        func(fc map[string]any) { drv(fc)["is_root_device"] = false },
+		"another drive id":    func(fc map[string]any) { drv(fc)["drive_id"] = "data" },
 		"a second drive": func(fc map[string]any) {
 			fc["drives"] = append(fc["drives"].([]any), map[string]any{"drive_id": "x", "path_on_host": "/etc/shadow",
 				"is_root_device": false, "is_read_only": true})

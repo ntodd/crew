@@ -121,8 +121,8 @@ func check(c *fcConfig, vm VM, p Paths) error {
 	bad := func(format string, a ...any) error {
 		return fail(ErrInvalidConfig, "fc.json: "+format, a...)
 	}
-	if c.BootSource.KernelImagePath != p.Kernel(vm.ImageID) {
-		return bad("the kernel must be %s", p.Kernel(vm.ImageID))
+	if c.BootSource.KernelImagePath != p.VMKernel(vm.ID) {
+		return bad("the kernel must be the VM's copy, %s", p.VMKernel(vm.ID))
 	}
 	if err := checkBootArgs(c.BootSource.BootArgs); err != nil {
 		return bad("%v", err)

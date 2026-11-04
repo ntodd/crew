@@ -33,11 +33,12 @@ defmodule CrewAgent.VMs.Cleanup do
     end
   end
 
-  @doc "A cleanup that worked: the lease and the clone go, and the record."
+  @doc "A cleanup that worked: the lease, the clone and its kernel go, and the record."
   def done(config \\ Config.get(), vm_id) do
     dir = Config.vm_dir(config, vm_id)
     Net.release(vm_id)
     File.rm(Path.join(dir, "rootfs.ext4"))
+    File.rm(Path.join(dir, "kernel"))
     File.rm(Path.join(dir, @marker))
     :ok
   end

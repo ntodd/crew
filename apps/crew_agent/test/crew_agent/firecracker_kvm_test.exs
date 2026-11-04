@@ -117,6 +117,7 @@ defmodule CrewAgent.FirecrackerKVMTest do
     refute File.exists?(Path.join([ctx.config.data_dir, "jail", "firecracker", vm_id]))
     dir = Config.vm_dir(ctx.config, vm_id)
     refute File.exists?(Path.join(dir, "rootfs.ext4"))
+    refute File.exists?(Path.join(dir, "kernel"))
     refute File.exists?(Path.join(dir, "fc.json"))
     assert File.exists?(Path.join(dir, "exited.json"))
     assert File.exists?(Path.join(dir, "console.log"))
