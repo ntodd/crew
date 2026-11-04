@@ -63,7 +63,9 @@ defmodule CrewCache.Parent do
     |> Upstream.send_one(url, [{"authorization", "Bearer " <> parent.token} | headers],
       finch: @finch,
       sink: sink,
-      receive_timeout: Config.get().parent_first_byte_ms
+      receive_timeout: Config.get().parent_first_byte_ms,
+      # Waiting for a pooled connection counts against the same budget.
+      pool_timeout: Config.get().parent_first_byte_ms
     )
     |> classify(spec)
   end

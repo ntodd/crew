@@ -32,7 +32,10 @@ defmodule CrewCache.Supervisor do
         {Finch, name: CrewCache.Finch, pools: %{default: pool(config)}},
         CrewCache.Parent,
         {Registry, keys: :unique, name: CrewCache.Fetcher.Registry},
-        {DynamicSupervisor, name: CrewCache.Fetcher.Supervisor, strategy: :one_for_one}
+        {DynamicSupervisor,
+         name: CrewCache.Fetcher.Supervisor,
+         strategy: :one_for_one,
+         max_children: config.max_fetches}
       ] ++ registry(config) ++ dns(config) ++ mgmt(config)
 
     Supervisor.init(children, strategy: :one_for_one)

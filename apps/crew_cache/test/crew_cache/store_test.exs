@@ -133,6 +133,78 @@ defmodule CrewCache.StoreTest do
     end
   end
 
+  describe "reservations" do
+    test "count against the quota while their process lives" do
+      a = put(String.duplicate("a", 400))
+      test = self()
+
+      holder =
+        spawn(fn ->
+          send(test, {:reserved, Store.reserve(600)})
+          Process.sleep(:infinity)
+        end)
+
+      assert_receive {:reserved, :ok}
+      # 400 stored + 600 reserved > 950: a goes to make room.
+      assert Store.lookup(a) == :error
+      assert %{reserved: 600} = Store.usage()
+
+      Process.exit(holder, :kill)
+      Process.sleep(50)
+      assert %{reserved: 0} = Store.usage()
+    end
+
+    test "are refused when they can't fit, even with the store empty" do
+      assert Store.reserve(900) == :ok
+      assert Store.reserve(100) == :full
+    end
+  end
+
+  test "a manifest committed over the same bytes stored as a blob makes it a manifest" do
+    body = ~s({"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"})
+    digest = put(body)
+    assert {:ok, %{kind: :blob}} = Store.lookup(digest)
+
+    put(body, %{kind: :manifest, media_type: "application/vnd.oci.image.manifest.v1+json"})
+
+    assert {:ok, %{kind: :manifest, media_type: "application/vnd.oci.image.manifest.v1+json"}} =
+             Store.lookup(digest)
+  end
+
+  test "touches don't queue on the store" do
+    digest = put("touched")
+    for _ <- 1..1000, do: Store.touch(digest)
+    assert {:message_queue_len, 0} = Process.info(Process.whereis(Store), :message_queue_len)
+  end
+
+  test "a restart drops objects whose size is wrong and files nothing indexes", %{tmp_dir: dir} do
+    digest = put("full length")
+    {:ok, %{path: path}} = Store.lookup(digest)
+    File.write!(path, "short")
+    orphan = Store.path(dir, "sha256:" <> String.duplicate("ab", 32))
+    File.mkdir_p!(Path.dirname(orphan))
+    File.write!(orphan, "nobody's")
+
+    stop_supervised!(Store)
+    start_supervised!({Store, dir: dir, max_bytes: 1000})
+
+    assert Store.lookup(digest) == :error
+    refute File.exists?(path)
+    refute File.exists?(orphan)
+  end
+
+  test "stale temporary files are swept" do
+    old = Store.tmp_path()
+    File.write!(old, "abandoned")
+    File.touch!(old, System.os_time(:second) - 7200)
+    fresh = Store.tmp_path()
+    File.write!(fresh, "in flight")
+
+    Store.sweep_tmp()
+    refute File.exists?(old)
+    assert File.exists?(fresh)
+  end
+
   test "usage/0 reports bytes per host" do
     put("aa", %{host: "ghcr.io"})
     put("bbb", %{host: "quay.io"})

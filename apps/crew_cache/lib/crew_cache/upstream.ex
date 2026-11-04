@@ -143,14 +143,20 @@ defmodule CrewCache.Upstream do
     acc = %{status: nil, headers: [], body: [], size: 0, sink: sink && elem(sink, 1), over: false}
 
     result =
-      Finch.stream_while(
-        request,
-        Keyword.get(opts, :finch, @finch),
-        acc,
-        &step(&1, &2, sink, max_body),
-        receive_timeout: Keyword.get(opts, :receive_timeout, 30_000),
-        pool_timeout: 10_000
-      )
+      try do
+        Finch.stream_while(
+          request,
+          Keyword.get(opts, :finch, @finch),
+          acc,
+          &step(&1, &2, sink, max_body),
+          receive_timeout: Keyword.get(opts, :receive_timeout, 30_000),
+          pool_timeout: Keyword.get(opts, :pool_timeout, 10_000)
+        )
+      rescue
+        # Finch raises when no connection frees up within pool_timeout.
+        # Anything the sink wrote is caught by the digest check.
+        e -> {:error, e, acc}
+      end
 
     case result do
       {:ok, %{over: true} = acc} ->

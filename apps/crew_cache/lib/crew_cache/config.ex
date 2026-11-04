@@ -19,6 +19,7 @@ defmodule CrewCache.Config do
   | `site4` | `[]` | Initial site4 CIDRs (the agent pushes the rest) |
   | `tag_ttl_ms` | 60000 | The tag micro-cache (§15.3) |
   | `parent_first_byte_ms` | 5000 | How long the parent gets (§15.7) |
+  | `max_fetches` | 512 | Upstream fetches at once; past that a miss is a 503 |
 
   For tests only, and never set by `config/runtime.exs`: `net_except`
   (loopback CIDRs the address policy lets through), `resolve` (a map of
@@ -43,6 +44,7 @@ defmodule CrewCache.Config do
             site4: [],
             tag_ttl_ms: 60_000,
             parent_first_byte_ms: 5_000,
+            max_fetches: 512,
             net_except: [],
             resolve: nil,
             origins: %{},

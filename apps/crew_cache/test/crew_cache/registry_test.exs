@@ -216,6 +216,88 @@ defmodule CrewCache.RegistryTest do
       assert FakeRegistry.count(:storage, "GET", digest) == 1
     end
 
+    test "a client that doesn't read collects no messages", %{ctx: ctx} do
+      big = :crypto.strong_rand_bytes(1024 * 1024)
+      FakeRegistry.put_image("library/postgres", "16", [big])
+      digest = FakeRegistry.digest(big)
+      FakeRegistry.slow(digest, 5)
+      host = CrewCache.Allowlist.host_for_prefix("docker.io")
+      spec = %{host: host, repo: "library/postgres", digest: digest, kind: :blob, accept: nil}
+
+      assert {:fetching, info} = CrewCache.Fetcher.open(spec)
+      assert :ok = wait_until(fn -> Store.lookup(digest) != :error end)
+      {:message_queue_len, queued} = Process.info(self(), :message_queue_len)
+      assert queued <= 2
+      CrewCache.Fetcher.close(info)
+      _ = ctx
+    end
+
+    test "a download that crashes leaves no temporary file", %{ctx: ctx, tmp_dir: dir} do
+      big = :crypto.strong_rand_bytes(1024 * 1024)
+      FakeRegistry.put_image("library/postgres", "15", [big])
+      digest = FakeRegistry.digest(big)
+      FakeRegistry.slow(digest, 50)
+      path = "/v2/docker.io/library/postgres/blobs/#{digest}"
+      Task.start(fn -> req(ctx, :get, path) end)
+
+      fetcher = wait_for_fetcher(digest)
+      wait_until(fn -> :atomics.get(:sys.get_state(fetcher).counter, 1) > 100_000 end)
+      Process.exit(:sys.get_state(fetcher).worker, :kill)
+
+      assert :ok = wait_until(fn -> File.ls!(Path.join(dir, "tmp")) == [] end)
+      assert %{reserved: 0} = Store.usage()
+    end
+
+    @tag cache: [max_fetches: 1]
+    test "past max_fetches, a miss is refused rather than queued", %{ctx: ctx} do
+      [a, b] = [:crypto.strong_rand_bytes(600_000), :crypto.strong_rand_bytes(1000)]
+      FakeRegistry.put_image("library/postgres", "14", [a, b])
+      FakeRegistry.slow(FakeRegistry.digest(a), 50)
+
+      slow =
+        Task.async(fn ->
+          req(ctx, :get, "/v2/docker.io/library/postgres/blobs/#{FakeRegistry.digest(a)}")
+        end)
+
+      wait_for_fetcher(FakeRegistry.digest(a))
+
+      assert %{status: 503} =
+               req(ctx, :get, "/v2/docker.io/library/postgres/blobs/#{FakeRegistry.digest(b)}")
+
+      assert %{status: 200} = Task.await(slow, 10_000)
+    end
+
+    @tag cache: [max_bytes: 1_000_000]
+    test "downloads in flight count against the quota", %{ctx: ctx} do
+      blobs = for _ <- 1..3, do: :crypto.strong_rand_bytes(400_000)
+      FakeRegistry.put_image("library/postgres", "13", blobs)
+      for b <- blobs, do: FakeRegistry.slow(FakeRegistry.digest(b), 30)
+
+      statuses =
+        blobs
+        |> Enum.map(fn b ->
+          Task.async(fn ->
+            req(ctx, :get, "/v2/docker.io/library/postgres/blobs/#{FakeRegistry.digest(b)}").status
+          end)
+        end)
+        |> Task.await_many(20_000)
+        |> Enum.sort()
+
+      # Two fit in 95% of 1 MB; the third would have overrun it.
+      assert statuses == [200, 200, 404]
+    end
+
+    test "a manifest first asked for as a blob is still served as a manifest", %{ctx: ctx} do
+      image = FakeRegistry.put_image("library/busybox", "2", layers())
+
+      assert %{status: 200} =
+               req(ctx, :get, "/v2/docker.io/library/busybox/blobs/#{image.manifest}")
+
+      resp = req(ctx, :get, "/v2/docker.io/library/busybox/manifests/#{image.manifest}")
+      assert resp.status == 200
+      assert resp.headers["content-type"] == [FakeRegistry.manifest_type()]
+    end
+
     test "a fetch that dies cuts its clients short at once", %{ctx: ctx} do
       big = :crypto.strong_rand_bytes(1024 * 1024)
       FakeRegistry.put_image("library/postgres", "17", [big])
@@ -233,7 +315,7 @@ defmodule CrewCache.RegistryTest do
         end)
 
       fetcher = wait_for_fetcher(digest)
-      wait_until(fn -> :sys.get_state(fetcher).written > 200_000 end)
+      wait_until(fn -> :atomics.get(:sys.get_state(fetcher).counter, 1) > 200_000 end)
       Process.exit(fetcher, :kill)
       {time, result} = :timer.tc(fn -> Task.await(client, 10_000) end)
 
@@ -382,6 +464,17 @@ defmodule CrewCache.RegistryTest do
       assert Store.lookup(digest) == :error
     end
 
+    @tag cache: [origins: %{"ghcr.io" => "metadata.test:443"}]
+    test "connect to blocked4: an upstream whose name resolves there is refused", %{ctx: ctx} do
+      log =
+        capture_log(fn ->
+          assert %{status: status} = req(ctx, :head, "/v2/ghcr.io/actions/runner/manifests/1")
+          assert status in [404, 502]
+        end)
+
+      assert log =~ "169.254.169.254"
+    end
+
     @tag cache: [site4: ["81.2.3.0/24"]]
     test "connect to site4: a redirect to the site's own address is refused", %{ctx: ctx} do
       [layer | _] = image_layers = layers()
@@ -487,7 +580,7 @@ defmodule CrewCache.RegistryTest do
   end
 
   defp wait_for_fetcher(digest, tries \\ 100) do
-    case Registry.lookup(CrewCache.Fetcher.Registry, digest) do
+    case Registry.lookup(CrewCache.Fetcher.Registry, {:blob, digest}) do
       [{pid, _}] ->
         pid
 

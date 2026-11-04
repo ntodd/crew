@@ -329,15 +329,7 @@ defmodule CrewCache.Registry do
   end
 
   defp fetch_error(conn, host, repo, digest, reason) do
-    {status, code} =
-      case reason do
-        :digest_mismatch -> {502, "DIGEST_INVALID"}
-        {:status, status} when status in 400..499 -> {404, "NAME_UNKNOWN"}
-        :too_large -> {404, "BLOB_UNKNOWN"}
-        :eacces -> {404, "NAME_UNKNOWN"}
-        %{reason: :eacces} -> {404, "NAME_UNKNOWN"}
-        _ -> {502, "UNAVAILABLE"}
-      end
+    {status, code} = status_for(reason)
 
     if status == 502 or reason not in [{:status, 401}, {:status, 403}, {:status, 404}] do
       Logger.info("couldn't fetch #{host.host}/#{repo}@#{digest}: #{describe(reason)}")
@@ -345,6 +337,16 @@ defmodule CrewCache.Registry do
 
     error(conn, status, code, "the cache couldn't fetch it")
   end
+
+  # 404s send containerd to the upstream; so do 502 and 503, which mean
+  # the cache or the upstream failed rather than "not here".
+  defp status_for(:digest_mismatch), do: {502, "DIGEST_INVALID"}
+  defp status_for(:busy), do: {503, "UNAVAILABLE"}
+  defp status_for({:status, status}) when status in 400..499, do: {404, "NAME_UNKNOWN"}
+  defp status_for(:too_large), do: {404, "BLOB_UNKNOWN"}
+  defp status_for(:eacces), do: {404, "NAME_UNKNOWN"}
+  defp status_for(%{reason: :eacces}), do: {404, "NAME_UNKNOWN"}
+  defp status_for(_), do: {502, "UNAVAILABLE"}
 
   defp describe({:status, status}), do: "upstream status #{status}"
   defp describe(%{__exception__: true} = e), do: Exception.message(e)
