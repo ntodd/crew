@@ -18,7 +18,9 @@ elif [ ! -e "$agent/current" ]; then
 elif [ ! -s "$agent/identity.json" ]; then
   say "the agent on the data disk never enrolled; add the box again with a new join token"
 elif systemctl is-active --quiet crew-agent.service; then
-  say "agent started ($(readlink "$agent/current"))"
+  running=$(readlink "$agent/current" || true)
+  release_version "$running" || running="not a release"
+  say "agent started ($running)"
 else
   say "the agent didn't start (journalctl -u crew-agent)"
 fi

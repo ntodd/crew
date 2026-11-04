@@ -22,9 +22,16 @@ if [ -f "$agent/update-pending" ] && [ -L "$agent/previous" ]; then
   if [ "$recent" -ge 3 ]; then
     failed=$(readlink "$agent/current" || true)
     previous=$(readlink "$agent/previous")
+    # One line holding a version (the case refuses a newline before grep,
+    # which matches line by line, sees it), never a path.
     case "$previous" in
-      "" | */* | *[!0-9A-Za-z.-]*)
-        echo "crew-launch: previous points at '$previous', which isn't a release" >&2
+      "" | */* | *[!0-9A-Za-z.-]*) previous="" ;;
+    esac
+    printf '%s\n' "$previous" | grep -Eqx '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z.]{1,32})?' ||
+      previous=""
+    case "$previous" in
+      "")
+        echo "crew-launch: agent/previous isn't a release; not rolling back" >&2
         ;;
       *)
         ln -sfn "$previous" "$agent/.current.new"

@@ -527,6 +527,15 @@ defmodule CrewAgent.UpdaterTest do
       assert reason =~ "didn't join"
     end
 
+    test "a rollback only goes back to a release's name, never a path", ctx do
+      for bad <- ["../elsewhere", "0.1.0\n", "..", "0.1.0/../x"] do
+        File.rm!(Path.join(ctx.agent_dir, "previous"))
+        File.ln_s!(bad, Path.join(ctx.agent_dir, "previous"))
+        assert {:error, :no_previous} = Updater.rollback(ctx.config, "test"), inspect(bad)
+        assert link(ctx, "current") == "0.2.0"
+      end
+    end
+
     test "a rollback by the service manager (crew-launch, agent-rollback.sh) is reported too",
          ctx do
       # They only rename the marker: the release they land on reports it.

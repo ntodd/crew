@@ -1019,6 +1019,26 @@ plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
   middle of its update. net-up puts the running VMs' `vm_pairs` back. If
   it fails, root goes back to the old release's half and answers an
   error. The rollback unit still restarts crew-net.
+- **What root takes from the agent's directory** is only ever a name or
+  bytes it checks, never a path:
+  - Versions and the request's fields go through `lib.sh`'s `one_line`
+    first, which refuses any character a value doesn't need (a newline
+    among them). grep matches line by line, so `release_version` used
+    to pass a multi-line value on one good line, and a compromised agent
+    could point `previous` at `../agent/payload` plus a version line,
+    exit 75, and have the rollback unit point `root/current` at its own
+    directory and start its units (found in review, reproduced, and now
+    a regression test). Links are read with `readlink -n` exactly
+    (`exact_link`): `$(readlink)` drops trailing newlines.
+  - The rollback moves root's half only to a release root installed:
+    `root/<version>` that's a directory, not a link, owned by root
+    (`root_release`); otherwise only the agent goes back.
+  - `root-install.sh` renames the request and the tarballs into its own
+    directory before it looks at them, so they can't be swapped for a
+    link or a FIFO between the check and the read.
+  - What's written into `agent/` is written in root's directory and
+    renamed in (the first install's `env`), and a link target printed to
+    the consoles is printed only if it's a version.
 - **Root keeps** the new release's half, the one before it and the one
   the agent's `previous` names; the rest go. The first install's
   `agent/<version>/` stays root's and read-only, so the agent can't

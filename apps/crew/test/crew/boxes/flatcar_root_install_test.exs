@@ -250,5 +250,101 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
       assert out =~ "no previous release"
       assert File.read_link!(Path.join(ctx.agent, "current")) == "0.4.0"
     end
+
+    # A compromised agent writes `previous`, and exits 75 to have root
+    # roll back: root must never follow it out of root/. One good line
+    # in a multi-line value used to pass the version check, and root
+    # pointed root/current at the agent's directory and started its units.
+    test "a previous that climbs out of root/ is refused, whatever else it holds", ctx do
+      payload = Path.join(ctx.agent, "payload\n1.2.3")
+      File.mkdir_p!(Path.join(payload, "etc/systemd"))
+
+      for unit <- vmctl_units(),
+          do:
+            File.write!(
+              Path.join([payload, "etc/systemd", unit]),
+              "[Service]\nExecStart=/bin/evil\n"
+            )
+
+      File.rm!(Path.join(ctx.agent, "previous"))
+      File.ln_s!("../agent/payload\n1.2.3", Path.join(ctx.agent, "previous"))
+
+      assert {out, 1} = sh(ctx, "agent-rollback.sh")
+      assert out =~ "isn't a release"
+      assert root_current(ctx) == "0.4.0"
+      assert File.read_link!(Path.join(ctx.agent, "current")) == "0.4.0"
+      refute File.read!(ctx.log) =~ "start crew-agent"
+
+      for unit <- vmctl_units(),
+          do: refute(File.read!(Path.join(ctx.units, unit)) =~ "/bin/evil", unit)
+    end
+
+    for {label, value} <- [
+          {"two lines", "0.3.0\n0.3.0"},
+          {"a dot-dot", ".."},
+          {"a slash", "0.3.0/../0.3.0"},
+          {"a trailing newline", "0.3.0\n"}
+        ] do
+      test "a previous with #{label} is refused", ctx do
+        File.rm!(Path.join(ctx.agent, "previous"))
+        File.ln_s!(unquote(value), Path.join(ctx.agent, "previous"))
+        assert {out, 1} = sh(ctx, "agent-rollback.sh")
+        assert out =~ "isn't a release"
+        assert root_current(ctx) == "0.4.0"
+      end
+    end
+
+    # Only a release root installed itself: a directory, root's (here,
+    # the test's user's), and not a link, wherever it points.
+    test "root's half goes back only to a real root/<version> directory", ctx do
+      root = Path.join(ctx.data, "root")
+      File.rm_rf!(Path.join(root, "0.3.0"))
+      File.ln_s!(Path.join(ctx.agent, "0.4.0"), Path.join(root, "0.3.0"))
+
+      assert {out, 0} = sh(ctx, "agent-rollback.sh")
+      assert out =~ "rolled the agent back to 0.3.0"
+      assert out =~ "root has no 0.3.0 of its own"
+      assert root_current(ctx) == "0.4.0"
+    end
+  end
+
+  test "release_version takes one line holding a version, and nothing else", ctx do
+    check = fn value ->
+      {_, status} =
+        System.cmd("sh", ["-c", ~s(. "$1/lib.sh"; release_version "$2"), "sh", ctx.etc, value])
+
+      status == 0
+    end
+
+    assert check.("0.3.0")
+    assert check.("1.2.3-rc.1")
+
+    for bad <- [
+          "",
+          "..",
+          ".",
+          "0.3.0\n",
+          "x\n0.3.0",
+          "0.3.0\nx",
+          "../x\n1.2.3",
+          "1.2.3/..",
+          "01.2"
+        ] do
+      refute check.(bad), inspect(bad)
+    end
+  end
+
+  test "a request that's a link is no request: root never reads through it", ctx do
+    stage(ctx, "0.4.0")
+    secret = Path.join(ctx.root, "root-only")
+    File.write!(secret, "NONCE=#{String.duplicate("0", 32)}\nVERSION=9.9.9\n")
+    request = Path.join(ctx.data, "agent/update/request")
+    File.rm!(request)
+    File.ln_s!(secret, request)
+
+    assert {out, 0} = sh(ctx, "root-install.sh")
+    assert out =~ "no request"
+    refute File.exists?(Path.join(ctx.data, "root/update.result"))
+    assert root_current(ctx) == "0.3.0"
   end
 end
