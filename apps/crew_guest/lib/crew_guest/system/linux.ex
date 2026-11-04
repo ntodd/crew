@@ -51,13 +51,49 @@ defmodule CrewGuest.System.Linux do
     end
   end
 
+  @doc """
+  Docker's config, and with the box's cache (§15.1, Design A) a mirror
+  per registry it serves: dockerd with the containerd image store reads
+  `/etc/docker/certs.d/<registry>/hosts.toml` for any registry, and asks
+  the cache at `https://10.199.0.1/v2/<registry>/...` first, falling back
+  to the registry itself. Only pull and resolve go to the cache, never a
+  push. BuildKit's docker-container driver gets the same mirrors in
+  `buildkitd.toml`, for workflows that create their own builders.
+  """
   @impl true
-  def configure_docker(_cfg, pem, opts \\ []) do
-    with :ok <- write(opts, "/etc/docker/daemon.json", daemon_json(opts), 0o644) do
+  def configure_docker(_cfg, pem, mirrors, opts \\ []) do
+    hosts =
+      if pem in [nil, ""],
+        do: [],
+        else: Enum.flat_map(mirrors, &List.wrap(CrewProtocol.Hosts.get(&1)))
+
+    with :ok <- write(opts, "/etc/docker/daemon.json", daemon_json(opts), 0o644),
+         :ok <- write_hosts_toml(opts, hosts) do
       if pem in [nil, ""],
         do: :ok,
-        else: write(opts, "/etc/buildkit/buildkitd.toml", buildkitd_toml(), 0o644)
+        else: write(opts, "/etc/buildkit/buildkitd.toml", buildkitd_toml(hosts), 0o644)
     end
+  end
+
+  defp write_hosts_toml(opts, hosts) do
+    Enum.reduce_while(hosts, :ok, fn h, :ok ->
+      case write(opts, "/etc/docker/certs.d/#{h.prefix}/hosts.toml", hosts_toml(h), 0o644) do
+        :ok -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp hosts_toml(h) do
+    """
+    # Written by crew-guest: pull through the box's registry cache.
+    server = "https://#{h.upstream}"
+
+    [host."https://#{@nameserver}/v2/#{h.prefix}"]
+      capabilities = ["pull", "resolve"]
+      override_path = true
+      ca = "#{@ca_file}"
+    """
   end
 
   @impl true
@@ -135,13 +171,14 @@ defmodule CrewGuest.System.Linux do
   # The CA for BuildKit's docker-container driver, whose builders don't
   # see the guest's trust store. Workflows that create their own builders
   # pass this file (`buildkitd-config`).
-  defp buildkitd_toml do
-    hosts = Enum.map(CrewProtocol.Hosts.all(), & &1.prefix) ++ [@nameserver]
-
-    "# Written by crew-guest: trust the Crew registry cache's CA.\n" <>
-      Enum.map_join(hosts, "\n", fn host ->
-        ~s([registry."#{host}"]\n  ca = ["#{@ca_file}"]\n)
+  defp buildkitd_toml(hosts) do
+    mirrors =
+      Enum.map_join(hosts, "\n", fn h ->
+        ~s([registry."#{h.prefix}"]\n  mirrors = ["#{@nameserver}/#{h.prefix}"]\n)
       end)
+
+    "# Written by crew-guest: pull through the box's registry cache.\n" <>
+      mirrors <> "\n" <> ~s([registry."#{@nameserver}"]\n  ca = ["#{@ca_file}"]\n)
   end
 
   # Helpers

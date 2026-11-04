@@ -22,7 +22,7 @@ defmodule CrewGuest.FakeSystem do
   def install_ca(_cfg, pem), do: record({:install_ca, pem})
 
   @impl true
-  def configure_docker(_cfg, _pem), do: record(:configure_docker)
+  def configure_docker(_cfg, _pem, _mirrors), do: record(:configure_docker)
 
   @impl true
   def notify_ready(_cfg), do: record(:notify_ready)

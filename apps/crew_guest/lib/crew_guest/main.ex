@@ -230,7 +230,8 @@ defmodule CrewGuest.Main do
 
     if pem, do: step(s, "installing the cache CA", fn -> sys.install_ca(cfg, pem) end)
     await_resize(s, resize)
-    step(s, "configuring Docker", fn -> sys.configure_docker(cfg, pem) end)
+    mirrors = List.wrap(payload["mirrors"])
+    step(s, "configuring Docker", fn -> sys.configure_docker(cfg, pem, mirrors) end)
     step(s, "notifying systemd", fn -> sys.notify_ready(cfg) end)
     step(s, "starting Docker", fn -> sys.start_docker(cfg) end)
 
