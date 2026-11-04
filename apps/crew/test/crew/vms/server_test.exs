@@ -517,11 +517,10 @@ defmodule Crew.VMs.ServerTest do
       Enum.each(cmds, &ack_start(box, &1, "error", "boom"))
       for id <- ids, do: await_state(id, "failed")
 
-      cs =
-        eventually(fn ->
-          (cs = Repo.get_by(Crew.Scheduler.ClassState, repo_id: repo.id)) &&
-            cs.consecutive_failures == 5 && cs
-        end)
+      assert eventually(fn ->
+               (cs = Repo.get_by(Crew.Scheduler.ClassState, repo_id: repo.id)) &&
+                 cs.consecutive_failures == 5
+             end)
 
       assert eventually(fn ->
                Repo.get_by(Crew.Scheduler.ClassState, repo_id: repo.id).backoff_until
