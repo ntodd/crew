@@ -14,7 +14,9 @@
 #                           in <dir>/listener.pid
 #   STUB_HANG=ignore        the same, but the listener never finishes
 #   STUB_CANCEL=<seconds>   how long the listener takes to cancel (0.2)
-#   STUB_WORKER_LOG=<file>  a worker log to copy to _diag/Worker_<time>-utc.log
+#   STUB_WORKER_LOG=<file>  a worker log to write to _diag/Worker_<time>-utc.log,
+#                           as the worker does: up to its first step at once,
+#                           the steps' telemetry once the first step is done
 #   STUB_JIT_OUT=<file>     write the JIT config it was given here
 #   STUB_DELAY=<seconds>    pause between phases (default 0.2)
 #   STUB_DIR=<dir>          the runner dir (default: the current directory)
@@ -59,8 +61,13 @@ echo "$(stamp): Listening for Jobs"
 sleep "$delay"
 echo "$(stamp): Running job: build"
 
+# The worker writes its log as it goes: the job message at once, each
+# step's telemetry when that step ends, after its page lines. Written in
+# one go, the log's later steps could be numbered before "Set up job".
+worker_log=
 if [ -n "${STUB_WORKER_LOG:-}" ]; then
-  cp "$STUB_WORKER_LOG" "$dir/_diag/Worker_$(date -u +%Y%m%d-%H%M%S)-utc.log"
+  worker_log=$dir/_diag/Worker_$(date -u +%Y%m%d-%H%M%S)-utc.log
+  sed '/StepsRunner\] Processing step/,$d' "$STUB_WORKER_LOG" > "$worker_log"
 fi
 
 # Set up job: a page that starts with a BOM, as .NET's StreamWriter writes.
@@ -77,6 +84,9 @@ line "$checkout_page" "##[endgroup]"
 # The uploader deletes a page once it's finished.
 rm -f "$setup_page"
 sleep "$delay"
+if [ -n "$worker_log" ]; then
+  sed -n '/StepsRunner\] Processing step/,$p' "$STUB_WORKER_LOG" >> "$worker_log"
+fi
 
 # The tests step rolls over to a second page.
 tests_page=$pages/${timeline}_${tests}_1.log
