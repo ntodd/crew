@@ -316,7 +316,11 @@ reimage() {
   rm -rf "$work" "$HOSTVM/images"
   rm -f "$BOX/efi-vars" "$BOX/serial.log" "$BOX/serial.log.1"
   start
-  follow 'enrolled|agent started|there.s no agent|the agent|the data disk'
+  if [ "$(conf role)" = cache ]; then
+    follow 'cache ready|crew_cache didn.t|the cache.s management token'
+  else
+    follow 'enrolled|agent started|there.s no agent|the agent|the data disk'
+  fi
   say "reimaged $(conf name) with Flatcar $FLATCAR_VERSION; it updates itself from here"
 }
 
@@ -356,11 +360,18 @@ case "${1:-}" in
       fi
       pick_role cache
       if printf '%s\n' "$asked" | grep -Eqx '[0-9a-f-]{36}'; then
+        # A boot it already restarted (a second request for it can come
+        # while the new boot isn't answering yet), or one it has left.
+        if [ "$(cat "$BOX/restarted-boot" 2>/dev/null || true)" = "$asked" ]; then
+          say "the cache VM already restarted from boot $asked"
+          exit 0
+        fi
         current=$(cache_boot)
         if [ -n "$current" ] && [ "$current" != "$asked" ]; then
           say "the cache VM already restarted (it's on boot $current)"
           exit 0
         fi
+        printf '%s\n' "$asked" > "$BOX/restarted-boot"
       fi
     else
       pick "${1:-}"
