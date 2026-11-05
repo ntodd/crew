@@ -24,7 +24,10 @@ defmodule CrewAgent.Config do
             vz_host_reserve_vcpus: 2,
             vz_host_reserve_mib: 8192,
             vz_vm_area_gib: 400,
-            vz_cache_addr: nil,
+            # A mac-vz box's cache VM (§15.6, CrewAgent.CacheVM): its address
+            # (CREW_VZ_CACHE_ADDR), or its MAC (CREW_VZ_CACHE_MAC) to look
+            # the address up in vmnet's DHCP leases; management on mgmt_port.
+            vz_cache: %{addr: nil, mac: nil, mgmt_port: 7780, leases: "/var/db/dhcpd_leases"},
             vz_dns_fallback: nil,
             vz_mtu: 1500,
             vz_max_conns: 1024,

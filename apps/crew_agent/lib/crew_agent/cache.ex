@@ -9,12 +9,16 @@ defmodule CrewAgent.Cache do
   anchor for the cache's certificates.
   """
 
-  alias CrewAgent.Config
+  alias CrewAgent.{CacheVM, Config}
 
   @no_cache {:error, "no_cache", "this box has no registry cache configured"}
 
   @doc "The cache's root certificate, or `{:error, reason}` when there's no cache."
-  def ca_pem(%Config{cache_mgmt_url: nil}), do: {:error, :no_cache}
+  def ca_pem(%Config{cache_mgmt_url: nil} = config) do
+    if url = CacheVM.mgmt_url(config),
+      do: ca_pem(%{config | cache_mgmt_url: url}),
+      else: {:error, :no_cache}
+  end
 
   def ca_pem(%Config{} = config) do
     case request(config, :get, "/ca.pem") do
@@ -24,7 +28,11 @@ defmodule CrewAgent.Cache do
   end
 
   @doc "Passes `cache.config` on, and remembers the enabled hosts for the guests' mirrors."
-  def configure(%Config{cache_mgmt_url: nil}, _payload), do: @no_cache
+  def configure(%Config{cache_mgmt_url: nil} = config, payload) do
+    if url = CacheVM.mgmt_url(config),
+      do: configure(%{config | cache_mgmt_url: url}, payload),
+      else: @no_cache
+  end
 
   def configure(%Config{} = config, payload) do
     body = %{
@@ -52,7 +60,11 @@ defmodule CrewAgent.Cache do
   end
 
   @doc "Tells the cache the box's site4 alone (§15.5); its other settings stay."
-  def put_site4(%Config{cache_mgmt_url: nil}, _site4), do: {:error, :no_cache}
+  def put_site4(%Config{cache_mgmt_url: nil} = config, site4) do
+    if url = CacheVM.mgmt_url(config),
+      do: put_site4(%{config | cache_mgmt_url: url}, site4),
+      else: {:error, :no_cache}
+  end
 
   def put_site4(%Config{} = config, site4) do
     case request(config, :post, "/config", json: %{site4: site4}) do
@@ -62,7 +74,11 @@ defmodule CrewAgent.Cache do
   end
 
   @doc "Passes `cache.purge` on (`all`, `host:<host>` or `repo:<host>/<repository>`)."
-  def purge(%Config{cache_mgmt_url: nil}, _scope), do: @no_cache
+  def purge(%Config{cache_mgmt_url: nil} = config, scope) do
+    if url = CacheVM.mgmt_url(config),
+      do: purge(%{config | cache_mgmt_url: url}, scope),
+      else: @no_cache
+  end
 
   def purge(%Config{} = config, scope) do
     case request(config, :post, "/purge", json: %{scope: scope}) do
@@ -72,7 +88,11 @@ defmodule CrewAgent.Cache do
   end
 
   @doc "The cache's cumulative counters (`GET /stats`), or an error."
-  def stats(%Config{cache_mgmt_url: nil}), do: {:error, :no_cache}
+  def stats(%Config{cache_mgmt_url: nil} = config) do
+    if url = CacheVM.mgmt_url(config),
+      do: stats(%{config | cache_mgmt_url: url}),
+      else: {:error, :no_cache}
+  end
 
   def stats(%Config{} = config) do
     case request(config, :get, "/stats") do
@@ -81,8 +101,26 @@ defmodule CrewAgent.Cache do
     end
   end
 
+  @doc "The cache host's reboot state (`GET /host`, §12.1): what a cache VM reports."
+  def host(%Config{cache_mgmt_url: nil} = config) do
+    if url = CacheVM.mgmt_url(config),
+      do: host(%{config | cache_mgmt_url: url}),
+      else: {:error, :no_cache}
+  end
+
+  def host(%Config{} = config) do
+    case request(config, :get, "/host", receive_timeout: 5_000) do
+      {:ok, %{status: 200, body: %{} = host}} -> {:ok, host}
+      other -> {:error, other}
+    end
+  end
+
   @doc "The registries guests pull through the cache: what the last `cache.config` enabled."
-  def mirrors(%Config{cache_mgmt_url: nil}), do: []
+  def mirrors(%Config{cache_mgmt_url: nil} = config) do
+    if url = CacheVM.mgmt_url(config),
+      do: mirrors(%{config | cache_mgmt_url: url}),
+      else: []
+  end
 
   def mirrors(%Config{} = config) do
     with {:ok, json} <- File.read(state_file(config)),
@@ -102,14 +140,16 @@ defmodule CrewAgent.Cache do
         else: []
 
     Req.request(
-      [
-        method: method,
-        url: config.cache_mgmt_url <> path,
-        headers: headers,
-        retry: false,
-        receive_timeout: 10_000
-      ] ++
+      Keyword.merge(
+        [
+          method: method,
+          url: config.cache_mgmt_url <> path,
+          headers: headers,
+          retry: false,
+          receive_timeout: 10_000
+        ],
         opts
+      )
     )
   rescue
     e -> {:error, e}
