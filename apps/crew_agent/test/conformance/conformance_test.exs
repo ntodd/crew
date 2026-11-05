@@ -36,6 +36,7 @@ defmodule CrewAgent.ConformanceTest do
   | `CREW_VZ_BIN` | vz: crew-vz, built and signed |
   | `CREW_CONFORMANCE_CACHE_MGMT`, `CREW_CONFORMANCE_CACHE_TOKEN` | the box cache's management URL and token; without them item 4's cache half is skipped |
   | `CREW_CONFORMANCE_CACHE_ADDR` | vz: the cache VM's address (`CREW_VZ_CACHE_ADDR`) |
+  | `CREW_CONFORMANCE_CACHE_MAC` | vz: the cache VM's MAC instead (`CREW_VZ_CACHE_MAC`): the agent finds it in vmnet's leases and manages it on its address, as a box with `--cache-vm` does; needs only the token |
   | `CREW_CONFORMANCE_TARGETS` | more must-not-reach targets, `label=ip:port,...` (the Mac's and host VM's addresses on ports known to be open) |
   | `CREW_CONFORMANCE_EGRESS` | the site's public IPv4, recorded as site4's egress address and probed |
   | `CREW_CONFORMANCE_KIND` | `1` to run `kind create cluster` (minutes) |
@@ -80,7 +81,7 @@ defmodule CrewAgent.ConformanceTest do
 
     # What the control plane sends at join: guests get mirrors only for
     # the hosts the last cache.config enabled.
-    if box.cache.mgmt do
+    if box.cache.on do
       {:ok, cmd} =
         CrewProtocol.Command.new("cache.config", %{
           "enabled_hosts" => CrewProtocol.Hosts.names(),
@@ -132,17 +133,31 @@ defmodule CrewAgent.ConformanceTest do
         conformance: true,
         connect: false
       ] ++
-        if cache.mgmt do
-          addr =
-            System.get_env("CREW_CONFORMANCE_CACHE_ADDR") || raise "CREW_CONFORMANCE_CACHE_ADDR"
+        cond do
+          cache.mac ->
+            [
+              vz_cache: %{
+                addr: nil,
+                mac: cache.mac,
+                mgmt_port: 7780,
+                leases: "/var/db/dhcpd_leases"
+              },
+              cache_mgmt_url: nil,
+              cache_mgmt_token: cache.token
+            ]
 
-          [
-            vz_cache: %{addr: addr, mac: nil, mgmt_port: 7780, leases: "/var/db/dhcpd_leases"},
-            cache_mgmt_url: cache.mgmt,
-            cache_mgmt_token: cache.token
-          ]
-        else
-          [vz_dns_fallback: "1.1.1.1"]
+          cache.mgmt ->
+            addr =
+              System.get_env("CREW_CONFORMANCE_CACHE_ADDR") || raise "CREW_CONFORMANCE_CACHE_ADDR"
+
+            [
+              vz_cache: %{addr: addr, mac: nil, mgmt_port: 7780, leases: "/var/db/dhcpd_leases"},
+              cache_mgmt_url: cache.mgmt,
+              cache_mgmt_token: cache.token
+            ]
+
+          true ->
+            [vz_dns_fallback: "1.1.1.1"]
         end
 
     teardown = fn ->
@@ -173,8 +188,13 @@ defmodule CrewAgent.ConformanceTest do
   end
 
   defp cache_settings do
+    mgmt = System.get_env("CREW_CONFORMANCE_CACHE_MGMT")
+    mac = System.get_env("CREW_CONFORMANCE_CACHE_MAC")
+
     %{
-      mgmt: System.get_env("CREW_CONFORMANCE_CACHE_MGMT"),
+      on: mgmt != nil or mac != nil,
+      mgmt: mgmt,
+      mac: mac,
       token: System.get_env("CREW_CONFORMANCE_CACHE_TOKEN")
     }
   end
@@ -264,7 +284,7 @@ defmodule CrewAgent.ConformanceTest do
 
   defp failed?(_ctx, _r), do: false
 
-  defp cache_half(%{cache: %{mgmt: nil}}, _before, _after),
+  defp cache_half(%{cache: %{on: false}}, _before, _after),
     do: IO.puts("  item 4: no cache configured; the cache half is skipped")
 
   defp cache_half(_ctx, before, after_) do
@@ -640,7 +660,7 @@ defmodule CrewAgent.ConformanceTest do
     end)
   end
 
-  defp cache_stats(%{cache: %{mgmt: nil}}), do: %{}
+  defp cache_stats(%{cache: %{on: false}}), do: %{}
 
   defp cache_stats(_ctx) do
     {:ok, stats} = CrewAgent.Cache.stats(Config.get())
