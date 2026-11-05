@@ -43,12 +43,12 @@ defmodule CrewGuest.System do
   @doc "The command that runs the runner (`--jitconfig` is appended to it)."
   @callback runner_command(Config.t()) :: [String.t()]
 
-  @doc "Powers the VM off. In local mode, exits."
+  @doc "Ends the VM: powers it off, or on x86_64 reboots it (Firecracker x86's way out). In local mode, exits."
   @callback poweroff(Config.t()) :: :ok
 
   @doc """
   Ends crew-guest after a SIGTERM. Whoever sent it (systemd, on its way to
-  `poweroff.target`) is already stopping the VM, so this only exits.
+  `poweroff.target` or `reboot.target`) is already stopping the VM, so this only exits.
   """
   @callback stop(Config.t()) :: :ok
 

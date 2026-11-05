@@ -4,8 +4,9 @@ defmodule CrewGuest.System.Linux do
   in the guest image (§13.1, §13.5).
 
   Every function also takes `opts` for tests: `:root`, a directory that
-  stands in for `/`, and `:run`, which runs a command (`(cmd, args) ->
-  :ok | {:error, term}`).
+  stands in for `/`, `:run`, which runs a command (`(cmd, args) ->
+  :ok | {:error, term}`), and `:arch`, which stands in for the BEAM's
+  system architecture.
   """
 
   @behaviour CrewGuest.System
@@ -135,17 +136,29 @@ defmodule CrewGuest.System.Linux do
       ["env", "RUNNER_MANUALLY_TRAP_SIG=1" | cfg.runner_cmd]
   end
 
+  # Firecracker x86 has no poweroff (a powered-off guest only halts, and
+  # its VM keeps running); the VM ends when the guest reboots, which
+  # reboot=k on its command line turns into an exit (§13.3, §13.5).
   @impl true
   def poweroff(_cfg, opts \\ []) do
-    case run(opts, "systemctl", ["poweroff"]) do
+    verb = if x86_64?(opts), do: "reboot", else: "poweroff"
+
+    case run(opts, "systemctl", [verb]) do
       :ok ->
         :ok
 
       {:error, reason} ->
-        Logger.error("crew-guest: systemctl poweroff failed (#{inspect(reason)}), forcing it")
-        _ = run(opts, "systemctl", ["poweroff", "--force"])
+        Logger.error("crew-guest: systemctl #{verb} failed (#{inspect(reason)}), forcing it")
+        _ = run(opts, "systemctl", [verb, "--force"])
         :ok
     end
+  end
+
+  defp x86_64?(opts) do
+    arch =
+      Keyword.get_lazy(opts, :arch, fn -> to_string(:erlang.system_info(:system_architecture)) end)
+
+    String.starts_with?(arch, "x86_64")
   end
 
   @impl true

@@ -64,8 +64,10 @@ masked=(
   e2scrub_all.timer e2scrub_reap.service fstrim.timer dpkg-db-backup.timer
 )
 systemctl mask "${masked[@]}" >/dev/null 2>&1
-# Firecracker x86's graceful stop is ctrl-alt-del (§13.5).
-ln -sf /usr/lib/systemd/system/poweroff.target /etc/systemd/system/ctrl-alt-del.target
+# Firecracker x86's graceful stop is ctrl-alt-del (§13.5). It has no
+# poweroff (the guest would only halt), so the VM ends with a reboot,
+# which reboot=k turns into Firecracker exiting.
+ln -sf /usr/lib/systemd/system/reboot.target /etc/systemd/system/ctrl-alt-del.target
 # The NIC stays eth0, the name in the kernel's ip= argument and the one
 # crew-guest disables IPv6 on (§13.2, §13.3). udev's predictable naming
 # would rename it (6.18 renames interfaces that are up).
