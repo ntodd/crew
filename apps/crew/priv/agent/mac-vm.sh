@@ -96,6 +96,15 @@ pick() {
 
 conf() { sed -n "s/^$1=//p" "$BOX/box.conf" 2>/dev/null | tail -1; }
 
+# The cache VM's boot ID, from crew_cache's GET /host; empty when it
+# doesn't answer.
+cache_boot() {
+  ip=$(address)
+  [ -n "$ip" ] && [ -s "$BOX/mgmt-token" ] || return 0
+  curl -fsS --max-time 5 -H "authorization: Bearer $(cat "$BOX/mgmt-token")" "http://$ip:7780/host" </dev/null 2>/dev/null |
+    sed -n 's/.*"boot_id":"\([0-9a-f-]*\)".*/\1/p' || true
+}
+
 # Picks the VM with a role (the cache VM).
 pick_role() {
   for d in "$HOSTVM"/*/box.conf; do
@@ -315,7 +324,7 @@ uninstall() {
   [ "${1:-}" = --yes ] || fail "this deletes the box's disks and everything on them; run: crew-box uninstall --yes [name] (and revoke the box in Crew)"
   pick "${2:-}"
   stop
-  rm -f "$PLIST"
+  rm -f "$PLIST" "$HOSTVM/$name.conf"
   rm -rf "$BOX"
   if ! ls "$HOSTVM"/*/box.conf >/dev/null 2>&1; then
     rm -f "$LINK"
@@ -337,12 +346,22 @@ case "${1:-}" in
       [ "${2:-}" = cache ] || fail "--role takes cache"
       shift 2
       # launchd runs this when the agent's request appears, and again when
-      # it's taken away: only a request there restarts the VM.
+      # it's taken away: only a request there restarts the VM, and only on
+      # the boot it names (two requests for one boot restart it once).
+      asked=""
       if [ "${1:-}" = --trigger ]; then
         [ -e "${2:-}" ] || exit 0
+        asked=$(head -n 1 "$2" | tr -d '\r\n')
         rm -f "$2"
       fi
       pick_role cache
+      if printf '%s\n' "$asked" | grep -Eqx '[0-9a-f-]{36}'; then
+        current=$(cache_boot)
+        if [ -n "$current" ] && [ "$current" != "$asked" ]; then
+          say "the cache VM already restarted (it's on boot $current)"
+          exit 0
+        fi
+      fi
     else
       pick "${1:-}"
     fi
@@ -408,7 +427,9 @@ fi
 # plane's current copy), and each box's launchd job.
 install_launcher() {
   mkdir -p "$BIN"
-  chmod 0700 "$HOSTVM"
+  # Readable, so a mac-vz box's agent can read <name>.conf, each VM's
+  # memory, off its capacity (§11.4); each VM's own directory is 0700.
+  chmod 0755 "$HOSTVM" "$BIN"
   [ -d "$(dirname "$LINK")" ] || install -d -m 0755 "$(dirname "$LINK")"
   if [ ! -x "$BIN/vfkit" ] || [ "$(sha256 "$BIN/vfkit")" != "$VFKIT_SHA256" ]; then
     say "downloading vfkit $VFKIT_VERSION"
@@ -428,6 +449,14 @@ install_launcher() {
   for conf_file in "$HOSTVM"/*/box.conf; do
     if [ -f "$conf_file" ]; then write_plist "$(basename "$(dirname "$conf_file")")"; fi
   done
+}
+
+# What a mac-vz box's agent takes off its capacity (§11.4): this VM's
+# memory, readable in hostvm/<name>.conf.
+write_memory() {
+  printf 'memory_mib=%s\n' "$(($(conf memory) * 1024))" > "$HOSTVM/$1.conf.new"
+  chmod 0644 "$HOSTVM/$1.conf.new"
+  mv -f "$HOSTVM/$1.conf.new" "$HOSTVM/$1.conf"
 }
 
 # A root LaunchDaemon per box (Foreman's plist, as a daemon): a CI box has
@@ -479,10 +508,12 @@ if [ -z "$TOKEN" ]; then
       echo "cpus=${CPUS:-$(conf cpus)}"
       echo "memory=${MEMORY:-$(conf memory)}"; } > "$BOX/box.conf.new"
     mv -f "$BOX/box.conf.new" "$BOX/box.conf"
+    write_memory "$name"
     say "$name gets $(conf cpus) CPUs and $(conf memory) GiB from its next start (sudo crew-box restart $name)"
   fi
   for conf_file in "$HOSTVM"/*/box.conf; do
     pick "$(basename "$(dirname "$conf_file")")"
+    write_memory "$name"
     start
   done
   say "updated; the boxes keep their disks and enrollment"
@@ -588,6 +619,7 @@ mac=$mac
 flatcar=$FLATCAR_VERSION
 EOF
 if [ "$ROLE" = cache ]; then echo "role=cache" >> "$BOX/box.conf"; fi
+write_memory "$name"
 write_plist "$name"
 
 # The box exists from here on, and keeps trying whatever happens next.

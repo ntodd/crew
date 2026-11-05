@@ -18,6 +18,12 @@
 //   packaging/release/build-linux.sh linux-arm64 0.1.0 tmp/dev-release
 //   (cd images/guest/tools && mix crew.sign ../../../tmp/dev-release)
 //   make -C images/guest artifacts
+// The second test makes a mac-vz box's cache VM the same way
+// (`--role cache`, as install-macos.sh --cache-vm runs it): its first
+// boot installs crew_cache from the control plane, and it serves the Mac
+// alone, management behind its token; `crew-box restart --role cache
+// --trigger` (root's com.crew.hostvm-restart on a box) restarts it.
+//
 //   E2E_MAC_VM=1 E2E_AGENT_RELEASE_DIR=$PWD/tmp/dev-release \
 //     E2E_IMAGE_RELEASE_DIR=$PWD/images/guest/out/arm64/release \
 //     npx playwright test tests/12-mac-vm.spec.js
@@ -58,7 +64,9 @@ test.afterAll(async () => {
   if (launcher && launcher.exitCode === null) {
     try { process.kill(-launcher.pid, "SIGTERM") } catch (_e) {}
   }
-  try { execFileSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], {stdio: "ignore", timeout: 90_000}) } catch (_e) {}
+  for (const l of [label, "com.crew.hostvm.cachevm"]) {
+    try { execFileSync("/bin/launchctl", ["bootout", `gui/${uid}/${l}`], {stdio: "ignore", timeout: 90_000}) } catch (_e) {}
+  }
   const ours = `vfkit.*${root}/`
   try { execFileSync("/usr/bin/pkill", ["-f", ours], {stdio: "ignore"}) } catch (_e) {}
   for (let i = 0; i < 30 && running(ours); i++) await new Promise(r => setTimeout(r, 1_000))
@@ -159,6 +167,53 @@ test("a mac-vm box installs, enrolls, runs a job VM and is managed with crew-box
   expect(vfkitRunning()).toBe(false)
 })
 
+test("a mac-vz box's cache VM installs, serves the Mac alone and restarts on request", async ({page, request}) => {
+  test.setTimeout(1_800_000)
+  setUp()
+  await signIn(page)
+  const token = await addBox(page, "m1-e2e", "mac-vz")
+  const script = resolve(state, "mac-vm.sh")
+  writeFileSync(script, await (await request.get("/agent/mac-vm.sh")).text())
+
+  const cache = `${hostvm}/cachevm`
+  const log = resolve(state, "cachevm.log")
+  launcher = spawn("/bin/sh", ["-c", `exec sh "$0" --role cache --token "$1" >"$2" 2>&1`, script, token, log],
+    {env: env(), stdio: "ignore", detached: true})
+  const exited = new Promise(done => launcher.on("exit", code => done(code)))
+
+  // Its first boot installs crew_cache from the control plane: the tunnel.
+  await expect.poll(() => sshReady(cache), {timeout: 900_000, intervals: [5_000]}).toBe(true)
+  openTunnel(cache)
+  expect(await exited, readFileSync(log, "utf8")).toBe(0)
+  const out = readFileSync(log, "utf8")
+  expect(out).toContain("crew-box: cache ready")
+  expect(out).toContain("crew-box: done: m1-e2e's cache VM is up")
+  closeTunnel()
+
+  // From the Mac: the cache, and management behind the token.
+  const ip = address(cache)
+  const mgmt = readFileSync(`${cache}/mgmt-token`, "utf8").trim()
+  expect(await (await fetch(`http://${ip}/healthz`)).text()).toContain("ok")
+  expect((await fetch(`http://${ip}:7780/host`)).status).toBe(401)
+  const host = async () =>
+    (await (await fetch(`http://${ip}:7780/host`, {headers: {authorization: `Bearer ${mgmt}`}})).json()).boot_id
+  const boot = await host()
+  expect(boot).toMatch(/^[0-9a-f-]{36}$/)
+  expect(crewBox("status", "cachevm")).toContain("role:    cache")
+
+  // The agent's request: launchd runs this when the file appears.
+  const trigger = resolve(state, "restart-cachevm")
+  writeFileSync(trigger, boot + "\n")
+  crewBox("restart", "--role", "cache", "--trigger", trigger)
+  expect(existsSync(trigger)).toBe(false)
+  await expect.poll(async () => { try { return await host() } catch (_e) { return boot } },
+    {timeout: 300_000, intervals: [5_000]}).not.toBe(boot)
+
+  crewBox("uninstall", "--yes", "cachevm")
+  expect(existsSync(cache)).toBe(false)
+  expect(running(`vfkit.*${cache}/os.img`)).toBe(false)
+})
+
 // The Mac's paths under CREW_BOX_ROOT, and the shims for running as you.
 function setUp() {
   closeTunnel()
@@ -216,10 +271,10 @@ function vfkitRunning() {
   return running(`vfkit.*${box}/os.img`)
 }
 
-// The address vmnet's DHCP gave the box, by the MAC in its box.conf.
-function address() {
+// The address vmnet's DHCP gave a VM, by the MAC in its box.conf.
+function address(dir = box) {
   let conf
-  try { conf = readFileSync(`${box}/box.conf`, "utf8") } catch (_e) { return null }
+  try { conf = readFileSync(`${dir}/box.conf`, "utf8") } catch (_e) { return null }
   const mac = (conf.match(/^mac=(.*)$/m) || [])[1]
   if (!mac) return null
   const short = mac.split(":").map(p => p.replace(/^0(.)/, "$1")).join(":")
@@ -232,22 +287,22 @@ function address() {
   return found
 }
 
-function sshArgs() {
-  return ["-i", `${box}/id_ed25519`, "-o", `UserKnownHostsFile=${state}/known_hosts`,
+function sshArgs(dir = box) {
+  return ["-i", `${dir}/id_ed25519`, "-o", `UserKnownHostsFile=${state}/known_hosts`,
     "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
 }
 
-function sshReady() {
-  const ip = address()
-  if (!ip || !existsSync(`${box}/id_ed25519`)) return false
+function sshReady(dir = box) {
+  const ip = address(dir)
+  if (!ip || !existsSync(`${dir}/id_ed25519`)) return false
   // Bounded: ConnectTimeout covers connecting, not a box that hangs after.
-  try { execFileSync("ssh", [...sshArgs(), `core@${ip}`, "true"], {stdio: "ignore", timeout: 15_000}); return true } catch (_e) { return false }
+  try { execFileSync("ssh", [...sshArgs(dir), `core@${ip}`, "true"], {stdio: "ignore", timeout: 15_000}); return true } catch (_e) { return false }
 }
 
-function openTunnel() {
+function openTunnel(dir = box) {
   closeTunnel()
-  tunnel = spawn("ssh", [...sshArgs(), "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=10",
-    "-R", "127.0.0.1:4100:127.0.0.1:4100", `core@${address()}`], {stdio: "ignore"})
+  tunnel = spawn("ssh", [...sshArgs(dir), "-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=10",
+    "-R", "127.0.0.1:4100:127.0.0.1:4100", `core@${address(dir)}`], {stdio: "ignore"})
 }
 
 function closeTunnel() {

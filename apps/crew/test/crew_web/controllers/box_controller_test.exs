@@ -36,4 +36,40 @@ defmodule CrewWeb.BoxControllerTest do
     conn = log_in(build_conn(), user_fixture())
     assert get(conn, ~p"/boxes/#{box.id}/reprovision.ign?arch=arm64").status == 404
   end
+
+  describe "a mac-vz box's cache VM" do
+    setup do
+      key = Crew.ImageFixtures.keypair()
+      Crew.ImageFixtures.trust(key)
+      dir = Crew.AgentReleaseFixtures.tmp_dir("cachevm-reprovision")
+      Crew.AgentReleaseFixtures.write_release(dir, key, "0.4.0", "linux-arm64")
+      Crew.Agents.Releases.register_bundle(dir)
+      %{vz: box_fixture(name: "m1ultra", type: "mac-vz")}
+    end
+
+    # How its crew_cache is updated: a new OS disk with the newest release.
+    test "an admin downloads its reprovision Ignition, with the newest release and no token",
+         %{conn: conn, vz: vz} do
+      conn = get(conn, ~p"/boxes/#{vz.id}/cachevm-reprovision.ign")
+      config = json_response(conn, 200)
+
+      assert get_resp_header(conn, "content-disposition") == [
+               ~s(attachment; filename="crew-m1ultra-cachevm-reprovision.ign")
+             ]
+
+      paths = Enum.map(config["storage"]["files"], & &1["path"])
+      refute "/etc/crew-box/cache-mgmt.env" in paths
+      assert "/etc/crew-box/release.env" in paths
+      assert Crew.Repo.get_by(Crew.Audit.Event, action: "box.cachevm_reprovision_ignition")
+    end
+
+    test "a box without a cache VM gets none", %{conn: conn, box: box} do
+      assert get(conn, ~p"/boxes/#{box.id}/cachevm-reprovision.ign").status == 400
+    end
+
+    test "members can't", %{vz: vz} do
+      conn = log_in(build_conn(), user_fixture())
+      assert get(conn, ~p"/boxes/#{vz.id}/cachevm-reprovision.ign").status == 404
+    end
+  end
 end

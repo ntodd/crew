@@ -530,6 +530,22 @@ defmodule CrewWeb.BoxLive.Show do
               <.packages packages={@box.cache_vm_reboot["packages"] || []} />
             </div>
             <p :if={!@box.cache_vm_reboot["required"]} class="text-ink-3">Up to date.</p>
+            <div :if={Scope.admin?(@current_scope)} class="space-y-1.5">
+              <p class="text-ink-2">
+                To update its crew_cache, or recover it: download its
+                <.link
+                  href={~p"/boxes/#{@box.id}/cachevm-reprovision.ign"}
+                  class="font-medium text-accent-ink underline"
+                >
+                  Ignition
+                </.link>
+                (the newest release, no secrets), then on the Mac:
+              </p>
+              <.command
+                id="cachevm-reimage-command"
+                command={"sudo crew-box reimage crew-#{@box.name}-cachevm-reprovision.ign cachevm"}
+              />
+            </div>
             <.button
               :if={Scope.admin?(@current_scope) and @box.reboot_target != "cache_vm"}
               id="reboot-cache-vm"

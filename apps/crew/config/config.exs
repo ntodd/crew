@@ -68,7 +68,9 @@ config :crew, Oban,
        # §20.3: a newer Crew release, for the Deployment page.
        {"11 5 * * *", Crew.Updates.Check},
        # §20.2: agent updates under way settle, and due ones go out.
-       {"* * * * *", Crew.Agents.UpdateSweep}
+       {"* * * * *", Crew.Agents.UpdateSweep},
+       # §12.1: pending reboots' commands, until the new boot shows up.
+       {"* * * * *", Crew.Boxes.RebootSweep}
      ]}
   ]
 

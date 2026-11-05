@@ -67,6 +67,18 @@ departs.
 - Each VM's guest API is its own Unix socket, which has no peer address,
   so failed tokens are counted per socket. A guest that floods bad tokens
   locks only itself out, not the box's other VMs.
+- **The cache VM** (`install-macos.sh --cache-vm`) is where guests'
+  registry, HTTP and DNS traffic is parsed, so the Mac's own processes
+  (the agent, crew-vzd) never parse it. It's a Flatcar VM with crew_cache
+  and nothing else (no agent, no Tailscale, no credentials but the
+  cache's management token). Its firewall takes new connections only from
+  the Mac (the vmnet gateway); crew-vz forwards a guest's
+  `10.199.0.1:{53,80,443}` there, and nothing else reaches it. Management
+  is on the same address, port 7780, behind the token, which the control
+  plane hands out once with the cache VM's Ignition and doesn't keep. A
+  compromised cache VM can serve guests wrong bytes for what they ask
+  through it (as any box's cache could) and refuse service; it holds
+  nothing that reaches the control plane or the agent.
 
 ### Host VM and physical host
 

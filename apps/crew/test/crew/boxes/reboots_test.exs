@@ -103,6 +103,23 @@ defmodule Crew.Boxes.RebootsTest do
       assert_receive {:dispatch, %Command{type: "box.restart"}}
     end
 
+    test "a command that didn't get through goes again on the minute's sweep", %{admin: admin} do
+      box = flatcar_box()
+      vm = live_vm(box)
+      {:ok, _} = Reboots.request(admin, box, :box)
+      refute_receive {:dispatch, %Command{type: "box.restart"}}, 50
+
+      # The VM went without an event the control plane acted on.
+      destroy(vm)
+      assert :ok = Crew.Boxes.RebootSweep.perform(%Oban.Job{})
+      assert_receive {:dispatch, %Command{type: "box.restart"}}
+
+      # Nothing pending, nothing sent.
+      rejoin(box, "22222222-2222-4222-8222-222222222222")
+      :ok = Crew.Boxes.RebootSweep.perform(%Oban.Job{})
+      refute_receive {:dispatch, %Command{type: "box.restart"}}, 50
+    end
+
     test "the new boot ends it, and lifts the drain the reboot set", %{admin: admin} do
       box = flatcar_box()
       {:ok, _} = Reboots.request(admin, box, :box)

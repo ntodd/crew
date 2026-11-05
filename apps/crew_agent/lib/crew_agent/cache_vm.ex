@@ -101,6 +101,10 @@ defmodule CrewAgent.CacheVM do
 
   defp present?(value), do: is_binary(value) and value != ""
 
+  @doc "Whether job VMs can be given the cache VM: none is configured, or its cache answers."
+  def ready?(%Config{} = config),
+    do: not configured?(config) or match?({:ok, _}, Cache.host(config))
+
   @doc "The cache VM's reboot state for `box.reboot`'s `cache_vm`, or nil."
   @spec reboot(Config.t()) :: map() | nil
   def reboot(%Config{} = config) do

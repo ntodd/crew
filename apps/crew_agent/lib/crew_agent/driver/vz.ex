@@ -50,7 +50,11 @@ defmodule CrewAgent.Driver.VZ do
          features: ["graceful_stop"],
          virtualized: virtualized,
          hypervisor_vendor: if(virtualized, do: "apple"),
-         firewall_ok: match?({:ok, _}, daemon(%{"op" => "list"})),
+         # The boundary is crew-vzd's helpers; with a cache VM, guests
+         # also need it for DNS, so the box takes no jobs until it answers
+         # (after a Mac reboot the agent can be up first, §15.6).
+         firewall_ok:
+           match?({:ok, _}, daemon(%{"op" => "list"})) and CrewAgent.CacheVM.ready?(config),
          sleep_disabled: sleep_disabled?()
        }}
     end

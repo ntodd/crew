@@ -197,8 +197,10 @@ defmodule Crew.Boxes.Flatcar do
 
   A first boot (`:provision`) installs the cache from `:release`,
   checked against its SHA-256 and `:release_key`, and keeps the token on
-  the data disk; `:reprovision` (a new OS disk) carries neither. arm64
-  only: a `mac-vz` box is Apple silicon.
+  the data disk. `:reprovision` (a new OS disk) carries no token; with a
+  `:release`, the cache moves to it if the data disk's is another, which
+  is how the cache VM's crew_cache is updated. arm64 only: a `mac-vz` box
+  is Apple silicon.
   """
   @spec cachevm_ignition(cachevm_opts()) :: {:ok, map()} | {:error, atom()}
   def cachevm_ignition(opts) do
@@ -247,7 +249,11 @@ defmodule Crew.Boxes.Flatcar do
       ] ++
         for({name, script} <- @cachevm_scripts, do: text("/etc/crew-box/#{name}", script)) ++
         release_key_file(opts[:release_key]) ++
-        if(opts.mode == :provision, do: cachevm_provision_files(opts), else: [])
+        if(opts.mode == :provision, do: cachevm_provision_files(opts), else: []) ++
+        if(opts.mode == :reprovision and cache_release?(opts[:release]),
+          do: [cachevm_release_file(opts)],
+          else: []
+        )
 
     %{
       "ignition" => %{"version" => "3.4.0"},
@@ -277,23 +283,28 @@ defmodule Crew.Boxes.Flatcar do
   end
 
   defp cachevm_provision_files(opts) do
-    release = opts.release
-    key = opts.release_key
-
     [
       secret("/etc/crew-box/cache-mgmt.env", env(CREW_CACHE_MGMT_TOKEN: opts.mgmt_token)),
-      text(
-        "/etc/crew-box/release.env",
-        env(
-          CREW_VERSION: release.version,
-          CREW_TARGET: target(opts.arch),
-          CREW_CACHE_URL: release.cache.url,
-          CREW_CACHE_SHA256: release.cache.sha256,
-          CREW_CACHE_SIG: release.cache.signature,
-          CREW_RELEASE_KEY_FINGERPRINT: CrewProtocol.Auth.fingerprint(key)
-        )
-      )
+      cachevm_release_file(opts)
     ]
+  end
+
+  # The release to install, or (on a new OS disk) to move to when the data
+  # disk's is another.
+  defp cachevm_release_file(opts) do
+    release = opts.release
+
+    text(
+      "/etc/crew-box/release.env",
+      env(
+        CREW_VERSION: release.version,
+        CREW_TARGET: target(opts.arch),
+        CREW_CACHE_URL: release.cache.url,
+        CREW_CACHE_SHA256: release.cache.sha256,
+        CREW_CACHE_SIG: release.cache.signature,
+        CREW_RELEASE_KEY_FINGERPRINT: CrewProtocol.Auth.fingerprint(opts.release_key)
+      )
+    )
   end
 
   defp cachevm_sysctls do

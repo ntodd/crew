@@ -273,4 +273,40 @@ defmodule CrewAgent.Driver.VZTest do
     {:ok, caps} = VZ.capabilities()
     refute caps.firewall_ok
   end
+
+  defmodule Host do
+    @moduledoc false
+    import Plug.Conn
+
+    def init(opts), do: opts
+
+    def call(%{request_path: "/host"} = conn, _) do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(200, ~s({"boot_id":"0f7a3b2c-1111-4222-8333-444455556666"}))
+    end
+
+    def call(conn, _), do: send_resp(conn, 404, "")
+  end
+
+  # After a Mac reboot the agent can be up before its cache VM: guests
+  # started then would have no DNS for their whole run (§15.6).
+  @tag :darwin
+  test "with a cache VM, the box isn't ready for jobs until the cache answers", ctx do
+    vzd(ctx, fn _ -> %{"ok" => true} end)
+    down = %{ctx.config | vz_cache: %{ctx.config.vz_cache | addr: "127.0.0.1", mgmt_port: 1}}
+    Config.put(down)
+    {:ok, caps} = VZ.capabilities()
+    refute caps.firewall_ok
+
+    server =
+      start_supervised!(
+        {Bandit, plug: Host, scheme: :http, ip: :loopback, port: 0, startup_log: false}
+      )
+
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    Config.put(%{down | vz_cache: %{down.vz_cache | mgmt_port: port}})
+    {:ok, caps} = VZ.capabilities()
+    assert caps.firewall_ok
+  end
 end
