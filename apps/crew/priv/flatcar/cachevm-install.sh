@@ -73,3 +73,9 @@ rm -rf "${releases:?}/${CREW_VERSION:?}"
 mv "$tmp/release" "$releases/$CREW_VERSION"
 relink "$releases" current "$CREW_VERSION"
 say "installed crew_cache $CREW_VERSION"
+
+# A first boot whose install had to retry found no crew_cache when
+# crew-cache.service's turn came (its ConditionPathExists): start it now.
+if [ -n "$root" ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl --no-block start crew-cache.service crew-cachevm-status.service
+fi

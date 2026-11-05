@@ -107,6 +107,10 @@ defmodule Crew.Boxes.FlatcarCacheVMTest do
     assert unit =~ "ExecStart=/srv/crew/release/current/bin/crew_cache start"
     assert unit =~ "ConditionPathExists=/srv/crew/release/current/bin/crew_cache"
     assert unit =~ ~r/Requires=.*crew-cachevm-net\.service/
+    # A first install that has to retry (no network yet) mustn't take the
+    # cache down with it: the install starts the cache when it's done.
+    refute unit =~ ~r/Requires=.*crew-cachevm-install/
+    assert unit =~ ~r/Wants=.*crew-cachevm-install\.service/
     assert unit =~ "ReadWritePaths=/srv/crew/cache"
   end
 
@@ -132,6 +136,7 @@ defmodule Crew.Boxes.FlatcarCacheVMTest do
 
     install = contents(config, "/etc/crew-box/cachevm-install.sh")
     assert install =~ "check_release cache"
+    assert install =~ "systemctl --no-block start crew-cache.service crew-cachevm-status.service"
 
     assert body(config, "crew-cachevm-install.service") =~
              "/bin/sh /etc/crew-box/cachevm-install.sh"

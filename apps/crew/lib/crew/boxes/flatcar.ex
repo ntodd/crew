@@ -376,7 +376,10 @@ defmodule Crew.Boxes.Flatcar do
     Description=Crew's registry cache (crew_cache)
     Wants=network-online.target
     After=network-online.target crew-cachevm-net.service crew-cachevm-install.service
-    Requires=crew-cachevm-net.service crew-cachevm-install.service
+    Requires=crew-cachevm-net.service
+    # Not Requires: a first install that retries (no network yet) would
+    # fail the cache's start for good; the install starts it when it's done.
+    Wants=crew-cachevm-install.service
     RequiresMountsFor=/srv/crew
     ConditionPathExists=/srv/crew/release/current/bin/crew_cache
 
