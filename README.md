@@ -14,6 +14,19 @@ The design is in [docs/crew_spec.md](docs/crew_spec.md). Crew copies
 the agent's signed connect, its updater and the UI foundations all come
 from there.
 
+## Release key
+
+Releases are signed with an ed25519 key whose public half is
+[`packaging/release/release-key.pub`](packaging/release/release-key.pub).
+Its fingerprint is:
+
+```
+SHA256:TrcrLZdM0LoA/2ExLBqg2MH7QNVZazyPsHqhb5jDt+8
+```
+
+The Deployment page shows the key your control plane trusts. If its
+fingerprint isn't this one, don't update.
+
 ## Layout
 
 A monorepo of separate Mix projects. The pieces ship on different
