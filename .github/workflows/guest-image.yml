@@ -6,11 +6,6 @@ name: Guest image
 # the manifests uploaded here with everything else in the release, its
 # verify job checks them as a box will, and its publish job publishes
 # them.
-#
-# arm64 only for now. x64 needs images/guest/kernel/x64.fragment and its
-# config, x64 lines in packages.lock (`make -C images/guest lock ARCH=x64`)
-# and Playwright's x64 SHA-256s in versions.env; then add it to the
-# matrix with runner ubuntu-24.04.
 
 on:
   pull_request:
@@ -50,6 +45,8 @@ jobs:
           fetch-depth: 0
       - run: images/guest/build.sh kernel-check
       - run: images/guest/build.sh kernel-check-test
+      - run: ARCH=x64 images/guest/build.sh kernel-check
+      - run: ARCH=x64 images/guest/build.sh kernel-check-test
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
@@ -99,6 +96,8 @@ jobs:
         include:
           - arch: arm64
             runner: ubuntu-24.04-arm
+          - arch: x64
+            runner: ubuntu-24.04
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:

@@ -12,7 +12,7 @@
 #   make lock           re-resolve packages.lock for $(ARCH) (then review the diff)
 #   make smoke          boot the built image on this Mac through crew-vz (macOS only)
 #
-# Variables: ARCH (arm64; x64 once kernel/x64.fragment exists), VERSION
+# Variables: ARCH (arm64 or x64), VERSION
 # (0.1.0-dev), MIX (how to run mix), SIGN, PUBLIC_KEY.
 
 ARCH ?= arm64

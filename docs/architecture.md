@@ -1030,8 +1030,8 @@ The other spikes are recorded here as they run.
   release exists; its mirror fails to download the guest files until
   then and is retried at the next boot.
 - **Not built yet:** `e2e/release-check.sh` (the aarch64 conformance on
-  the M3, attached to the release); the x86_64 guest image and its
-  conformance run on a hosted runner (guest-image.yml is arm64 only);
+  the M3, attached to the release); the x86_64 guest image's
+  conformance run on a hosted runner;
   Foreman's DinD run of the updater (`e2e/updater/run.sh` there).
 
 ## Update notes
