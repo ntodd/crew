@@ -45,6 +45,10 @@ if [ "$arch" = arm64 ]; then
   expect fail "no power button" \
     "$(variant gpio 's/^CONFIG_KEYBOARD_GPIO=y$/# CONFIG_KEYBOARD_GPIO is not set/')" \
     "CONFIG_KEYBOARD_GPIO must be =y"
+else
+  expect fail "no ctrl-alt-del keyboard" \
+    "$(variant i8042 's/^CONFIG_SERIO_I8042=y$/# CONFIG_SERIO_I8042 is not set/')" \
+    "CONFIG_SERIO_I8042 must be =y"
 fi
 expect fail "the balloon on" \
   "$(variant balloon 's/^# CONFIG_VIRTIO_BALLOON is not set$/CONFIG_VIRTIO_BALLOON=y/')" \
