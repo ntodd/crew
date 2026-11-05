@@ -151,6 +151,84 @@ defmodule CrewWeb.AgentControllerTest do
     end
   end
 
+  describe "POST /agent/flatcar/cachevm/ignition" do
+    setup do
+      key = Crew.ImageFixtures.keypair()
+      Crew.ImageFixtures.trust(key)
+      dir = Crew.AgentReleaseFixtures.tmp_dir("cachevm-releases")
+      Crew.AgentReleaseFixtures.write_release(dir, key, "0.3.0", "linux-arm64")
+      Crew.Agents.Releases.register_bundle(dir)
+      :ok
+    end
+
+    test "gives a mac-vz box's token its cache VM's Ignition and management token",
+         %{conn: conn, token: token} do
+      conn =
+        post(conn, "/agent/flatcar/cachevm/ignition", %{
+          "join_token" => token,
+          "ssh_keys" => ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKeyForCore crew-box@m1"]
+        })
+
+      config = json_response(conn, 200)
+      assert %{"ignition" => %{"version" => "3.4.0"}} = config
+      assert get_resp_header(conn, "x-crew-box") == ["m1ultra"]
+      assert get_resp_header(conn, "cache-control") == ["no-store"]
+      assert [mgmt] = get_resp_header(conn, "x-crew-cache-token")
+      assert Crew.Boxes.Flatcar.mgmt_token?(mgmt)
+
+      # The same token the cache VM gets, and a new one each time.
+      env =
+        Enum.find_value(config["storage"]["files"], fn
+          %{
+            "path" => "/etc/crew-box/cache-mgmt.env",
+            "contents" => %{"source" => "data:;base64," <> b}
+          } ->
+            Base.decode64!(b)
+
+          _ ->
+            nil
+        end)
+
+      assert env == ~s(CREW_CACHE_MGMT_TOKEN="#{mgmt}"\n)
+
+      again = post(build_conn(), "/agent/flatcar/cachevm/ignition", %{"join_token" => token})
+      assert get_resp_header(again, "x-crew-cache-token") != [mgmt]
+    end
+
+    test "leaves the token good for the agent's enrollment", %{conn: conn, token: token, key: key} do
+      assert post(conn, "/agent/flatcar/cachevm/ignition", %{"join_token" => token}).status == 200
+
+      conn =
+        post(build_conn(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
+
+      assert json_response(conn, 201)["box"] == "m1ultra"
+    end
+
+    test "a Flatcar box's token doesn't get one", %{conn: conn} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+
+      {:ok, flatcar} =
+        Crew.Boxes.create_join_token(admin, %{"box_name" => "m3max", "box_type" => "mac-vm"})
+
+      conn = post(conn, "/agent/flatcar/cachevm/ignition", %{"join_token" => flatcar})
+      assert json_response(conn, 400)["error"] =~ "mac-vz"
+    end
+
+    test "a bad token is a 401 that counts against the enrollment limit" do
+      ip = "100.66.#{:rand.uniform(250)}.#{:rand.uniform(250)}"
+
+      req = fn ->
+        build_conn()
+        |> put_req_header("x-forwarded-for", ip)
+        |> Map.put(:remote_ip, {127, 0, 0, 1})
+        |> post("/agent/flatcar/cachevm/ignition", %{"join_token" => "cj_no"})
+      end
+
+      for _ <- 1..10, do: assert(req.().status == 401)
+      assert req.().status == 429
+    end
+  end
+
   test "serves the launchers, filled in", %{conn: conn} do
     for type <- ["linux-vm", "mac-vm"] do
       conn = get(conn, "/agent/#{type}.sh")
