@@ -429,8 +429,10 @@ defmodule Crew.VMs.Server do
     end
   end
 
-  defp after_state(%{vm: %VM{state: "destroyed"}} = state) do
+  defp after_state(%{vm: %VM{state: "destroyed"} = vm} = state) do
     Scheduler.poke()
+    # A reboot waiting for the box's last VM (§12.1).
+    Crew.Boxes.Reboots.advance(vm.box_id)
     send(self(), :stop_self)
     disarm_all(state)
   end
