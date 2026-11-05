@@ -100,11 +100,18 @@ hosts pull it without a login, and link it to the repository.
 5. **Tag and push:**
 
    ```sh
-   git tag -s vX.Y.Z -m "Crew X.Y.Z"
+   git tag -a vX.Y.Z -m "Crew X.Y.Z"
    git push origin vX.Y.Z
    ```
 
-6. **Approve the sign job** when it asks.
+   The tag isn't signed: what boxes and control planes trust is the
+   release key's signature on every artifact, made in CI. The tag
+   ruleset is what keeps anyone but a maintainer from making one.
+
+6. **Approve the sign job** when it asks, if the environment has required
+   reviewers. GitHub only offers them on private repositories with a paid
+   plan; without them the sign job runs as soon as `check`, `agents` and
+   `guest` pass, and the tag ruleset is the only gate.
 7. **Check what came out:** the release's assets and notes, the
    fingerprint in them, and `docker buildx imagetools inspect
    ghcr.io/<owner>/crew:X.Y.Z`. Then update a control plane from its
