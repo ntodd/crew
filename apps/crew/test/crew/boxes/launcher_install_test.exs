@@ -67,6 +67,12 @@ defmodule Crew.Boxes.LauncherInstallTest do
         printf 'HTTP/1.1 %s OK\\r\\nX-Crew-Box: devbox\\r\\n\\r\\n' "$code" > "$hdr"
         [ -z "$fmt" ] || printf '%s' "$code"
         exit 0 ;;
+      */agent/flatcar/cachevm/ignition)
+        code=${STUB_IGNITION_CODE:-200}
+        if [ "$code" = 200 ]; then cp "#{ctx.state}/ignition.json" "$out"; else echo '{"error":"only a mac-vz box has a cache VM"}' > "$out"; fi
+        printf 'HTTP/1.1 %s OK\\r\\nX-Crew-Box: m1ultra\\r\\nX-Crew-Cache-Token: cm_cache-token-0123456789abcdef0123456789\\r\\n\\r\\n' "$code" > "$hdr"
+        [ -z "$fmt" ] || printf '%s' "$code"
+        exit 0 ;;
       */agent/*.sh) echo '#!/bin/sh' > "$out" ;;
     #{cases}
       *) echo "curl stub: no $url" >&2; exit 22 ;;
@@ -78,6 +84,7 @@ defmodule Crew.Boxes.LauncherInstallTest do
     setup ctx do
       vfkit =
         stub(ctx, "vfkit-served", """
+        echo "$*" >> "#{ctx.state}/vfkit.log"
         # The prep boot stages the config and powers off.
         for a in "$@"; do
           case "$a" in *logFilePath=*) log=${a#*logFilePath=} ;; esac
@@ -110,7 +117,7 @@ defmodule Crew.Boxes.LauncherInstallTest do
 
       stub(ctx, "sysctl", """
       case "$2" in
-        machdep.cpu.brand_string) echo "Apple M3 Max" ;;
+        machdep.cpu.brand_string) echo "${STUB_CHIP:-Apple M3 Max}" ;;
         hw.ncpu) echo 16 ;;
         hw.memsize) echo 68719476736 ;;
       esac
@@ -123,7 +130,8 @@ defmodule Crew.Boxes.LauncherInstallTest do
         print) exit 1 ;;
         bootstrap)
           box=$(sed -n 's|.*<key>StandardOutPath</key><string>\\(.*\\)/vfkit.log</string>.*|\\1|p' "$3")
-          echo "crew-box: enrolled" >> "$box/serial.log" ;;
+          echo "crew-box: enrolled" >> "$box/serial.log"
+          echo "crew-box: cache ready" >> "$box/serial.log" ;;
       esac
       """)
 
@@ -169,6 +177,83 @@ defmodule Crew.Boxes.LauncherInstallTest do
       assert curl =~ "data ssh_keys[]=ssh-ed25519 "
       # Nothing of the install's own is left: the config went to the OS disk.
       refute File.exists?(Path.join(box, "config.ign"))
+    end
+
+    defp cache_install(ctx, env \\ []) do
+      System.cmd("sh", [ctx.launcher, "--role", "cache", "--token", "cj_test"],
+        env:
+          [{"PATH", ctx.bin <> ":" <> System.get_env("PATH")}, {"CREW_BOX_ROOT", ctx.root}] ++ env,
+        stderr_to_stdout: true
+      )
+    end
+
+    # The launcher is crew-box (the stub control plane serves an empty one).
+    defp crew_box(ctx, args) do
+      System.cmd("sh", [ctx.launcher | args],
+        env: [{"PATH", ctx.bin <> ":" <> System.get_env("PATH")}, {"CREW_BOX_ROOT", ctx.root}],
+        stderr_to_stdout: true
+      )
+    end
+
+    test "--role cache makes a mac-vz box's cache VM, on any Apple silicon", ctx do
+      {out, status} = cache_install(ctx, [{"STUB_CHIP", "Apple M1 Ultra"}])
+      assert status == 0, out
+      assert out =~ "crew-box: cache ready"
+      assert out =~ "crew-box: done: m1ultra's cache VM is up"
+
+      box = Path.join(ctx.root, "Library/Application Support/Crew/hostvm/cachevm")
+      conf = File.read!(Path.join(box, "box.conf"))
+      assert conf =~ "name=cachevm\n"
+      assert conf =~ "role=cache\n"
+      assert conf =~ "cpus=2\n"
+      assert conf =~ "memory=4\n"
+      assert conf =~ ~r/^mac=52:54:00(:[0-9a-f]{2}){3}$/m
+
+      # The management token, for the box's agent, root's alone.
+      token = Path.join(box, "mgmt-token")
+      assert File.read!(token) == "cm_cache-token-0123456789abcdef0123456789\n"
+      assert Bitwise.band(File.stat!(token).mode, 0o777) == 0o600
+
+      curl = File.read!(Path.join(ctx.state, "curl.log"))
+      assert curl =~ "get http://crew.test/agent/flatcar/cachevm/ignition"
+      refute curl =~ "data arch="
+
+      assert File.exists?(
+               Path.join(ctx.root, "Library/LaunchDaemons/com.crew.hostvm.cachevm.plist")
+             )
+    end
+
+    test "the cache VM boots without nested virtualization", ctx do
+      {_, 0} = cache_install(ctx)
+      File.write!(Path.join(ctx.state, "vfkit.log"), "")
+      {out, _} = crew_box(ctx, ["run", "cachevm"])
+      args = File.read!(Path.join(ctx.state, "vfkit.log"))
+      assert args =~ "--restful-uri", out
+      refute args =~ "--nested"
+    end
+
+    test "restart --role cache --trigger restarts it once, for the agent's request", ctx do
+      {_, 0} = cache_install(ctx)
+      trigger = Path.join(ctx.root, "restart-cachevm")
+      File.write!(Path.join(ctx.state, "launchctl.log"), "")
+
+      # launchd also runs it when the file goes away: then it does nothing.
+      assert {_, 0} = crew_box(ctx, ["restart", "--role", "cache", "--trigger", trigger])
+      refute File.read!(Path.join(ctx.state, "launchctl.log")) =~ "bootstrap"
+
+      File.write!(trigger, "c1c1c1c1-1111-4111-8111-111111111111\n")
+      assert {out, 0} = crew_box(ctx, ["restart", "--role", "cache", "--trigger", trigger])
+      refute File.exists?(trigger)
+      log = File.read!(Path.join(ctx.state, "launchctl.log"))
+      assert log =~ "bootstrap system", out
+      assert log =~ "com.crew.hostvm.cachevm"
+    end
+
+    test "a token that isn't a mac-vz box's gets no cache VM, and leaves nothing", ctx do
+      {out, status} = cache_install(ctx, [{"STUB_IGNITION_CODE", "400"}])
+      assert status == 1
+      assert out =~ "Crew said 400"
+      refute File.exists?(Path.join(ctx.root, "Library/Application Support/Crew"))
     end
 
     test "a bad token fails before anything is downloaded, and leaves nothing", ctx do
