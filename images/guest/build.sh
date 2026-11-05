@@ -138,8 +138,10 @@ kernel)
   in_builder -v "$here:/guest:ro" -v crew-guest-kernel:/build -v "$out/kernel:/out" -- \
     bash /guest/kernel/build-in-container.sh build
   # out/<arch>/ then holds Image and rootfs.ext4 side by side, which is
-  # what the agent's CREW_DEV_IMAGE_DIR takes.
-  ln -f "$out/kernel/$kimage" "$out/$kimage"
+  # what the agent's CREW_DEV_IMAGE_DIR takes. A copy, not a hard link:
+  # on Linux the builder writes the kernel as root, and protected_hardlinks
+  # stops a non-root user linking to a file it doesn't own.
+  cp -f "$out/kernel/$kimage" "$out/$kimage"
   ;;
 kernel-check)
   # check-config.sh needs GNU tools: on Linux it runs here, elsewhere in the
