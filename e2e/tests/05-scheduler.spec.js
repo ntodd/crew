@@ -20,6 +20,24 @@ async function onlineBox(page, name) {
   await expect(page.locator("[id^=box-]", { hasText: name })).toContainText("Online", { timeout: 180_000 })
 }
 
+async function openBox(page, name) {
+  await page.goto("/boxes")
+  await page.locator("[id^=box-]", { hasText: name }).click()
+}
+
+async function imageReady(page, name) {
+  await openBox(page, name)
+  await expect(page.locator("#images")).toContainText("ready", { timeout: 60_000 })
+}
+
+// What placement looks at: the box's status (draining, quarantined),
+// its images, VMs and operations.
+async function boxDetails(page, name) {
+  await openBox(page, name)
+  const parts = await page.locator("#box-status, #images, #vms, #operations").allInnerTexts()
+  return parts.map(t => t.replace(/\s+/g, " ").trim()).join(" | ")
+}
+
 const jobsOf = (state, runId) => state.jobs.filter(j => j.run_id === runId)
 
 test("30 jobs over 3 sizes run on 2 boxes", async ({ page, request }) => {
@@ -28,6 +46,9 @@ test("30 jobs over 3 sizes run on 2 boxes", async ({ page, request }) => {
   await fakePost(request, "/__fake/repos", { names: ["sched"] })
   await onlineBox(page, "null-a")
   await onlineBox(page, "null-b")
+  // Both boxes have the image before the jobs come, or the first can
+  // take them all while the second is still getting it.
+  for (const name of ["null-a", "null-b"]) await imageReady(page, name)
 
   const sizes = ["crew-s", "crew-m", "crew-l"]
   const specs = Array.from({ length: 30 }, (_, i) => ({
@@ -65,8 +86,10 @@ test("30 jobs over 3 sizes run on 2 boxes", async ({ page, request }) => {
   expect(jobs.every(j => j.conclusion === "success")).toBe(true)
   expect(jobs.every(j => /^crew-[a-z0-9]{4}-null-[ab]-[0-9a-f]{10}$/.test(j.runner_name))).toBe(true)
   expect(new Set(jobs.map(j => j.runner_name)).size).toBe(30)
-  // Both boxes took work.
-  expect(new Set(jobs.map(j => j.runner_name.match(/null-[ab]/)[0])).size).toBe(2)
+  // Both boxes took work; if one didn't, its page says why.
+  const used = new Set(jobs.map(j => j.runner_name.match(/null-[ab]/)[0]))
+  const idle = ["null-a", "null-b"].find(n => !used.has(n))
+  if (idle) throw new Error(`${idle} took no jobs: ${await boxDetails(page, idle)}`)
   // JIT runners are ephemeral: none is left registered.
   await expect.poll(async () => (await fakeState(request)).runners.length, { timeout: 60_000 }).toBe(0)
 
