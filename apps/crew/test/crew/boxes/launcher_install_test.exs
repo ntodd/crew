@@ -134,8 +134,10 @@ defmodule Crew.Boxes.LauncherInstallTest do
         print) exit 1 ;;
         bootstrap)
           box=$(sed -n 's|.*<key>StandardOutPath</key><string>\\(.*\\)/vfkit.log</string>.*|\\1|p' "$3")
-          echo "crew-box: enrolled" >> "$box/serial.log"
-          echo "crew-box: cache ready" >> "$box/serial.log" ;;
+          case "$box" in
+            */cachevm) echo "crew-box: cache ready" >> "$box/serial.log" ;;
+            *) echo "crew-box: enrolled" >> "$box/serial.log" ;;
+          esac ;;
       esac
       """)
 
@@ -307,6 +309,33 @@ defmodule Crew.Boxes.LauncherInstallTest do
                ])
 
       assert File.read!(Path.join(ctx.state, "launchctl.log")) =~ "bootstrap"
+    end
+
+    test "a second request for a boot it acted on waits for nothing, even while the VM boots",
+         ctx do
+      {_, 0} = cache_install(ctx)
+      lease(ctx)
+      trigger = Path.join(ctx.root, "restart-cachevm")
+      down = [{"STUB_HOST_DOWN", "1"}]
+
+      File.write!(trigger, "c1c1c1c1-1111-4111-8111-111111111111\n")
+      assert {_, 0} = crew_box(ctx, ["restart", "--role", "cache", "--trigger", trigger], down)
+      File.write!(Path.join(ctx.state, "launchctl.log"), "")
+
+      # The same boot again, the VM not answering yet: nothing.
+      File.write!(trigger, "c1c1c1c1-1111-4111-8111-111111111111\n")
+      assert {out, 0} = crew_box(ctx, ["restart", "--role", "cache", "--trigger", trigger], down)
+      assert out =~ "already restarted"
+      refute File.read!(Path.join(ctx.state, "launchctl.log")) =~ "bootstrap"
+    end
+
+    test "reimage gives the cache VM a new OS disk and waits for its cache", ctx do
+      {_, 0} = cache_install(ctx)
+      ign = Path.join(ctx.state, "cachevm-reprovision.ign")
+      File.write!(ign, ~s({"ignition":{"version":"3.4.0"}}))
+      assert {out, 0} = crew_box(ctx, ["reimage", ign, "cachevm"])
+      assert out =~ "crew-box: cache ready"
+      assert out =~ "reimaged cachevm"
     end
 
     test "a token that isn't a mac-vz box's gets no cache VM, and leaves nothing", ctx do
