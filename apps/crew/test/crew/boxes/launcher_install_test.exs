@@ -53,7 +53,7 @@ defmodule Crew.Boxes.LauncherInstallTest do
         -o) out=$2; shift 2 ;;
         -D) hdr=$2; shift 2 ;;
         -w) fmt=$2; shift 2 ;;
-        -X | --max-time | --retry | --retry-delay | --unix-socket) shift 2 ;;
+        -X | -H | --max-time | --retry | --retry-delay | --unix-socket) shift 2 ;;
         --data-urlencode) echo "data $2" >> "#{ctx.state}/curl.log"; shift 2 ;;
         -*) shift ;;
         *) url=$1; shift ;;
@@ -72,6 +72,10 @@ defmodule Crew.Boxes.LauncherInstallTest do
         if [ "$code" = 200 ]; then cp "#{ctx.state}/ignition.json" "$out"; else echo '{"error":"only a mac-vz box has a cache VM"}' > "$out"; fi
         printf 'HTTP/1.1 %s OK\\r\\nX-Crew-Box: m1ultra\\r\\nX-Crew-Cache-Token: cm_cache-token-0123456789abcdef0123456789\\r\\n\\r\\n' "$code" > "$hdr"
         [ -z "$fmt" ] || printf '%s' "$code"
+        exit 0 ;;
+      http://*:7780/host)
+        [ -z "${STUB_HOST_DOWN:-}" ] || exit 7
+        printf '{"boot_id":"%s","packages":[],"reboot_required":false}' "${STUB_BOOT:-c1c1c1c1-1111-4111-8111-111111111111}"
         exit 0 ;;
       */agent/*.sh) echo '#!/bin/sh' > "$out" ;;
     #{cases}
@@ -165,6 +169,13 @@ defmodule Crew.Boxes.LauncherInstallTest do
 
       assert File.read!(Path.join(box, "box.conf")) =~ "data=100"
 
+      # What the agent takes off a mac-vz box's capacity (§11.4): hostvm/
+      # is readable, each VM's own directory isn't.
+      hostvm = Path.join(ctx.root, "Library/Application Support/Crew/hostvm")
+      assert File.read!(Path.join(hostvm, "devbox.conf")) == "memory_mib=4096\n"
+      assert Bitwise.band(File.stat!(hostvm).mode, 0o777) == 0o755
+      assert Bitwise.band(File.stat!(box).mode, 0o777) == 0o700
+
       plist =
         File.read!(Path.join(ctx.root, "Library/LaunchDaemons/com.crew.hostvm.devbox.plist"))
 
@@ -188,9 +199,10 @@ defmodule Crew.Boxes.LauncherInstallTest do
     end
 
     # The launcher is crew-box (the stub control plane serves an empty one).
-    defp crew_box(ctx, args) do
+    defp crew_box(ctx, args, env \\ []) do
       System.cmd("sh", [ctx.launcher | args],
-        env: [{"PATH", ctx.bin <> ":" <> System.get_env("PATH")}, {"CREW_BOX_ROOT", ctx.root}],
+        env:
+          [{"PATH", ctx.bin <> ":" <> System.get_env("PATH")}, {"CREW_BOX_ROOT", ctx.root}] ++ env,
         stderr_to_stdout: true
       )
     end
@@ -221,6 +233,11 @@ defmodule Crew.Boxes.LauncherInstallTest do
       assert File.exists?(
                Path.join(ctx.root, "Library/LaunchDaemons/com.crew.hostvm.cachevm.plist")
              )
+
+      hostvm = Path.join(ctx.root, "Library/Application Support/Crew/hostvm")
+      assert File.read!(Path.join(hostvm, "cachevm.conf")) == "memory_mib=4096\n"
+      {_, 0} = crew_box(ctx, ["uninstall", "--yes", "cachevm"])
+      refute File.exists?(Path.join(hostvm, "cachevm.conf"))
     end
 
     test "the cache VM boots without nested virtualization", ctx do
@@ -232,8 +249,26 @@ defmodule Crew.Boxes.LauncherInstallTest do
       refute args =~ "--nested"
     end
 
+    # vmnet's lease for the cache VM, so crew-box can ask it its boot.
+    defp lease(ctx) do
+      conf =
+        File.read!(
+          Path.join(ctx.root, "Library/Application Support/Crew/hostvm/cachevm/box.conf")
+        )
+
+      [_, mac] = Regex.run(~r/^mac=(.*)$/m, conf)
+      short = mac |> String.split(":") |> Enum.map_join(":", &String.replace(&1, ~r/^0(?=.)/, ""))
+      File.mkdir_p!(Path.join(ctx.root, "var/db"))
+
+      File.write!(
+        Path.join(ctx.root, "var/db/dhcpd_leases"),
+        "{\n\tip_address=192.168.64.9\n\thw_address=1,#{short}\n\tlease=0x1\n}\n"
+      )
+    end
+
     test "restart --role cache --trigger restarts it once, for the agent's request", ctx do
       {_, 0} = cache_install(ctx)
+      lease(ctx)
       trigger = Path.join(ctx.root, "restart-cachevm")
       File.write!(Path.join(ctx.state, "launchctl.log"), "")
 
@@ -247,6 +282,31 @@ defmodule Crew.Boxes.LauncherInstallTest do
       log = File.read!(Path.join(ctx.state, "launchctl.log"))
       assert log =~ "bootstrap system", out
       assert log =~ "com.crew.hostvm.cachevm"
+    end
+
+    test "a request for a boot the cache VM has left changes nothing", ctx do
+      {_, 0} = cache_install(ctx)
+      lease(ctx)
+      trigger = Path.join(ctx.root, "restart-cachevm")
+      File.write!(Path.join(ctx.state, "launchctl.log"), "")
+
+      # Two requests for the same boot: the second finds the new one.
+      File.write!(trigger, "c1c1c1c1-1111-4111-8111-111111111111\n")
+      env = [{"STUB_BOOT", "c2c2c2c2-2222-4222-8222-222222222222"}]
+      assert {out, 0} = crew_box(ctx, ["restart", "--role", "cache", "--trigger", trigger], env)
+      assert out =~ "already restarted"
+      refute File.exists?(trigger)
+      refute File.read!(Path.join(ctx.state, "launchctl.log")) =~ "bootstrap"
+
+      # A cache VM that doesn't answer is restarted, as asked.
+      File.write!(trigger, "c1c1c1c1-1111-4111-8111-111111111111\n")
+
+      assert {_, 0} =
+               crew_box(ctx, ["restart", "--role", "cache", "--trigger", trigger], [
+                 {"STUB_HOST_DOWN", "1"}
+               ])
+
+      assert File.read!(Path.join(ctx.state, "launchctl.log")) =~ "bootstrap"
     end
 
     test "a token that isn't a mac-vz box's gets no cache VM, and leaves nothing", ctx do

@@ -84,6 +84,7 @@ defmodule CrewWeb.Router do
     pipe_through [:browser, :admin]
 
     get "/boxes/:id/reprovision.ign", BoxController, :reprovision
+    get "/boxes/:id/cachevm-reprovision.ign", BoxController, :cachevm_reprovision
 
     live_session :admin_actions,
       on_mount: [

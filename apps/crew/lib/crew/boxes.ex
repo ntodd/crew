@@ -342,6 +342,44 @@ defmodule Crew.Boxes do
     end
   end
 
+  @doc """
+  A `mac-vz` box's cache VM's reprovision Ignition (§12.3), for admins:
+  no management token (the data disk has it) and the newest linux-arm64
+  release, if one is registered, which the new OS disk moves crew_cache
+  to.
+  """
+  def cachevm_reprovision_ignition(%Scope{} = scope, %Box{} = box, params) do
+    cond do
+      not Scope.admin?(scope) ->
+        {:error, :unauthorized}
+
+      box.type != "mac-vz" ->
+        {:error, :not_mac_vz}
+
+      true ->
+        release =
+          case Releases.install_set(Flatcar.target("arm64")) do
+            {:ok, r} -> %{version: r.version, cache: artifact(r.cache)}
+            _ -> nil
+          end
+
+        with {:ok, config} <-
+               Flatcar.cachevm_ignition(%{
+                 mode: :reprovision,
+                 arch: "arm64",
+                 ssh_keys: split_keys(params["ssh_keys"]),
+                 release: release,
+                 release_key: Crew.Config.release_public_key()
+               }) do
+          Audit.log(scope, "box.cachevm_reprovision_ignition", box, %{
+            "version" => release && release.version
+          })
+
+          {:ok, config}
+        end
+    end
+  end
+
   defp present(value) when is_binary(value) and value != "", do: String.trim(value)
   defp present(_), do: nil
 

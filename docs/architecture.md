@@ -800,6 +800,82 @@ The other spikes are recorded here as they run.
   M4 Max (macOS 27.2) in 1.9 minutes, downloads included. Not covered:
   a real root install in the system domain, and a reboot of the Mac.
 
+## Cache VM notes
+
+- **What it is** (§12.3, §15.6): a `mac-vz` box's registry cache, a
+  Flatcar VM on the same Mac (`Crew.Boxes.Flatcar.cachevm_ignition/1`)
+  running crew_cache in box mode and nothing else: no agent, Tailscale or
+  crew-vmctl. crew_cache listens on 10.199.0.1 (crew0), management
+  included, as on any box; `crew-cachevm-net` DNATs the VM's own
+  address's 53, 80, 443 and 7780 to it for the Mac (the vmnet gateway)
+  and drops everything else. The store gets 80% of the data disk.
+- **Management is on the NAT address, not the tailnet** (a deliberate
+  change from §15.6): the agent is on the same Mac, the firewall lets
+  only the Mac in, and the bearer token is required off loopback. That
+  leaves Tailscale, its auth key and its enrollment out of the cache VM.
+- **Install:** `install-macos.sh --cache-vm` runs the control plane's
+  mac-vm launcher as `--role cache` with the box's join token, before
+  the agent starts. The launcher gets the Ignition from
+  `POST /agent/flatcar/cachevm/ignition` (a mac-vz token only), with the
+  management token in `X-Crew-Cache-Token`; the control plane keeps no
+  copy. The VM is `hostvm/cachevm`: no nested virtualization (so any
+  Apple silicon), 2 CPUs, 4 GiB, a 100 GiB sparse data disk. The
+  installer gives the agent its MAC and the token (`CREW_VZ_CACHE_MAC`,
+  `CREW_CACHE_MGMT_TOKEN`).
+- **First boot:** `crew-cachevm-install` puts crew_cache on the data disk
+  from the release (checked against its SHA-256 and the release key) and
+  the token beside it, so a new OS disk needs neither. It retries every
+  30 s until the release is reachable, and starts the cache itself once
+  it's installed; the console then says `crew-box: cache ready`, which
+  the launcher follows for.
+- **The agent** finds the cache VM's address by MAC in
+  `/var/db/dhcpd_leases` (the newest lease) each time it needs it, and
+  manages it on that address's :7780 (`CrewAgent.CacheVM`). There's no
+  `hostvm/cachevm.ip`: hostvm/ is root's 0700, and the leases are
+  world-readable.
+- **Reboots:** crew_cache's `GET /host` reports the VM's Flatcar update
+  flag; the agent sends it as `box.reboot`'s `cache_vm` (checked every
+  30 s). **Reboot cache VM** on the box page drains the box, then sends
+  `cachevm.restart`; the agent writes `run/restart-cachevm`, which root's
+  `com.crew.hostvm-restart` watches (`crew-box restart --role cache
+  --trigger <file>`). A `cache_vm` on a new boot ends it.
+- **Tested** against a real boot: the cache VM's Ignition booted on this
+  Mac (native/hostvm-dev standing in for vfkit), its first install
+  retrying until the release was reachable, and the vz conformance suite
+  run through it with the agent finding it by MAC
+  (`CREW_CONFORMANCE_CACHE_MAC`).
+- **Jobs wait for it:** on a box with a cache VM, `firewall_ok` (what
+  placement needs, §8.3) also needs the cache to answer, so after a Mac
+  reboot the box takes no jobs until its cache VM is up: a guest started
+  before it would have no DNS for its whole run.
+- **Its memory** comes off the box's capacity: the launcher writes each
+  VM's `memory_mib` to `hostvm/<name>.conf`, which the agent reads
+  (§11.4); hostvm/ is readable, each VM's own directory isn't.
+- **A restart request names a boot:** the agent writes the boot ID it
+  saw into the trigger, and `crew-box restart --trigger` does nothing if
+  the cache VM is already on another (two requests for one boot restart
+  it once). A cache VM that doesn't answer is restarted as asked.
+- **Updates:** the box page's cache VM Ignition carries the newest
+  release and no secrets; `crew-box reimage <file> cachevm` puts a new
+  OS disk under it, and `crew-cachevm-install` moves crew_cache to that
+  release, keeping the token and the store. There's no in-place update.
+
+## Reboot notes
+
+- **Started by an admin only** (§12.1, `Crew.Boxes.Reboots`): **Reboot**
+  on a Flatcar box's page drains it (§8.5's rules) and, once no VM is
+  left, sends `box.restart` with the boot ID it last saw; the rejoin on a
+  new boot ends it. **Reboot now** stops the VMs by force and reboots at
+  once, audit-logged with the jobs it cut short. A drain the admin had
+  set stays; one the reboot set is lifted.
+- **The command is resent** on each inventory, VM end and rejoin, and
+  every minute (`Crew.Boxes.RebootSweep`), until the new boot shows up.
+  The agent answers `already` after the reboot, so it never reboots
+  twice.
+- **A rolled-back update** (Flatcar's GRUB falling back) shows on the
+  box page: a reboot for a `flatcar-*` update keeps the version the box
+  had in `previous_os_version`, and a box still on it afterwards says so.
+
 ## Release and update notes
 
 - **The control plane's image** is `docker/control-plane.Dockerfile`,
@@ -1222,13 +1298,17 @@ One test: `--only "test:test <name>"` instead of `--only conformance`.
 **The vz cache:** crew-vz forwards a guest's `10.199.0.1:{53,80,443}`
 to `cache_addr`, which can't be loopback, and the helper's sandbox
 refuses the Mac's own addresses, so the cache can't run on the Mac
-without serving its network. The mac-vz cache VM (§12.3) isn't built,
-so the Flatcar dev VM stood in for it: `sudo
+without serving its network. Before the cache VM was built, the Flatcar
+dev VM stood in for it: `sudo
 native/crew-vmctl/kvm/cache.sh up --vmnet` runs crew_cache there as a
 box does (10.199.0.1 on `crew0`, management on loopback) and DNATs
 `<VM>:{53,80,443}` from the vmnet host only to it; management reached
 the Mac through an SSH tunnel (`-L 127.0.0.1:17780:127.0.0.1:7780`).
 Nothing listened on the Mac's network interfaces.
+With the cache VM built (2026-11-05), the suite ran against a real one
+instead: its Ignition booted on this Mac, and `CREW_CONFORMANCE_CACHE_MAC`
+set the agent up as `--cache-vm` does. All 8 tests passed; item 4's
+pulls went through it (`public.ecr.aws` 9 misses, then 9 hits).
 
 **firecracker,** on a Flatcar box (an XFS `/srv/crew`):
 

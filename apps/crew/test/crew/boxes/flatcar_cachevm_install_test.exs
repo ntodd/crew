@@ -31,7 +31,7 @@ defmodule Crew.Boxes.FlatcarCacheVMInstallTest do
     )
   end
 
-  defp render_etc(root, key, mode, cache \\ nil) do
+  defp render_etc(root, key, mode, cache \\ nil, version \\ "0.3.0") do
     {:ok, config} =
       Flatcar.cachevm_ignition(%{
         mode: mode,
@@ -39,7 +39,7 @@ defmodule Crew.Boxes.FlatcarCacheVMInstallTest do
         ssh_keys: [],
         mgmt_token: if(mode == :provision, do: @token),
         release_key: key.public,
-        release: if(mode == :provision, do: %{version: "0.3.0", cache: cache})
+        release: if(cache, do: %{version: version, cache: cache})
       })
 
     etc = Path.join(root, "etc-#{System.unique_integer([:positive])}")
@@ -89,6 +89,26 @@ defmodule Crew.Boxes.FlatcarCacheVMInstallTest do
     assert {out, 0} = install(render_etc(ctx.root, ctx.key, :reprovision), ctx.data)
     assert out =~ "crew_cache is installed (0.3.0)"
     assert File.read!(Path.join(ctx.data, "cachevm/mgmt.env")) =~ @token
+  end
+
+  test "a new OS disk with a newer release moves the cache to it, keeping token and store", ctx do
+    assert {_, 0} = install(render_etc(ctx.root, ctx.key, :provision, cache(ctx.files)), ctx.data)
+    File.write!(Path.join(ctx.data, "cache/blob"), "kept")
+
+    newer = write_release(Path.join(ctx.root, "release-0.4.0"), ctx.key, "0.4.0", "linux-arm64")
+    etc = render_etc(ctx.root, ctx.key, :reprovision, cache(newer), "0.4.0")
+    assert {out, 0} = install(etc, ctx.data)
+    assert out =~ "crew-box: installed crew_cache 0.4.0"
+
+    release = Path.join(ctx.data, "release")
+    assert {:ok, "0.4.0"} = File.read_link(Path.join(release, "current"))
+    assert File.read!(Path.join(release, "0.4.0/bin/crew_cache")) =~ "crew_cache 0.4.0"
+    assert File.read!(Path.join(ctx.data, "cachevm/mgmt.env")) =~ @token
+    assert File.read!(Path.join(ctx.data, "cache/blob")) == "kept"
+
+    # The same release again changes nothing.
+    assert {out, 0} = install(etc, ctx.data)
+    assert out =~ "crew_cache is installed (0.4.0)"
   end
 
   test "a reprovision onto an empty data disk says what's missing", ctx do

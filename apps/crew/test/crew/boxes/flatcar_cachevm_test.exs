@@ -136,7 +136,7 @@ defmodule Crew.Boxes.FlatcarCacheVMTest do
 
     install = contents(config, "/etc/crew-box/cachevm-install.sh")
     assert install =~ "check_release cache"
-    assert install =~ "systemctl --no-block start crew-cache.service crew-cachevm-status.service"
+    assert install =~ "systemctl --no-block restart crew-cache.service"
 
     assert body(config, "crew-cachevm-install.service") =~
              "/bin/sh /etc/crew-box/cachevm-install.sh"
@@ -153,6 +153,12 @@ defmodule Crew.Boxes.FlatcarCacheVMTest do
     refute file?(config, "/etc/crew-box/cache-mgmt.env")
     refute file?(config, "/etc/crew-box/release.env")
     assert unit?(config, "crew-cache.service")
+  end
+
+  test "a reprovision may carry a newer release, never a token" do
+    config = ignition(%{mode: :reprovision, mgmt_token: nil})
+    refute file?(config, "/etc/crew-box/cache-mgmt.env")
+    assert contents(config, "/etc/crew-box/release.env") =~ ~s(CREW_VERSION="0.3.0")
   end
 
   test "crewcache is the only user, with the boxes' fixed id; core gets the keys" do

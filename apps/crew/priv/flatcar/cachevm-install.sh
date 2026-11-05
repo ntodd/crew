@@ -34,19 +34,29 @@ if [ -n "$root" ]; then chown crewcache:crewcache "$data/cache"; fi
 chmod 0750 "$data/cache"
 
 releases="$data/release"
+installed=""
 if [ -e "$releases/current" ]; then
   exact_link "$releases/current" || fail "$releases/current isn't a link"
   release_version "$link" || fail "$releases/current points at something that isn't a release"
-  say "crew_cache is installed ($link)"
-  exit 0
+  installed=$link
 fi
 
-[ -f "$etc/release.env" ] || fail "no crew_cache is installed and the Ignition names no release"
+# The release the Ignition names (none on a plain new OS disk): installed
+# on the first boot, and moved to on a new OS disk that brings another.
+if [ ! -f "$etc/release.env" ]; then
+  [ -n "$installed" ] || fail "no crew_cache is installed and the Ignition names no release"
+  say "crew_cache is installed ($installed)"
+  exit 0
+fi
 # CREW_VERSION, CREW_TARGET, CREW_CACHE_{URL,SHA256,SIG} and
 # CREW_RELEASE_KEY_FINGERPRINT.
 # shellcheck source=/dev/null
 . "$etc/release.env"
 release_version "$CREW_VERSION" || fail "the release version in release.env isn't one"
+if [ "$installed" = "$CREW_VERSION" ]; then
+  say "crew_cache is installed ($installed)"
+  exit 0
+fi
 case "$CREW_TARGET" in linux-amd64 | linux-arm64) ;; *) fail "the target '$CREW_TARGET' isn't one" ;; esac
 
 mkdir -p "$releases"
@@ -76,6 +86,8 @@ say "installed crew_cache $CREW_VERSION"
 
 # A first boot whose install had to retry found no crew_cache when
 # crew-cache.service's turn came (its ConditionPathExists): start it now.
+# A move to another release restarts it on the new one.
 if [ -n "$root" ] && command -v systemctl >/dev/null 2>&1; then
-  systemctl --no-block start crew-cache.service crew-cachevm-status.service
+  systemctl --no-block restart crew-cache.service
+  systemctl --no-block start crew-cachevm-status.service
 fi

@@ -492,6 +492,16 @@ defmodule CrewWeb.BoxLiveTest do
 
       {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
       assert has_element?(view, "#cache-vm", "flatcar-4800.0.0")
+
+      # Its crew_cache is updated with a new OS disk and the newest release.
+      assert has_element?(view, ~s(#cache-vm a[href="/boxes/#{box.id}/cachevm-reprovision.ign"]))
+
+      assert has_element?(
+               view,
+               "#cache-vm",
+               "sudo crew-box reimage crew-m1ultra-cachevm-reprovision.ign cachevm"
+             )
+
       view |> element("#reboot-cache-vm") |> render_click()
 
       assert_receive {:dispatch, %CrewProtocol.Command{type: "cachevm.restart"}}
