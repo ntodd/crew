@@ -754,7 +754,9 @@ The other spikes are recorded here as they run.
   to 90 s for the device itself. So a disk added as `/dev/sdb` that's
   `/dev/sdc` after a reboot still mounts, whatever is at `/dev/sdb` now.
   Add box takes `/dev/...` paths including `/dev/disk/by-id/...`; the
-  launchers' VMs use `/dev/vdb` (QEMU's also has the serial `crew-data`).
+  launchers' VMs use `/dev/vdb` (QEMU's also has the serial `crew-data`),
+  and so does a `linux-vm` box's VM built by hand from Add box's
+  Ignition, its second VirtIO disk.
 - **Quotas (§12.4):** project 10 is `vms/` + `jail/` (half the disk),
   11 `cache/` (a quarter), 12 `agent/` + `images/` (the rest), set at
   every boot from the disk's size. crew_cache's own default (a quarter

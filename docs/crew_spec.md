@@ -977,8 +977,8 @@ and registers the public key with the token.
   token (§12.2). It embeds the join token, the Tailscale auth key, the
   release public key and its fingerprint, plus the GitHub release URLs
   and SHA-256s of the agent and cache tarballs. The `linux-vm` and
-  `mac-vm` launchers fetch it themselves; `linux-metal` downloads it from
-  **Add box**.
+  `mac-vm` launchers fetch it themselves; `linux-metal`, and a
+  `linux-vm` box whose VM is built by hand, download it from **Add box**.
 - **`mac-vz` boxes:** the Add box page shows the steps (§20.2):
   1. download the darwin tarball from the GitHub release;
   2. verify it with the published key fingerprint;
@@ -1526,7 +1526,15 @@ the admin compares with the one in Crew's README and release notes
 (§20.2). Then:
 - **`linux-vm`, `mac-vm`:** it shows the launcher's one command (§12.3).
   The launcher fetches the Ignition itself.
-- **`linux-metal`:** it offers the Ignition for download.
+- **`linux-metal`:** it offers the Ignition for download, and the
+  `flatcar-install` command for the OS disk.
+- **`linux-vm`, built by hand:** where the launcher can't run (a TrueNAS
+  SCALE host, whose OS image blocks `apt`), it also offers the Ignition
+  for a VM the admin makes: host CPU passthrough, UEFI, and two VirtIO
+  disks, the OS disk at `/dev/vda` (`flatcar-install -d /dev/vda`) and
+  the data disk at `/dev/vdb`, as the launcher's VM has them. The box
+  enrolls as `linux-vm`, so it's placed as the nested box it is rather
+  than as `linux-metal`.
 
 **`POST /agent/flatcar/ignition`** (copy Foreman's) takes `join_token`,
 `arch` and optional `ssh_keys[]`, and returns the Ignition with an
@@ -1574,7 +1582,8 @@ disk and starts the installed agent.
 - Tailscale state lives on the data disk (`/srv/crew/tailscale`), so the
   node keeps its identity.
 - On `linux-vm` and `mac-vm`, `crew-box reimage <file>` (§12.3) applies
-  it.
+  it. A `linux-vm` box built by hand installs it from Flatcar's live
+  image instead (`flatcar-install -d /dev/vda`).
 
 ### 12.3 Launchers
 
@@ -2586,8 +2595,9 @@ The sidebar has:
     capabilities; firewall and virtualisation.
   - **Reprovision Ignition** (§12.2) and **Revoke** (copy Foreman's).
   - **Add box:** a tab per type, copying Foreman's: the launcher command
-    (`linux-vm`, `mac-vm`), the Ignition download (`linux-metal`), or the
-    macOS steps (`mac-vz`) (§10.2, §12.2).
+    (`linux-vm`, `mac-vm`), the Ignition download (`linux-metal`, and
+    `linux-vm` for a VM built by hand), or the macOS steps (`mac-vz`)
+    (§10.2, §12.2).
 
 **Admin pages**
 - **Images:** the default or pinned image per arch, runner and Docker
