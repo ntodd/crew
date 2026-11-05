@@ -594,7 +594,7 @@ defmodule CrewWeb.JobLive.Show do
       />
       <span
         :if={is_nil(@step.conclusion) and @step.status == "in_progress"}
-        class="mt-1 block size-2 animate-pulse rounded-full bg-accent"
+        class="mt-1 block size-2 animate-pulse rounded-full bg-running"
       ></span>
       <.icon
         :if={is_nil(@step.conclusion) and @step.status != "in_progress"}
@@ -616,5 +616,5 @@ defmodule CrewWeb.JobLive.Show do
   defp phase_class(0), do: "bg-muted text-ink-2"
   defp phase_class(1), do: "bg-sky-500/15 text-ink"
   defp phase_class(2), do: "bg-amber-500/15 text-ink"
-  defp phase_class(_), do: "bg-accent/15 text-ink"
+  defp phase_class(_), do: "bg-running/15 text-ink"
 end

@@ -296,7 +296,7 @@ defmodule CrewWeb.RunLive.Index do
 
   defp run_tone(%{status: "completed", conclusion: "success"}), do: "text-success"
   defp run_tone(%{status: "completed", conclusion: "failure"}), do: "text-danger"
-  defp run_tone(%{status: "in_progress"}), do: "text-accent-ink"
+  defp run_tone(%{status: "in_progress"}), do: "text-running-ink"
   defp run_tone(_), do: "text-ink-3"
 
   defp run_label(%{status: "completed", conclusion: c}), do: c || "completed"

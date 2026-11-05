@@ -69,7 +69,7 @@ defmodule CrewWeb.JobStatus do
         "dot",
         "Running · " <> format(duration(job.started_at, now)),
         nil,
-        :accent
+        :running
       )
 
   def of(%{gh_state: "waiting"}, _now),

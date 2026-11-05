@@ -297,10 +297,10 @@ defmodule CrewWeb.CoreComponents do
   Renders a small status pill.
 
   Colors are the state vocabulary, not decoration: `zinc` is neutral,
-  `emerald` done or visible, `amber` in progress or partial, `rose`
-  failed or destructive, and `brand` the org accent for the one
-  emphasized label. `sky` is kept for compatibility and renders
-  neutral; the system has no blue info color. `soft` (the default)
+  `emerald` done or visible, `running` work in flight (blue), `amber`
+  in progress or partial, `rose` failed or destructive, and `brand` the
+  org accent for the one emphasized label. `sky` is kept for
+  compatibility and renders neutral. `soft` (the default)
   fills from the soft tint; `outline` is a hairline pill for drafts
   and not-yet states. `dot` leads the label with a status dot, and
   `pulse` breathes it while work is in flight.
@@ -319,7 +319,7 @@ defmodule CrewWeb.CoreComponents do
 
   attr :color, :string,
     default: "zinc",
-    values: ~w(zinc brand emerald amber sky rose)
+    values: ~w(zinc brand emerald running amber sky rose)
 
   attr :size, :string,
     default: "md",
@@ -359,6 +359,7 @@ defmodule CrewWeb.CoreComponents do
   defp badge_class("soft", "sky"), do: "bg-muted text-ink-2"
   defp badge_class("soft", "brand"), do: "bg-accent-soft text-accent-ink"
   defp badge_class("soft", "emerald"), do: "bg-success-soft text-success"
+  defp badge_class("soft", "running"), do: "bg-running/10 text-running-ink"
   defp badge_class("soft", "amber"), do: "bg-warning-soft text-warning"
   defp badge_class("soft", "rose"), do: "bg-danger-soft text-danger"
 
@@ -366,6 +367,7 @@ defmodule CrewWeb.CoreComponents do
     do: "border border-accent/40 text-accent-ink"
 
   defp badge_class("outline", "emerald"), do: "border border-success/35 text-success"
+  defp badge_class("outline", "running"), do: "border border-running/35 text-running-ink"
   defp badge_class("outline", "amber"), do: "border border-warning/35 text-warning"
   defp badge_class("outline", "rose"), do: "border border-danger/35 text-danger"
   defp badge_class("outline", _neutral), do: "border border-line-strong text-ink-2"

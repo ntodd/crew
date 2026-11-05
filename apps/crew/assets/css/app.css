@@ -38,7 +38,10 @@
   are the light values; [data-theme=dark] below reassigns the same
   names, so components never carry dark: variants of their own.
 
-  The accent is the one brand color; [data-theme=dark] lifts it.
+  The accent is the one brand color, emerald (Foreman's is indigo, and
+  the two shouldn't be mistaken for each other); [data-theme=dark]
+  lifts it. Running work has a color of its own, blue, since the accent
+  sits too close to success to tell the two apart.
 */
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -55,12 +58,15 @@
   --color-ink-2: #55556a;
   --color-ink-3: #71717f;
 
-  --color-accent: #5b50e8;
+  --color-accent: #047857;
   --color-accent-fg: #ffffff;
-  --color-accent-hover: #4b40d8;
-  --color-accent-soft: #efedfd;
-  --color-accent-ink: #3a30b8;
-  --color-focus: #5b50e8;
+  --color-accent-hover: #065f46;
+  --color-accent-soft: #ecfdf5;
+  --color-accent-ink: #065f46;
+  --color-focus: #059669;
+
+  --color-running: #2a78d6;
+  --color-running-ink: #1d5fb8;
 
   --color-success: #1a8a4a;
   --color-success-soft: #e6f6ec;
@@ -147,13 +153,18 @@
     0 0 0 1px rgb(255 255 255 / 0.06);
 }
 
-/* Dark accent: the same violet, lifted for contrast on dark surfaces. */
+/* Dark accent: the same emerald, lifted for contrast on dark surfaces,
+   with dark text on it (white on a light green doesn't read). */
 [data-theme="dark"] {
-  --color-accent: #7c72ff;
-  --color-accent-hover: #8883ff;
-  --color-accent-soft: #1d1d2f;
-  --color-accent-ink: #adb0ff;
-  --color-focus: #9695ff;
+  --color-accent: #34d399;
+  --color-accent-fg: #052e1f;
+  --color-accent-hover: #6ee7b7;
+  --color-accent-soft: #0f2a21;
+  --color-accent-ink: #6ee7b7;
+  --color-focus: #34d399;
+
+  --color-running: #3987e5;
+  --color-running-ink: #8bb8f5;
 }
 
 /* Add variants based on LiveView classes */

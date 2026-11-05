@@ -64,7 +64,7 @@ defmodule CrewWeb.BoxLive.Show do
 
   defp vm_color(state) do
     case state do
-      "busy" -> "brand"
+      "busy" -> "running"
       "idle" -> "emerald"
       "failed" -> "rose"
       s when s in ~w(requested starting booted) -> "sky"
