@@ -46,7 +46,8 @@ sha256() {
 fail=0
 
 # The config must be for the pinned kernel and this arch.
-case "$arch" in arm64) karch=arm64 ;; x64) karch=x86 ;; esac
+# The header names ARCH as the build passed it (x86_64, not SRCARCH x86).
+case "$arch" in arm64) karch=arm64 ;; x64) karch=x86_64 ;; esac
 header=$(sed -n 's/^# Linux\/\([^ ]*\) \([^ ]*\) Kernel Configuration$/\1 \2/p' "$config" | head -1)
 if [ "$header" != "$karch $KERNEL_VERSION" ]; then
   echo "check: $config is for '${header:-unknown}', want '$karch $KERNEL_VERSION'"
