@@ -55,8 +55,14 @@ defmodule Crew.Boxes.Flatcar do
   @script_names ~w(lib.sh provision.sh agent-install.sh format-data.sh quota.sh root-units.sh
                    root-install.sh agent-rollback.sh flatcar-update-check update-sysexts.sh
                    clock-sync.sh status.sh)
-  for name <- @script_names, do: @external_resource(Path.join(@scripts_dir, name))
+  # The cache VM's (§12.3): no agent, Tailscale or quotas.
+  @cachevm_script_names ~w(lib.sh format-data.sh flatcar-update-check clock-sync.sh
+                           cachevm-install.sh cachevm-net.sh cachevm-status.sh)
+  for name <- Enum.uniq(@script_names ++ @cachevm_script_names),
+      do: @external_resource(Path.join(@scripts_dir, name))
+
   @scripts Map.new(@script_names, &{&1, File.read!(Path.join(@scripts_dir, &1))})
+  @cachevm_scripts Map.new(@cachevm_script_names, &{&1, File.read!(Path.join(@scripts_dir, &1))})
 
   @bakery "https://extensions.flatcar.org/extensions"
   @bakery_arch %{"amd64" => "x86-64", "arm64" => "arm64"}
@@ -169,6 +175,252 @@ defmodule Crew.Boxes.Flatcar do
     do: is_binary(url) and is_binary(sig) and is_binary(sha) and sha =~ ~r/\A[0-9a-f]{64}\z/
 
   defp artifact?(_), do: false
+
+  # -- the cache VM ---------------------------------------------------------------
+
+  @type cachevm_opts :: %{
+          required(:mode) => :provision | :reprovision,
+          required(:arch) => String.t(),
+          optional(:ssh_keys) => [String.t()],
+          optional(:mgmt_token) => String.t() | nil,
+          optional(:release) => %{version: String.t(), cache: artifact()} | nil,
+          optional(:release_key) => binary() | nil
+        }
+
+  @doc """
+  The Ignition for a `mac-vz` box's cache VM (§12.3, §15.6): Flatcar
+  running crew_cache in box mode on 10.199.0.1, served by DNAT on the
+  VM's own address to the Mac (the vmnet gateway) and to nothing else,
+  management on :7780 behind `:mgmt_token`. It has Flatcar's update flag
+  (§12.1), which crew_cache's `GET /host` reports, and no agent,
+  Tailscale or crew-vmctl: the box's agent on the Mac manages the cache.
+
+  A first boot (`:provision`) installs the cache from `:release`,
+  checked against its SHA-256 and `:release_key`, and keeps the token on
+  the data disk; `:reprovision` (a new OS disk) carries neither. arm64
+  only: a `mac-vz` box is Apple silicon.
+  """
+  @spec cachevm_ignition(cachevm_opts()) :: {:ok, map()} | {:error, atom()}
+  def cachevm_ignition(opts) do
+    opts = Map.update(opts, :ssh_keys, [], fn keys -> Enum.map(keys || [], &String.trim/1) end)
+
+    checks =
+      [
+        bad_mode: opts.mode in [:provision, :reprovision],
+        bad_arch: opts.arch == "arm64",
+        bad_ssh_key: Enum.all?(opts.ssh_keys, &ssh_key?/1),
+        no_release_key: match?(<<_::binary-size(32)>>, opts[:release_key])
+      ] ++
+        if opts.mode == :provision,
+          do: [
+            bad_token: mgmt_token?(opts[:mgmt_token]),
+            no_release: cache_release?(opts[:release])
+          ],
+          else: []
+
+    case Enum.find(checks, fn {_error, ok?} -> not ok? end) do
+      nil -> {:ok, build_cachevm(opts)}
+      {error, false} -> {:error, error}
+    end
+  end
+
+  @doc "Whether `token` will do as a cache management token (§15.6)."
+  def mgmt_token?(token), do: is_binary(token) and token =~ ~r/\A[A-Za-z0-9_-]{32,128}\z/
+
+  defp cache_release?(%{version: v, cache: cache}) when is_binary(v), do: artifact?(cache)
+  defp cache_release?(_), do: false
+
+  defp build_cachevm(opts) do
+    files =
+      [
+        text("/etc/hostname", "crew-cache\n"),
+        text("/etc/flatcar/update.conf", "REBOOT_STRATEGY=off\n"),
+        text(
+          "/etc/systemd/network/zz-default.network.d/crew-dhcp.conf",
+          "[DHCPv4]\nClientIdentifier=mac\n"
+        ),
+        text(
+          "/etc/systemd/network/00-crew.network",
+          "[Match]\nName=crew0\n\n[Link]\nUnmanaged=yes\n"
+        ),
+        text("/etc/sysctl.d/90-crew.conf", cachevm_sysctls())
+      ] ++
+        for({name, script} <- @cachevm_scripts, do: text("/etc/crew-box/#{name}", script)) ++
+        release_key_file(opts[:release_key]) ++
+        if(opts.mode == :provision, do: cachevm_provision_files(opts), else: [])
+
+    %{
+      "ignition" => %{"version" => "3.4.0"},
+      "passwd" => cachevm_passwd(opts.ssh_keys),
+      "storage" => %{
+        "directories" => [%{"path" => "/etc/crew-box", "mode" => 0o700}],
+        "files" => files
+      },
+      "systemd" => %{
+        "units" => [
+          unit("srv-crew.mount", srv_crew_mount()),
+          unit("crew-format-data.service", format_data(vm_data_disk()), enabled: false),
+          unit("crew-cachevm-install.service", cachevm_install()),
+          unit("crew-cachevm-net.service", cachevm_net()),
+          unit("crew-cache.service", cachevm_cache()),
+          unit("crew-cachevm-status.service", cachevm_status()),
+          unit("crew-flatcar-update.service", flatcar_update(), enabled: false),
+          unit("crew-flatcar-update.timer", flatcar_update_timer()),
+          unit("crew-clock-sync.service", clock_sync(), enabled: false),
+          unit("crew-clock-sync.timer", clock_sync_timer()),
+          %{"name" => "docker.socket", "mask" => true},
+          %{"name" => "docker.service", "mask" => true},
+          %{"name" => "containerd.service", "mask" => true}
+        ]
+      }
+    }
+  end
+
+  defp cachevm_provision_files(opts) do
+    release = opts.release
+    key = opts.release_key
+
+    [
+      secret("/etc/crew-box/cache-mgmt.env", env(CREW_CACHE_MGMT_TOKEN: opts.mgmt_token)),
+      text(
+        "/etc/crew-box/release.env",
+        env(
+          CREW_VERSION: release.version,
+          CREW_TARGET: target(opts.arch),
+          CREW_CACHE_URL: release.cache.url,
+          CREW_CACHE_SHA256: release.cache.sha256,
+          CREW_CACHE_SIG: release.cache.signature,
+          CREW_RELEASE_KEY_FINGERPRINT: CrewProtocol.Auth.fingerprint(key)
+        )
+      )
+    ]
+  end
+
+  defp cachevm_sysctls do
+    """
+    # Crew (docs/crew_spec.md §15.6): the cache VM routes nothing.
+    net.ipv6.conf.default.accept_ra = 0
+    user.max_user_namespaces = 0
+    vm.swappiness = 0
+    """
+  end
+
+  defp cachevm_passwd(ssh_keys) do
+    crewcache = %{
+      "name" => "crewcache",
+      "uid" => @cache_uid,
+      "primaryGroup" => "crewcache",
+      "homeDir" => "/srv/crew/cache",
+      "gecos" => "Crew registry cache",
+      "noCreateHome" => true,
+      "shell" => "/usr/sbin/nologin",
+      "system" => true,
+      "noUserGroup" => true
+    }
+
+    core = if ssh_keys == [], do: [], else: [%{"name" => "core", "sshAuthorizedKeys" => ssh_keys}]
+
+    %{
+      "groups" => [%{"name" => "crewcache", "gid" => @cache_uid, "system" => true}],
+      "users" => [crewcache | core]
+    }
+  end
+
+  defp cachevm_install do
+    """
+    [Unit]
+    Description=Install crew_cache and its management token on the data disk
+    RequiresMountsFor=/srv/crew
+    Wants=network-online.target
+    After=network-online.target srv-crew.mount
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/bin/sh /etc/crew-box/cachevm-install.sh
+    Restart=on-failure
+    RestartSec=30
+    StandardOutput=journal
+    StandardError=journal
+
+    [Install]
+    WantedBy=multi-user.target
+    """
+  end
+
+  defp cachevm_net do
+    """
+    [Unit]
+    Description=Serve the cache on this VM's address to the Mac only
+    RequiresMountsFor=/srv/crew
+    Wants=network-online.target
+    After=network-online.target srv-crew.mount
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/bin/sh /etc/crew-box/cachevm-net.sh
+    StandardOutput=journal
+    StandardError=journal
+
+    [Install]
+    WantedBy=multi-user.target
+    """
+  end
+
+  # As a box's crew-cache.service, from the cache VM's own release, with
+  # management on 10.199.0.1 behind the token (the Mac reaches it by DNAT).
+  defp cachevm_cache do
+    """
+    [Unit]
+    Description=Crew's registry cache (crew_cache)
+    Wants=network-online.target
+    After=network-online.target crew-cachevm-net.service crew-cachevm-install.service
+    Requires=crew-cachevm-net.service crew-cachevm-install.service
+    RequiresMountsFor=/srv/crew
+    ConditionPathExists=/srv/crew/release/current/bin/crew_cache
+
+    [Service]
+    User=crewcache
+    Group=crewcache
+    EnvironmentFile=-/run/crew-box/cache.env
+    EnvironmentFile=/srv/crew/cachevm/mgmt.env
+    Environment=HOME=/srv/crew/cache CREW_DATA_DIR=/srv/crew RELEASE_TMP=/run/crew-cache RELEASE_DISTRIBUTION=none
+    Environment=CREW_CACHE_MGMT_LISTEN=10.199.0.1:7780
+    RuntimeDirectory=crew-cache
+    RuntimeDirectoryMode=0700
+    WorkingDirectory=/run/crew-cache
+    ExecStart=/srv/crew/release/current/bin/crew_cache start
+    Restart=always
+    RestartSec=3
+    AmbientCapabilities=CAP_NET_BIND_SERVICE
+    CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+    OOMScoreAdjust=-900
+    NoNewPrivileges=true
+    ProtectSystem=strict
+    ProtectHome=true
+    PrivateTmp=true
+    ReadWritePaths=/srv/crew/cache
+
+    [Install]
+    WantedBy=multi-user.target
+    """
+  end
+
+  defp cachevm_status do
+    """
+    [Unit]
+    Description=Say on the consoles when the cache answers
+    After=crew-cache.service
+
+    [Service]
+    Type=oneshot
+    ExecStart=/bin/sh /etc/crew-box/cachevm-status.sh
+
+    [Install]
+    WantedBy=multi-user.target
+    """
+  end
 
   # -- the config ----------------------------------------------------------------
 

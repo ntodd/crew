@@ -115,6 +115,15 @@ jobs:
               done
             done
           done
+          # A mac-vz box's cache VM (arm64 only).
+          for mode in provision reprovision; do
+            flag=""
+            if [ "$mode" = reprovision ]; then flag=--reprovision; fi
+            out="$RUNNER_TEMP/cachevm-$mode.ign"
+            mix crew.ignition --type cachevm $flag --out "$out"
+            echo "cachevm $mode"
+            docker run --rm -i "$IGNITION_VALIDATE" - < "$out"
+          done
 
   # ShellCheck on what Flatcar boxes and the launchers run (§12.2,
   # §12.3), at a pinned release checked against its SHA-256.

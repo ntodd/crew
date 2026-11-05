@@ -228,6 +228,32 @@ defmodule Crew.Boxes do
     end
   end
 
+  @doc """
+  The cache VM's first-boot Ignition for a `mac-vz` box's join token
+  (§12.3, §15.6), and the management token it carries: the box's
+  installer (install-macos.sh, through the mac-vm launcher's `--role
+  cache`) gives the same token to the agent. A new token each time; the
+  control plane keeps none of them, and the join token stays good for
+  the agent's enrollment.
+  """
+  def cachevm_ignition(raw_token, params) do
+    with %JoinToken{} = token <- valid_join_token(raw_token) || {:error, :invalid_token},
+         true <- token.box_type == "mac-vz" || {:error, :not_mac_vz},
+         {:ok, release} <- Releases.install_set(Flatcar.target("arm64")),
+         mgmt_token = "cm_" <> Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false),
+         {:ok, config} <-
+           Flatcar.cachevm_ignition(%{
+             mode: :provision,
+             arch: "arm64",
+             ssh_keys: token.ssh_keys ++ split_keys(params["ssh_keys"]),
+             mgmt_token: mgmt_token,
+             release: %{version: release.version, cache: artifact(release.cache)},
+             release_key: Crew.Config.release_public_key()
+           }) do
+      {:ok, config, token.box_name, mgmt_token}
+    end
+  end
+
   defp artifact(release),
     do: %{url: Releases.url(release), sha256: release.sha256, signature: release.signature}
 

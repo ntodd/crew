@@ -92,6 +92,44 @@ defmodule CrewWeb.AgentController do
     end
   end
 
+  @doc """
+  A `mac-vz` box's cache VM's first-boot Ignition (§12.3, §15.6), for its
+  join token and optional `ssh_keys[]`: the box's name in `X-Crew-Box`,
+  and in `X-Crew-Cache-Token` the management token the Ignition carries,
+  for the box's agent. Bad tokens count as `flatcar_ignition/2`'s do.
+  """
+  def cachevm_ignition(conn, params) do
+    key = "enroll-failed:#{CrewWeb.ClientIP.from_conn(conn)}"
+
+    with false <- RateLimit.exhausted?(key, @window, @max_failures),
+         {:ok, config, name, mgmt_token} <- Boxes.cachevm_ignition(params["join_token"], params) do
+      conn
+      |> put_resp_header("cache-control", "no-store")
+      |> put_resp_header("x-crew-box", name)
+      |> put_resp_header("x-crew-cache-token", mgmt_token)
+      |> json(config)
+    else
+      true ->
+        conn |> put_status(:too_many_requests) |> json(%{error: "too many attempts"})
+
+      {:error, :invalid_token} ->
+        RateLimit.failed(key, @window, @max_failures)
+
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "join token is invalid, expired or used"})
+
+      {:error, :not_mac_vz} ->
+        conn
+        |> put_status(:bad_request)
+        |> json(%{error: "only a mac-vz box has a cache VM; this token is for another type"})
+
+      {:error, reason} ->
+        {status, message} = ignition_error(reason, %{"arch" => "arm64"})
+        conn |> put_status(status) |> json(%{error: message})
+    end
+  end
+
   defp ignition_error(:bad_arch, _),
     do: {:bad_request, "arch must be one of: #{Enum.join(Crew.Boxes.Flatcar.arches(), ", ")}"}
 

@@ -73,6 +73,7 @@ defmodule CrewWeb.Router do
   scope "/agent", CrewWeb do
     get "/releases/:version/:target/:file", AgentController, :release
     post "/flatcar/ignition", AgentController, :flatcar_ignition
+    post "/flatcar/cachevm/ignition", AgentController, :cachevm_ignition
     get "/linux-vm.sh", AgentController, :linux_vm_script
     get "/mac-vm.sh", AgentController, :mac_vm_script
   end
