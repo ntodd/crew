@@ -13,6 +13,8 @@
 #                           run.sh does (exit 143); the listener's pid is
 #                           in <dir>/listener.pid
 #   STUB_HANG=ignore        the same, but the listener never finishes
+#                           (either way, it gives up once the stub's
+#                           parent has gone)
 #   STUB_CANCEL=<seconds>   how long the listener takes to cancel (0.2)
 #   STUB_WORKER_LOG=<file>  a worker log to write to _diag/Worker_<time>-utc.log,
 #                           as the worker does: up to its first step at once,
@@ -105,6 +107,11 @@ if [ -n "${STUB_HANG:-}" ]; then
   # for the listener's last output. A second TERM in that wait kills
   # run.sh, so "done waiting" never comes.
   set -m
+  # Not run.sh's: the listener gives up once whatever started the stub
+  # (crew-guest, or a test run) has gone, so a test that never stops it
+  # can't leave it polling for good. $PPID is still the stub's parent in
+  # the subshell, and kill is a builtin: no process per check.
+  orphaned() { ! kill -0 "$PPID" 2>/dev/null; }
   # run.sh traps TERM before it starts the listener.
   trap 'line "$tests_page2" "stub-runner: got SIGTERM"; echo "stub-runner: got SIGTERM"; [ -z "${PID:-}" ] || kill -INT -$PID || true' TERM
   (
@@ -114,10 +121,14 @@ if [ -n "${STUB_HANG:-}" ]; then
       # A cancel that outlasts any grace.
       trap 'line "$tests_page2" "stub-runner: ignoring SIGINT"' INT
       trap '' TERM
-      while :; do sleep 0.1; done
+      until orphaned; do sleep 0.1; done
+      exit 0
     fi
     trap 'cancel=1' INT
-    while [ -z "${cancel:-}" ]; do sleep 0.1; done
+    while [ -z "${cancel:-}" ]; do
+      orphaned && exit 0
+      sleep 0.1
+    done
     sleep "${STUB_CANCEL:-0.2}"
     line "$tests_page2" "stub-runner: cancelled"
     echo "stub-runner: cancelled"
