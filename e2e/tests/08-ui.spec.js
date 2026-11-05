@@ -28,10 +28,14 @@ test("the dashboard, with a box and work", async ({page, request}) => {
   await expect(page.locator("[id^=box-]", {hasText: "null-ui"})).toContainText("Online", {timeout: 180_000})
 
   // Some finished work, and a job that waits (a size no box can hold).
-  await fakePost(request, "/__fake/runs", {repo: "mona/ui", workflow: "Build", branch: "feat/one", sha: "a".repeat(40), jobs: [{name: "unit", labels: ["crew-s"], seconds: 2}]})
-  await fakePost(request, "/__fake/runs", {repo: "mona/ui", workflow: "Build", branch: "feat/one", sha: "b".repeat(40), jobs: [{name: "unit", labels: ["crew-s"], seconds: 2}, {name: "e2e (1)", labels: ["crew-s"], seconds: 3}, {name: "e2e (2)", labels: ["crew-s"], seconds: 3}]})
+  const first = await fakePost(request, "/__fake/runs", {repo: "mona/ui", workflow: "Build", branch: "feat/one", sha: "a".repeat(40), jobs: [{name: "unit", labels: ["crew-s"], seconds: 2}]})
+  const second = await fakePost(request, "/__fake/runs", {repo: "mona/ui", workflow: "Build", branch: "feat/one", sha: "b".repeat(40), jobs: [{name: "unit", labels: ["crew-s"], seconds: 2}, {name: "e2e (1)", labels: ["crew-s"], seconds: 3}, {name: "e2e (2)", labels: ["crew-s"], seconds: 3}]})
   await fakePost(request, "/__fake/runs", {repo: "mona/ui", workflow: "Release", branch: "main", jobs: [{name: "huge", labels: ["crew-xl"], hold: true}]})
-  await expect.poll(async () => (await fakeState(request)).jobs.filter(j => j.status === "completed").length, {timeout: 120_000}).toBeGreaterThanOrEqual(4)
+  // These two runs' jobs, not every job the fake has: earlier files'
+  // finished jobs would make the count true at once.
+  const builds = [...first.jobs, ...second.jobs].map(j => j.id)
+  await expect.poll(async () => (await fakeState(request)).jobs.filter(j => builds.includes(j.id) && j.status === "completed").length,
+    {timeout: 120_000}).toBe(builds.length)
 
   await page.goto("/")
   await expect(page.locator("#fleet")).toContainText("null-ui")
