@@ -136,7 +136,11 @@ defmodule CrewAgent.ConformanceTest do
           addr =
             System.get_env("CREW_CONFORMANCE_CACHE_ADDR") || raise "CREW_CONFORMANCE_CACHE_ADDR"
 
-          [vz_cache_addr: addr, cache_mgmt_url: cache.mgmt, cache_mgmt_token: cache.token]
+          [
+            vz_cache: %{addr: addr, mac: nil, mgmt_port: 7780, leases: "/var/db/dhcpd_leases"},
+            cache_mgmt_url: cache.mgmt,
+            cache_mgmt_token: cache.token
+          ]
         else
           [vz_dns_fallback: "1.1.1.1"]
         end

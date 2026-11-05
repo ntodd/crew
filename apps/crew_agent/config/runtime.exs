@@ -46,7 +46,12 @@ if config_env() != :test do
     vz_host_reserve_vcpus: int.("CREW_VZ_HOST_RESERVE_VCPUS", 2),
     vz_host_reserve_mib: int.("CREW_VZ_HOST_RESERVE_MIB", 8192),
     vz_vm_area_gib: int.("CREW_VZ_VM_AREA_GIB", 400),
-    vz_cache_addr: System.get_env("CREW_VZ_CACHE_ADDR"),
+    vz_cache: %{
+      addr: System.get_env("CREW_VZ_CACHE_ADDR"),
+      mac: System.get_env("CREW_VZ_CACHE_MAC"),
+      mgmt_port: 7780,
+      leases: "/var/db/dhcpd_leases"
+    },
     vz_dns_fallback: System.get_env("CREW_VZ_DNS_FALLBACK"),
     vz_mtu: int.("CREW_VZ_MTU", 1500),
     vz_max_conns: int.("CREW_VZ_MAX_CONNS", 1024),

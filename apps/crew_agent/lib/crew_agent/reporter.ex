@@ -14,6 +14,9 @@ defmodule CrewAgent.Reporter do
   @metrics_ms 5_000
   @capabilities_ms 60_000
   @sweep_ms 10 * 60_000
+  # A cache VM's reboot state (§12.1): its flag, and a new boot after a
+  # cachevm.restart, which clears the box's drain.
+  @cache_vm_ms 30_000
 
   def start_link(_), do: GenServer.start_link(__MODULE__, nil, name: __MODULE__)
 
@@ -33,15 +36,15 @@ defmodule CrewAgent.Reporter do
     Process.send_after(self(), :metrics, @metrics_ms)
     Process.send_after(self(), :capabilities, @capabilities_ms)
     Process.send_after(self(), :sweep, @sweep_ms)
-    {:ok, %{cpu: nil, capabilities: nil}}
+    Process.send_after(self(), :cache_vm, @cache_vm_ms)
+    {:ok, %{cpu: nil, capabilities: nil, reboot: nil}}
   end
 
   @impl true
   def handle_cast(:report_now, state) do
     state = send_capabilities(%{state | capabilities: nil})
     send_inventory()
-    send_reboot()
-    {:noreply, state}
+    {:noreply, send_reboot(state)}
   end
 
   def handle_cast(:inventory, state) do
@@ -66,6 +69,16 @@ defmodule CrewAgent.Reporter do
     {:noreply, state}
   end
 
+  def handle_info(:cache_vm, state) do
+    Process.send_after(self(), :cache_vm, @cache_vm_ms)
+    config = Config.get()
+
+    if CrewAgent.CacheVM.configured?(config) and state.reboot != nil and
+         CrewAgent.CacheVM.reboot(config) != state.reboot.cache_vm,
+       do: {:noreply, send_reboot(state)},
+       else: {:noreply, state}
+  end
+
   def handle_info(:capabilities, state) do
     Process.send_after(self(), :capabilities, @capabilities_ms)
     {:noreply, send_capabilities(state)}
@@ -86,15 +99,26 @@ defmodule CrewAgent.Reporter do
   defp send_inventory,
     do: push("box.inventory", %{vms: VMs.inventory(), images: Images.inventory(Config.get())})
 
-  defp send_reboot do
-    push("box.reboot", %{
+  defp send_reboot(state) do
+    payload = reboot_payload(Config.get())
+    push("box.reboot", payload)
+    %{state | reboot: payload}
+  end
+
+  @doc """
+  `box.reboot` (§10.4, §12.1): this host's flag, and on a `mac-vz` box
+  with a cache VM, the cache VM's (`CrewAgent.CacheVM`).
+  """
+  def reboot_payload(%Config{} = config) do
+    %{
       required: File.exists?("/run/reboot-required"),
       packages: reboot_packages(),
       boot_id: CrewAgent.Boot.id(),
       # Firecracker boxes reboot through crew-vmctl (§12.1).
-      can_restart: Config.get().driver == "firecracker",
-      os_version: CrewAgent.Boot.os_version()
-    })
+      can_restart: config.driver == "firecracker",
+      os_version: CrewAgent.Boot.os_version(),
+      cache_vm: CrewAgent.CacheVM.reboot(config)
+    }
   end
 
   defp reboot_packages do

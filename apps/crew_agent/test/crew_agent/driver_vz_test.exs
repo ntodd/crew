@@ -133,20 +133,40 @@ defmodule CrewAgent.Driver.VZTest do
     assert byte_size(path) <= 103
   end
 
-  test "the cache VM's address comes from hostvm/cachevm.ip", ctx do
+  test "the cache VM's address is its lease in vmnet's DHCP leases, by its MAC", ctx do
     vzd(ctx)
-    File.mkdir_p!(Path.join(ctx.dir, "hostvm"))
-    File.write!(Path.join([ctx.dir, "hostvm", "cachevm.ip"]), "192.168.64.3\n")
+    leases = Path.join(ctx.dir, "dhcpd_leases")
+
+    File.write!(
+      leases,
+      "{\n\tip_address=192.168.64.3\n\thw_address=1,52:54:0:a:b:c\n\tlease=0x1\n}\n"
+    )
+
+    Config.put(%{
+      ctx.config
+      | vz_cache: %{ctx.config.vz_cache | mac: "52:54:00:0a:0b:0c", leases: leases}
+    })
+
     spec = spec(ctx.config)
     assert :ok = VZ.start(spec)
     cfg = spec.vm_dir |> Path.join("vz.json") |> File.read!() |> Jason.decode!()
     assert cfg["cache_addr"] == "192.168.64.3"
   end
 
-  test "a cachevm.ip that isn't an address is ignored", ctx do
+  test "a lease that isn't an address is ignored", ctx do
     vzd(ctx)
-    File.mkdir_p!(Path.join(ctx.dir, "hostvm"))
-    File.write!(Path.join([ctx.dir, "hostvm", "cachevm.ip"]), "192.168.64.3:80; rm -rf /\n")
+    leases = Path.join(ctx.dir, "dhcpd_leases")
+
+    File.write!(
+      leases,
+      "{\n\tip_address=192.168.64.3:80; rm\n\thw_address=1,52:54:0:a:b:c\n\tlease=0x1\n}\n"
+    )
+
+    Config.put(%{
+      ctx.config
+      | vz_cache: %{ctx.config.vz_cache | mac: "52:54:00:0a:0b:0c", leases: leases}
+    })
+
     spec = spec(ctx.config)
     assert :ok = VZ.start(spec)
 

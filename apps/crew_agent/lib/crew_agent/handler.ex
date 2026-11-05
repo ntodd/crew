@@ -42,6 +42,14 @@ defmodule CrewAgent.Handler do
     end
   end
 
+  # A mac-vz box's cache VM, through launchd (§12.1, CrewAgent.CacheVM).
+  def handle(%Command{type: "cachevm.restart", payload: p}) do
+    case Config.get() do
+      %Config{driver: "vz"} = config -> CrewAgent.CacheVM.restart(config, p.boot_id)
+      _ -> {:error, "unsupported", "only a mac-vz box has a cache VM"}
+    end
+  end
+
   # §20.2: installs the release, then exits once the result is out, for
   # the service manager to start the new one.
   def handle(%Command{type: "agent.update", payload: p, op_id: op_id}) do

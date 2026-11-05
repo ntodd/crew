@@ -200,23 +200,9 @@ defmodule CrewAgent.Driver.VZ do
     }
   end
 
-  # The cache VM (§12.3) writes its address to hostvm/cachevm.ip;
-  # CREW_VZ_CACHE_ADDR overrides it. Anything that isn't an IPv4 address
-  # is ignored.
-  defp cache_addr(config) do
-    from_file =
-      case File.read(Path.join([config.data_dir, "hostvm", "cachevm.ip"])) do
-        {:ok, body} -> String.trim(body)
-        _ -> nil
-      end
-
-    with ip when is_binary(ip) <- config.vz_cache_addr || from_file,
-         {:ok, _} <- :inet.parse_ipv4strict_address(String.to_charlist(ip)) do
-      ip
-    else
-      _ -> ""
-    end
-  end
+  # The cache VM's address (§15.6), or "" for none: crew-vz then
+  # answers the guest's 10.199.0.1 itself, with CREW_VZ_DNS_FALLBACK.
+  defp cache_addr(config), do: CrewAgent.CacheVM.address(config) || ""
 
   defp write_config(config, spec) do
     body = Jason.encode!(vz_json(config, spec))
