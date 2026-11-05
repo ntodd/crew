@@ -85,6 +85,13 @@ The other spikes are recorded here as they run.
   first when it was never acked). A VM the inventory doesn't list is
   destroyed, per §8.6's inventory row. A `requested` VM's absence means
   nothing: its `vm.start` may still be on the way.
+- **A VM boots with more than its size.** The guest kernel keeps part of
+  what it's given (its image, `struct page`, swiotlb), so a VM boots
+  with its `memory_mib` plus `CrewProtocol.GuestMemory.reserve_mib/1`
+  and its guest sees the size (§11.6 item 2). Placement counts that
+  reserve with `vmm_overhead_mib`, and a box's `max_memory_mib_per_vm`
+  is checked against what the VM boots with. crew-vmctl has the same
+  formula (`vmctl.BootMiB`) and refuses an `fc.json` that differs.
 - **Timers** are recomputed from the stored timestamps when servers
   start at boot; a VM still `requested` at boot fails as `cp_restart`.
 - **Job links** come from the webhook's `runner_name`, when it names one
@@ -1245,7 +1252,7 @@ tree. Times are from `vm.start` as the agent took it.
 | # | vz | firecracker |
 |---|---|---|
 | 1 | **Pass.** Payload 0.93 to 0.97 s after `vm.start` (item 11's 20 at once: below) | **Pass.** 2.2 s |
-| 2 | **Fail**, MemTotal only. `nproc` matches at 1, 2 and 4 vCPUs. MemTotal is short by 60, 80, 182 and 260 MiB at 1, 2, 4 and 8 GiB | **Fail**, the same: 62, 82, 184 and 262 MiB short |
+| 2 | **Pass** (after the fix below). `nproc` matches at 1, 2 and 4 vCPUs; MemTotal is 3, 3, 5 and 21 MiB short at 1, 2, 4 and 8 GiB (2026-11-05) | **Pass**, the same: 5, 5, 7 and 11 MiB short |
 | 3 | **Pass** at 10, 20 and 40 GiB: `vda` is `disk_gib`, ext4 grown to all of it, 256 MiB written and synced | **Pass**, the same |
 | 4 | **Pass** but the private GHCR pull (skipped). DNS through 10.199.0.1 and `https://github.com` (200); `public.ecr.aws/docker/library/alpine:3.22` twice through the cache (its stats: 9 misses, then 9 hits for the second); `docker run --rm alpine true`; buildx on `docker-container` (5.2 s); `kind create cluster` v0.33.0 Ready in 32 s; Node 24 `fetch` and Python `requests` to `ghcr.io/v2/` (401) with the runner's environment | **Pass**, the same but the private pull. The cache served both pulls (18 hits: its store was warm from the vz runs); buildx 6.2 s; kind Ready in 38 s |
 | 5 | **Pass.** Every target refused (the helper's RST or ICMP), every open one included: the Mac on its LAN, vmnet and tailnet addresses, the LAN router, the Flatcar VM, the site's public address, another VM's listener, the gateway, the service address's other ports, metadata, MagicDNS. IPv6 turned back on by root reaches nothing and learns no neighbour; spoofed sources (another VM's lease, an unused one) get nothing; 1022 of 2100 connections at once (the cap is the agent's `max_conns`, 1024) | **Pass.** Every target timed out (dropped; a refusal would have meant something answered); IPv6 and spoofing as on vz; 2046 of 2100 connections (the 2048 cap, two of them crew-guest's) |
@@ -1275,13 +1282,15 @@ a job, Docker started. The real runner can't listen without GitHub.
   (503, which crew-guest retries for the next agent), and waits up to
   3 s for the control plane's acks. A crash still loses up to a second
   or so of lines.
-- **MemTotal (item 2) is short by more than 64 MiB above 1 GiB, on both
-  drivers.** Not a Crew bug: it's what the guest kernel reserves, per
-  its boot log 72, 93, 198 and 278 MiB at 1, 2, 4 and 8 GiB (its image
-  is about 51 MiB of that, and the struct page array 1/64 of memory),
-  the same under both drivers. Not changed: §11.6's bound needs to
-  grow with the size (128 MiB plus 2% holds at every size measured), or
-  sizes need the overhead added on top.
+- **MemTotal (item 2) was short by more than 64 MiB above 1 GiB, on
+  both drivers** (fixed). The guest kernel keeps part of what it's given:
+  per its boot log 72, 93, 198 and 278 MiB at 1, 2, 4 and 8 GiB (about
+  44 MiB of image and early allocations, 1/64 for `struct page`, and
+  swiotlb's 64 MiB bounce buffer, which virtio doesn't need). A VM now
+  boots with its size plus `CrewProtocol.GuestMemory.reserve_mib/1`
+  (48 MiB + 1.85%), the command line holds swiotlb to 8 MiB
+  (`swiotlb=4096`), and placement counts the reserve with the VMM's
+  overhead. An 8 GiB VM boots with 8391 MiB.
 - **Tooling:** the development image path took the build's `kernel/`
   directory for the kernel (01a67b4), and the `:kvm` runner still built
   crew-vmctl with Go 1.24.5 after the move to 1.25.14 (92d3bd0).

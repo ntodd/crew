@@ -310,15 +310,17 @@ defmodule CrewAgent.ConformanceTest do
   # -- item 2 across sizes ------------------------------------------------------------------------
 
   test "items 2-3 across sizes: vCPUs, memory and disk as sized", ctx do
+    # One at a time, so the largest fits on a 16 GiB host VM.
     sizes = [
       %{"vcpus" => 1, "memory_mib" => 1024, "disk_gib" => 10},
-      %{"vcpus" => 4, "memory_mib" => 4096, "disk_gib" => 40}
+      %{"vcpus" => 2, "memory_mib" => 2048, "disk_gib" => 20},
+      %{"vcpus" => 4, "memory_mib" => 4096, "disk_gib" => 40},
+      %{"vcpus" => 4, "memory_mib" => 8192, "disk_gib" => 40}
     ]
 
-    vms = for size <- sizes, do: start_vm(ctx, %{"checks" => ["sizing", "disk"]}, size: size)
-
     results =
-      Enum.flat_map(vms, fn vm ->
+      Enum.flat_map(sizes, fn size ->
+        vm = start_vm(ctx, %{"checks" => ["sizing", "disk"]}, size: size)
         r = results(await_done(ctx, vm, 300_000))
 
         IO.puts(
@@ -326,11 +328,11 @@ defmodule CrewAgent.ConformanceTest do
         )
 
         print_results(r)
+        await_exit(ctx, vm)
+        assert_clean(ctx, vm)
         r
       end)
 
-    for vm <- vms, do: await_exit(ctx, vm)
-    for vm <- vms, do: assert_clean(ctx, vm)
     failures = for r <- results, failed?(ctx, r), do: r
     assert failures == [], "failed: #{inspect(failures, pretty: true)}"
   end
@@ -569,7 +571,20 @@ defmodule CrewAgent.ConformanceTest do
   defp await_line(ctx, vm, re, timeout) do
     Recorder.await(ctx.recorder, vm.vm_id, timeout, fn e ->
       e.type == "vm.log" and Enum.any?(e.payload.lines, &(&1.text =~ re))
-    end) || flunk("#{vm.vm_id}: no line matching #{inspect(re)} within #{timeout} ms")
+    end) ||
+      flunk("""
+      #{vm.vm_id}: no line matching #{inspect(re)} within #{timeout} ms
+      events: #{inspect(for e <- GenServer.call(ctx.recorder, :events), e.vm_id == vm.vm_id, do: e.type)}
+      console (last 3 KiB):
+      #{console_tail(ctx, vm)}
+      """)
+  end
+
+  defp console_tail(ctx, vm) do
+    case File.read(console_path(ctx, vm)) do
+      {:ok, text} -> binary_part(text, max(byte_size(text) - 3072, 0), min(byte_size(text), 3072))
+      {:error, reason} -> "(#{reason})"
+    end
   end
 
   defp await_done(ctx, vm, timeout) do

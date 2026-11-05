@@ -33,7 +33,7 @@ func agentFC() map[string]any {
 			"is_root_device": true, "is_read_only": false,
 			"rate_limiter": map[string]any{"ops": map[string]any{"size": 3000, "refill_time": 1000}},
 		}},
-		"machine-config": map[string]any{"vcpu_count": 4, "mem_size_mib": 8192, "smt": false},
+		"machine-config": map[string]any{"vcpu_count": 4, "mem_size_mib": 8391, "smt": false},
 		"network-interfaces": []any{map[string]any{
 			"iface_id": "eth0", "host_dev_name": "crewt3", "guest_mac": "02:c2:0a:c8:00:0e",
 			"rx_rate_limiter": limiter, "tx_rate_limiter": limiter,
@@ -119,7 +119,7 @@ func TestChrootConfig(t *testing.T) {
   ],
   "machine-config": {
     "vcpu_count": 4,
-    "mem_size_mib": 8192,
+    "mem_size_mib": 8391,
     "smt": false
   },
   "network-interfaces": [
@@ -206,6 +206,7 @@ func TestChrootConfigRefusesWhatTheAgentMustNotChoose(t *testing.T) {
 		"io engine":          func(fc map[string]any) { drv(fc)["io_engine"] = "Async" },
 		"vcpus differ":       func(fc map[string]any) { mc(fc)["vcpu_count"] = 8 },
 		"memory differs":     func(fc map[string]any) { mc(fc)["mem_size_mib"] = 65536 },
+		"memory is the size": func(fc map[string]any) { mc(fc)["mem_size_mib"] = 8192 },
 		"smt":                func(fc map[string]any) { mc(fc)["smt"] = true },
 		"huge pages":         func(fc map[string]any) { mc(fc)["huge_pages"] = "2M" },
 		"another tap":        func(fc map[string]any) { nic(fc)["host_dev_name"] = "eth0" },

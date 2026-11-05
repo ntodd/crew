@@ -20,7 +20,7 @@ func TestSystemdRunArgvIsTheSpecsUnit(t *testing.T) {
 	want := []string{
 		"systemd-run", "--unit=crew-vm-" + vmID, "--collect",
 		"-p", "Type=exec", "-p", "KillMode=mixed", "-p", "TimeoutStopSec=30",
-		"-p", "MemoryMax=8448M", "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
+		"-p", "MemoryMax=8647M", "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
 		"-p", "CPUAccounting=yes", "-p", "RuntimeMaxSec=3600", "-p", "OOMScoreAdjust=500",
 		"-p", "StandardOutput=append:" + jail + "/console.log",
 		"-p", "StandardError=append:" + jail + "/fc.stderr",

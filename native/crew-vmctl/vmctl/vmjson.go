@@ -18,6 +18,11 @@ const (
 	MaxLifetime  = 7 * 24 * time.Hour
 )
 
+// BootMiB is the memory a VM of this size boots with: its size plus what
+// the guest kernel keeps, so the guest's MemTotal is the size (§11.6 item
+// 2). The same formula as CrewProtocol.GuestMemory.boot_mib/1.
+func BootMiB(memoryMiB int) int { return memoryMiB + 48 + memoryMiB*37/2000 }
+
 // VM is what crew-vmctl takes from vm.json.
 type VM struct {
 	ID        string

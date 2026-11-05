@@ -28,7 +28,7 @@ func SystemdRunArgv(vm VM, p Paths, now time.Time) []string {
 	argv := []string{"systemd-run", "--unit=crew-vm-" + vm.ID, "--collect"}
 	for _, kv := range []string{
 		"Type=exec", "KillMode=mixed", "TimeoutStopSec=30",
-		"MemoryMax=" + strconv.Itoa(vm.MemoryMiB+256) + "M", "MemorySwapMax=0", "TasksMax=1024",
+		"MemoryMax=" + strconv.Itoa(BootMiB(vm.MemoryMiB)+256) + "M", "MemorySwapMax=0", "TasksMax=1024",
 		"CPUAccounting=yes", "RuntimeMaxSec=" + strconv.FormatInt(left, 10), "OOMScoreAdjust=500",
 		"StandardOutput=append:" + p.Console(vm.ID),
 		"StandardError=append:" + p.Stderr(vm.ID),
