@@ -33,26 +33,6 @@ ADD --checksum=sha256:${REBAR3_SHA256} \
     https://github.com/erlang/rebar3/releases/download/${REBAR3_VERSION}/rebar3 \
     /rebar3
 
-# crew-guest's release (§13.5), with ERTS, built on Ubuntu noble like the
-# guest. Its Hex deps are fetched as mix.lock pins them.
-FROM ${ELIXIR_IMAGE} AS crew-guest
-ARG HEX_VERSION CREW_VERSION
-ENV MIX_ENV=prod LANG=C.UTF-8 MIX_HOME=/mix HEX_HOME=/hex
-RUN --mount=type=bind,from=downloads,source=/rebar3,target=/tmp/rebar3 \
-    mix local.hex "${HEX_VERSION}" --force \
- && install -m 0755 /tmp/rebar3 /usr/local/bin/rebar3 \
- && mix local.rebar rebar3 /usr/local/bin/rebar3 --force
-WORKDIR /src/apps/crew_guest
-COPY --from=crew_protocol mix.exs mix.lock /src/apps/crew_protocol/
-COPY --from=crew_protocol lib /src/apps/crew_protocol/lib
-COPY --from=crew_guest mix.exs mix.lock ./
-COPY --from=crew_guest config config
-RUN mix deps.get --only prod --check-locked && mix deps.compile
-COPY --from=crew_guest lib lib
-COPY --from=crew_guest priv priv
-COPY --from=crew_guest rel rel
-RUN CREW_VERSION="${CREW_VERSION}" mix release --path /opt/crew-guest
-
 # Ubuntu, and every package at its locked version. Only the files this
 # step reads are mounted, so editing anything else keeps its cache.
 FROM ${UBUNTU_IMAGE} AS packages
@@ -65,6 +45,31 @@ RUN --mount=type=bind,source=packages.txt,target=/crew/packages.txt \
     CREW_ARCH="${CREW_ARCH}" LOCK_MODE="${LOCK_MODE}" \
     DOCKER_APT_KEY_FPR="${DOCKER_APT_KEY_FPR}" PGDG_APT_KEY_FPR="${PGDG_APT_KEY_FPR}" \
     bash /crew/rootfs/packages.sh
+
+# crew-guest's release (§13.5), with ERTS, built on Ubuntu noble like the
+# guest. Its Hex deps are fetched as mix.lock pins them. The Elixir
+# image's amd64 variant has no CA certificates (its arm64 one does), so
+# Hex's TLS uses the guest's own bundle: packages.lock's ca-certificates,
+# the same on both arches.
+FROM ${ELIXIR_IMAGE} AS crew-guest
+ARG HEX_VERSION CREW_VERSION
+ENV MIX_ENV=prod LANG=C.UTF-8 MIX_HOME=/mix HEX_HOME=/hex
+RUN --mount=type=bind,from=downloads,source=/rebar3,target=/tmp/rebar3 \
+    --mount=type=bind,from=packages,source=/etc/ssl/certs/ca-certificates.crt,target=/etc/ssl/certs/ca-certificates.crt \
+    mix local.hex "${HEX_VERSION}" --force \
+ && install -m 0755 /tmp/rebar3 /usr/local/bin/rebar3 \
+ && mix local.rebar rebar3 /usr/local/bin/rebar3 --force
+WORKDIR /src/apps/crew_guest
+COPY --from=crew_protocol mix.exs mix.lock /src/apps/crew_protocol/
+COPY --from=crew_protocol lib /src/apps/crew_protocol/lib
+COPY --from=crew_guest mix.exs mix.lock ./
+COPY --from=crew_guest config config
+RUN --mount=type=bind,from=packages,source=/etc/ssl/certs/ca-certificates.crt,target=/etc/ssl/certs/ca-certificates.crt \
+    mix deps.get --only prod --check-locked && mix deps.compile
+COPY --from=crew_guest lib lib
+COPY --from=crew_guest priv priv
+COPY --from=crew_guest rel rel
+RUN CREW_VERSION="${CREW_VERSION}" mix release --path /opt/crew-guest
 
 # What `make lock` reads.
 FROM scratch AS lock
