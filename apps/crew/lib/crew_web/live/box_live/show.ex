@@ -536,9 +536,7 @@ defmodule CrewWeb.BoxLive.Show do
                 <.link
                   href={~p"/boxes/#{@box.id}/cachevm-reprovision.ign"}
                   class="font-medium text-accent-ink underline"
-                >
-                  Ignition
-                </.link>
+                >Ignition</.link>
                 (the newest release, no secrets), then on the Mac:
               </p>
               <.command
