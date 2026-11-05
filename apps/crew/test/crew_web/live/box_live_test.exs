@@ -99,6 +99,9 @@ defmodule CrewWeb.BoxLiveTest do
         |> render_submit()
 
       assert html =~ "install-macos.sh"
+      # With its cache VM (§15.6), which the installer makes first.
+      assert has_element?(view, "#join-command", "--cache-vm")
+      assert has_element?(view, "#cache-vm-note")
       assert [_, token] = Regex.run(~r/--token (cj_[A-Za-z0-9_-]+)/, html)
       {public, _} = CrewProtocol.Auth.generate_keypair()
       assert {:ok, _} = Boxes.enroll(token, %{"public_key" => Base.encode64(public)})

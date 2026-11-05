@@ -176,8 +176,14 @@ defmodule CrewWeb.BoxLive.New do
             </ol>
             <.command
               id="join-command"
-              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token}#{release_key_option()}"}
+              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token}#{release_key_option()} --cache-vm"}
             />
+            <p id="cache-vm-note" class="mt-3 text-xs text-ink-3">
+              <span class="font-mono">--cache-vm</span>
+              first makes the box's registry cache: a small Flatcar VM on the same Mac (2 CPUs, 4 GiB, a 100 GiB sparse data disk) that its job VMs pull images through.
+              Without it, set <span class="font-mono">CREW_VZ_DNS_FALLBACK</span>
+              in the agent's env so job VMs can resolve names.
+            </p>
           <% type when type in ["linux-vm", "mac-vm"] -> %>
             <p class="mb-2 text-sm text-ink-2">On the host, run:</p>
             <.command

@@ -25,6 +25,11 @@
 #   --data-dir DIR     where VMs, images and the agent's state live
 #   --no-sandbox       run crew-vz's helpers without the sandbox-exec profile
 #   --disable-sleep    pmset -a sleep 0 (a sleeping Mac pauses its jobs)
+#   --cache-vm         the box's cache VM (§12.3, §15.6): crew_cache in a
+#                      Flatcar VM on this Mac, made first with the join token
+#                      by the control plane's mac-vm launcher (--role cache),
+#                      and restarted by root's com.crew.hostvm-restart when the
+#                      agent asks. Its job VMs then pull through it.
 #   --reenroll         enroll again with a new --token (after a revoke)
 #   --uninstall        stop and remove the services (keeps the data)
 #   --dry-run          print what would be done, change nothing
@@ -42,6 +47,9 @@ DISABLE_SLEEP=""
 REENROLL=""
 UNINSTALL=""
 DRY=""
+CACHE_VM=""
+# The launchers' VMs (the cache VM among them), as mac-vm.sh keeps them.
+HOSTVM="${CREW_HOSTVM_DIR:-/Library/Application Support/Crew/hostvm}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -55,6 +63,7 @@ while [ $# -gt 0 ]; do
     --reenroll) REENROLL=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     --dry-run) DRY=1; shift ;;
+    --cache-vm) CACHE_VM=1; shift ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
 done
@@ -100,7 +109,7 @@ if [ -z "$DRY" ]; then [ "$(id -u)" -eq 0 ] || fail "run this as root (sudo)"; f
 if [ -n "$UNINSTALL" ]; then
   # The agent first, so nothing starts another VM; then crew-vzd, whose
   # helpers outlive it by design (§10.7), so they're stopped by hand.
-  for label in com.crew.agent com.crew.vzd; do
+  for label in com.crew.agent com.crew.hostvm-restart com.crew.vzd; do
     run launchctl bootout "system/$label" 2>/dev/null || true
     run rm -f "$DAEMONS/$label.plist"
   done
@@ -109,6 +118,9 @@ if [ -n "$UNINSTALL" ]; then
     fail "job VMs are still running (pgrep -U _crewvm -f 'crew-vz run')"
   fi
   say "removed the services and stopped every job VM; $DATA (with the agent's releases) is kept"
+  if [ -f "$HOSTVM/cachevm/box.conf" ]; then
+    say "the cache VM is still there: sudo crew-box uninstall --yes cachevm removes it"
+  fi
   exit 0
 fi
 
@@ -218,6 +230,31 @@ run ln -sfn "$version" "$DATA/agent/current"
 run chown -h _crewagent:crewvm "$DATA/agent/current"
 run rm -f "$DATA/agent/previous" "$DATA/agent/update-pending" "$DATA/agent/rolled-back" "$DATA/agent/crashes"
 
+# -- the cache VM (§12.3, §15.6) -------------------------------------------------------
+#
+# Made once, with the join token, by the control plane's own mac-vm
+# launcher; after that its MAC and management token are read back for
+# the agent's settings. It needs no agent to come up.
+
+cache_conf="$HOSTVM/cachevm/box.conf"
+if [ -n "$CACHE_VM" ] && [ ! -f "$cache_conf" ]; then
+  [ -n "$enroll" ] || fail "--cache-vm needs --token (and --reenroll on an enrolled box): the control plane hands out the cache VM's config for a join token"
+  base=$(printf '%s' "$URL" | sed 's|^wss://|https://|; s|/agent/websocket$||')
+  launcher=$(mktemp)
+  say "making the cache VM (mac-vm.sh --role cache from $base)"
+  run curl -fsSL -o "$launcher" "$base/agent/mac-vm.sh"
+  run sh "$launcher" --role cache --token "$TOKEN"
+  run rm -f "$launcher"
+fi
+cache_mac=""
+cache_token=""
+if [ -f "$cache_conf" ]; then
+  cache_mac=$(sed -n 's/^mac=//p' "$cache_conf" | tail -n 1)
+  cache_token=$(cat "$HOSTVM/cachevm/mgmt-token" 2>/dev/null || true)
+  echo "$cache_mac" | grep -Eqx '([0-9a-f]{2}:){5}[0-9a-f]{2}' || fail "the cache VM's MAC in $cache_conf isn't one"
+  echo "$cache_token" | grep -Eqx '[A-Za-z0-9_-]{32,128}' || fail "the cache VM has no management token in $HOSTVM/cachevm/mgmt-token"
+fi
+
 # -- the agent's settings -----------------------------------------------------------
 
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
@@ -227,6 +264,8 @@ existing_key=$(env_value CREW_RELEASE_PUBLIC_KEY || true)
 # The admin's own settings (CREW_EXTRA_BLOCKED, reserves...) survive a
 # reinstall; only these lines are the installer's.
 owned='^(CREW_URL|CREW_JOIN_TOKEN|CREW_BOX_NAME|CREW_DATA_DIR|CREW_DRIVER|CREW_VZD_SOCKET|CREW_VZ_BIN|CREW_RELEASE_PUBLIC_KEY|RELEASE_DISTRIBUTION|HOME)='
+# The cache VM's lines are the installer's when it can read them again.
+if [ -n "$cache_mac" ]; then owned='^(CREW_URL|CREW_JOIN_TOKEN|CREW_BOX_NAME|CREW_DATA_DIR|CREW_DRIVER|CREW_VZD_SOCKET|CREW_VZ_BIN|CREW_RELEASE_PUBLIC_KEY|RELEASE_DISTRIBUTION|HOME|CREW_VZ_CACHE_MAC|CREW_CACHE_MGMT_TOKEN)='; fi
 kept=""
 if [ -f "$DATA/agent/env" ]; then kept=$(grep -Ev "$owned" "$DATA/agent/env" || true); fi
 KEY=${KEY:-$existing_key}
@@ -241,6 +280,10 @@ KEY=${KEY:-$existing_key}
   echo "CREW_VZD_SOCKET=$(q "$DATA/run/vzd.sock")"
   echo "CREW_VZ_BIN=$(q "$DATA/agent/current/bin/crew-vz")"
   [ -z "$KEY" ] || echo "CREW_RELEASE_PUBLIC_KEY=$(q "$KEY")"
+  if [ -n "$cache_mac" ]; then
+    echo "CREW_VZ_CACHE_MAC=$(q "$cache_mac")"
+    echo "CREW_CACHE_MGMT_TOKEN=$(q "$cache_token")"
+  fi
   echo "RELEASE_DISTRIBUTION=none"
   echo "HOME=/var/empty"
   [ -z "$kept" ] || printf '%s\n' "$kept"
@@ -265,6 +308,32 @@ for label in com.crew.vzd com.crew.agent; do
   render "$label" | put "$DAEMONS/$label.plist" 0644 root:wheel
   run plutil -lint "$DAEMONS/$label.plist"
 done
+# The cache VM's restart (§12.1): the agent writes run/restart-cachevm
+# (run/ is crewvm's), and root restarts the VM through crew-box.
+if [ -n "$cache_mac" ]; then
+  run launchctl bootout system/com.crew.hostvm-restart 2>/dev/null || true
+  cat <<PLIST | put "$DAEMONS/com.crew.hostvm-restart.plist" 0644 root:wheel
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.crew.hostvm-restart</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$HOSTVM/bin/crew-box</string>
+    <string>restart</string><string>--role</string><string>cache</string>
+    <string>--trigger</string><string>$DATA/run/restart-cachevm</string>
+  </array>
+  <key>WatchPaths</key><array><string>$DATA/run/restart-cachevm</string></array>
+  <key>StandardOutPath</key><string>$DATA/logs/hostvm-restart.log</string>
+  <key>StandardErrorPath</key><string>$DATA/logs/hostvm-restart.log</string>
+</dict>
+</plist>
+PLIST
+  run plutil -lint "$DAEMONS/com.crew.hostvm-restart.plist"
+  run launchctl bootstrap system "$DAEMONS/com.crew.hostvm-restart.plist"
+fi
+
 # crew-vzd first: the agent's capabilities check it.
 run launchctl bootstrap system "$DAEMONS/com.crew.vzd.plist"
 run launchctl bootstrap system "$DAEMONS/com.crew.agent.plist"
