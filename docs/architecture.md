@@ -788,6 +788,17 @@ The other spikes are recorded here as they run.
 - **`crew-box reimage`** wraps the given Ignition in one that merges it
   (`ignition.config.merge`, a `data:` URL) and adds the launcher's own
   SSH key for `crew-box ssh`.
+- **The mac-vm launcher, end to end** (`e2e/tests/12-mac-vm.spec.js`,
+  `E2E_MAC_VM=1`): the served `mac-vm.sh` downloads vfkit and Flatcar
+  against their pins, writes the disks, stages the Ignition, starts the
+  box under launchd and follows it to enrollment; a job VM then boots
+  under Firecracker in it (nested), and `crew-box` status, ssh, stop,
+  start and uninstall each do what they say. It runs as the user, not
+  root: `CREW_BOX_ROOT` moves the Mac's paths under `/private/tmp/cmv`,
+  and shims answer `id -u` with 0, skip `chown` and send launchd's
+  system domain to the user's GUI domain. Passed on 2026-11-05 on the
+  M4 Max (macOS 27.2) in 1.9 minutes, downloads included. Not covered:
+  a real root install in the system domain, and a reboot of the Mac.
 
 ## Release and update notes
 
