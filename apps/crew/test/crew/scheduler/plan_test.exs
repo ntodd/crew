@@ -54,6 +54,28 @@ defmodule Crew.Scheduler.PlanTest do
       assert length(placements(actions)) == 2
     end
 
+    test "each VM also counts what its guest kernel keeps (CrewProtocol.GuestMemory)" do
+      # An 8 GiB VM boots with 8391 MiB: 8391 + 64 = 8455 each.
+      fits = fn mib ->
+        b = box("a", vcpus: 64, memory_mib: mib, reserve_memory_mib: 0)
+        length(placements(Plan.plan(snapshot(boxes: [b], jobs: for(n <- 1..3, do: job(n))))))
+      end
+
+      assert fits.(16_910) == 2
+      assert fits.(16_909) == 1
+    end
+
+    test "a box whose per-VM maximum is the size itself can't boot it" do
+      b = box("a", max_memory_mib_per_vm: 8192)
+      assert placements(Plan.plan(snapshot(boxes: [b], jobs: [job(1)]))) == []
+      refute Plan.could_hold?(b, %{vcpus: 4, memory_mib: 8192})
+
+      assert Plan.could_hold?(%{b | caps: %{b.caps | max_memory_mib_per_vm: 8391}}, %{
+               vcpus: 4,
+               memory_mib: 8192
+             })
+    end
+
     test "vCPUs are overcommitted 1.5×" do
       b = box("a", vcpus: 9, memory_mib: 1_000_000)
       # (9 - 1) × 1.5 = 12 → three 4-vCPU VMs.

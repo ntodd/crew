@@ -97,7 +97,10 @@ defmodule Crew.VMs do
           vcpus: p.size.vcpus,
           memory_mib: p.size.memory_mib,
           disk_gib: p.size.disk_gib,
-          vmm_overhead_mib: box.pinned_capabilities["vmm_overhead_mib"] || 0,
+          # The VMM's, and what the guest kernel keeps (CrewProtocol.GuestMemory).
+          vmm_overhead_mib:
+            (box.pinned_capabilities["vmm_overhead_mib"] || 0) +
+              CrewProtocol.GuestMemory.reserve_mib(p.size.memory_mib),
           image_id: p.image_id,
           state: "requested",
           deadline: DateTime.add(now, job_max, :second),

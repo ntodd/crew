@@ -148,8 +148,8 @@ func check(c *fcConfig, vm VM, p Paths) error {
 	switch {
 	case m.VCPUCount != vm.VCPUs:
 		return bad("vcpu_count must be the size's %d", vm.VCPUs)
-	case m.MemSizeMiB != vm.MemoryMiB:
-		return bad("mem_size_mib must be the size's %d", vm.MemoryMiB)
+	case m.MemSizeMiB != BootMiB(vm.MemoryMiB):
+		return bad("mem_size_mib must be %d for the size's %d", BootMiB(vm.MemoryMiB), vm.MemoryMiB)
 	case m.SMT:
 		return bad("smt must be false")
 	}

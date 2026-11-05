@@ -162,6 +162,28 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     |> Map.fetch!("lease_index")
   end
 
+  test "a VM boots with its size plus the guest kernel's reserve", ctx do
+    vm_id = start(ctx)
+
+    fc =
+      ctx.config
+      |> Config.vm_dir(vm_id)
+      |> Path.join("fc.json")
+      |> File.read!()
+      |> Jason.decode!()
+
+    assert fc["machine-config"]["mem_size_mib"] == CrewProtocol.GuestMemory.boot_mib(1024)
+
+    vm =
+      ctx.config
+      |> Config.vm_dir(vm_id)
+      |> Path.join("vm.json")
+      |> File.read!()
+      |> Jason.decode!()
+
+    assert vm["size"]["memory_mib"] == 1024
+  end
+
   test "a failed cleanup is reported, keeps the lease and the clone, and is retried", ctx do
     vm_id = start(ctx)
     dir = Config.vm_dir(ctx.config, vm_id)

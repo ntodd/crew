@@ -30,6 +30,8 @@ defmodule Crew.Scheduler.Plan do
   - `{:remove_image, box_id, image_id}`
   """
 
+  alias CrewProtocol.GuestMemory
+
   @active ~w(requested starting booted idle busy)
   @supply ~w(requested starting booted idle)
   @projected ~w(requested starting booted)
@@ -155,10 +157,21 @@ defmodule Crew.Scheduler.Plan do
   # Existing VMs and this pass's placements, as allocations.
   defp all_vms(snap), do: snap.vms ++ snap.placements
 
+  # What a VM costs a box beyond its size: the VMM, and what its guest
+  # kernel keeps, which it boots with on top (CrewProtocol.GuestMemory).
+  @doc false
+  def overhead_mib(box, memory_mib),
+    do: box.caps.vmm_overhead_mib + GuestMemory.reserve_mib(memory_mib)
+
   defp fit(snap, box, size) do
     vms = vms_on(snap, box.id)
-    overhead = box.caps.vmm_overhead_mib
-    mem_used = Enum.reduce(vms, 0, &(&1.memory_mib + (&1.vmm_overhead_mib || overhead) + &2))
+    overhead = overhead_mib(box, size.memory_mib)
+
+    mem_used =
+      Enum.reduce(vms, 0, fn vm, acc ->
+        acc + vm.memory_mib + (vm.vmm_overhead_mib || overhead_mib(box, vm.memory_mib))
+      end)
+
     vcpus_used = Enum.reduce(vms, 0, &(&1.vcpus + &2))
 
     projected =
@@ -168,7 +181,7 @@ defmodule Crew.Scheduler.Plan do
         end)
 
     cond do
-      size.vcpus > box.caps.max_vcpus_per_vm or size.memory_mib > box.caps.max_memory_mib_per_vm ->
+      not per_vm_ok?(box, size) ->
         {:no, :per_vm}
 
       mem_used + size.memory_mib + overhead > allocatable_memory_mib(box) ->
@@ -191,9 +204,15 @@ defmodule Crew.Scheduler.Plan do
   # Whether the box could hold the size at all, empty.
   @doc "Whether a box could ever hold a VM of `size` (its limits and what it offers)."
   def could_hold?(box, size) do
-    size.vcpus <= box.caps.max_vcpus_per_vm and size.memory_mib <= box.caps.max_memory_mib_per_vm and
-      size.memory_mib + box.caps.vmm_overhead_mib <= allocatable_memory_mib(box) and
+    per_vm_ok?(box, size) and
+      size.memory_mib + overhead_mib(box, size.memory_mib) <= allocatable_memory_mib(box) and
       size.vcpus <= allocatable_vcpus(box)
+  end
+
+  # The driver's per-VM maxima, against what the VM boots with.
+  defp per_vm_ok?(box, size) do
+    size.vcpus <= box.caps.max_vcpus_per_vm and
+      GuestMemory.boot_mib(size.memory_mib) <= box.caps.max_memory_mib_per_vm
   end
 
   @doc false
@@ -332,7 +351,7 @@ defmodule Crew.Scheduler.Plan do
               vcpus: size.vcpus,
               memory_mib: size.memory_mib,
               disk_gib: size.disk_gib,
-              vmm_overhead_mib: box.caps.vmm_overhead_mib,
+              vmm_overhead_mib: overhead_mib(box, size.memory_mib),
               state: "requested",
               job_id: nil
             }

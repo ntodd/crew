@@ -149,7 +149,8 @@ defmodule CrewAgent.VM do
         spec = %{
           vm_id: p.vm_id,
           vcpus: p.size.vcpus,
-          memory_mib: p.size.memory_mib,
+          # What it boots with: the guest kernel keeps some (§11.6 item 2).
+          memory_mib: CrewProtocol.GuestMemory.boot_mib(p.size.memory_mib),
           disk_gib: p.size.disk_gib,
           limits: p.size.limits,
           image: p.image,
@@ -296,6 +297,9 @@ defmodule CrewAgent.VM do
     Enum.join(
       [
         console,
+        # 8 MiB of bounce buffer, not 64: virtio needs none, and what the
+        # kernel keeps is counted in CrewProtocol.GuestMemory.
+        "swiotlb=4096",
         "root=/dev/vda rw rootfstype=ext4",
         "ip=#{lease.guest}::#{lease.gateway}:#{lease.netmask}::eth0:off",
         "crew.vm=#{vm_id} crew.token=#{token} crew.api=http://#{config.service_ip}:7777"
