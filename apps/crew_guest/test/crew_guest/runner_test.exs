@@ -115,6 +115,16 @@ defmodule CrewGuest.RunnerTest do
     assert Runner.kill_targets(ps, 200, 100) == {[200, 201], [200, 201, 202, 203]}
   end
 
+  # A runner that can't start can be gone, its Port closed, before init
+  # asks for its pid.
+  test "os_pid/1: the Port's OS pid, or nil once it has closed" do
+    port = Port.open({:spawn_executable, "/bin/cat"}, [:binary])
+    assert is_integer(Runner.os_pid(port))
+
+    Port.close(port)
+    assert Runner.os_pid(port) == nil
+  end
+
   test "a runner that can't start is an exit", %{tmp_dir: dir} do
     start_runner(config(dir, [], [Path.join(dir, "no-such-runner")]))
     assert_receive {:exit, code}, 5_000

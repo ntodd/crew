@@ -58,6 +58,16 @@ defmodule CrewGuest.Runner do
     {Enum.sort(groups), Enum.sort(pids)}
   end
 
+  @doc false
+  # A Port's OS pid, or nil if it has already closed: a command that can't
+  # start can be gone before its owner asks, its exit status already sent.
+  def os_pid(port) do
+    case Port.info(port, :os_pid) do
+      {:os_pid, os_pid} -> os_pid
+      nil -> nil
+    end
+  end
+
   defp tree(_children, [], acc), do: acc
 
   defp tree(children, [pid | rest], acc) do
@@ -96,8 +106,8 @@ defmodule CrewGuest.Runner do
         {:env, env}
       ])
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    Logger.info("crew-guest: started the runner (pid #{os_pid})")
+    os_pid = os_pid(port)
+    Logger.info("crew-guest: started the runner (pid #{os_pid || "gone"})")
 
     {:ok,
      %{
@@ -110,7 +120,10 @@ defmodule CrewGuest.Runner do
      }}
   end
 
+  # It exited before init could ask for its pid: nothing to signal.
   @impl true
+  def handle_call(_stop_or_kill, _from, %{os_pid: nil} = s), do: {:reply, :ok, s}
+
   def handle_call(:stop, _from, %{signalled: true} = s), do: {:reply, :ok, s}
 
   def handle_call(:stop, _from, s) do

@@ -81,8 +81,8 @@ defmodule CrewGuest.Conformance.Check do
         {:cd, "/"}
       ])
 
-    {:os_pid, os_pid} = Port.info(port, :os_pid)
-    Logger.info("crew-guest: started the conformance check (pid #{os_pid})")
+    os_pid = CrewGuest.Runner.os_pid(port)
+    Logger.info("crew-guest: started the conformance check (pid #{os_pid || "gone"})")
 
     {:ok,
      %{
@@ -95,7 +95,10 @@ defmodule CrewGuest.Conformance.Check do
      }}
   end
 
+  # It exited before init could ask for its pid: nothing to signal.
   @impl true
+  def handle_call(_stop_or_kill, _from, %{os_pid: nil} = s), do: {:reply, :ok, s}
+
   def handle_call(:stop, _from, %{signalled: true} = s), do: {:reply, :ok, s}
 
   def handle_call(:stop, _from, s) do
