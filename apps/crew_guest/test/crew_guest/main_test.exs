@@ -176,6 +176,9 @@ defmodule CrewGuest.MainTest do
     eventually(fn -> "job_started" in FakeAPI.states(api) end, 5_000)
     %{job: job} = :sys.get_state(main)
     Process.exit(job, :kill)
+    # Nothing signals the runner when its Port goes with the job, and the
+    # poweroff is a fake: the stub has to be killed when the test ends.
+    stub_listener(runner_dir(dir))
 
     assert_receive {:system, :poweroff}, 10_000
     assert Enum.any?(FakeAPI.log_texts(api), &(&1 =~ "the job's processes failed"))
