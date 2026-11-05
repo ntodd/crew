@@ -1244,6 +1244,9 @@ unused one) and 2100 connections at once.
 
 ### Results (2026-11-04)
 
+Both suites ran again in full on 2026-11-05, after the memory fix
+below: every item passes on both drivers (8 of 8 tests each).
+
 **vz** on the M4 Max (macOS 27.2, crew-vz from this tree, sandboxed);
 **firecracker** 1.17.0 on the M4 Max's Flatcar dev VM (arm64, 8 vCPUs,
 16 GiB, nested). Guest image 0.1.0-dev arm64 (Linux 6.18.60) from this
