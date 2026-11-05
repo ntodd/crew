@@ -7,7 +7,9 @@ defmodule CrewWeb.BoxLive.New do
   optional break-glass SSH key, a Tailscale auth key when the control
   plane has no OAuth client to mint one, and on bare metal the data
   disk. The launchers fetch the box's Ignition themselves; bare metal
-  downloads it here.
+  downloads it here, and so can a `linux-vm` box whose VM is built by
+  hand where the launcher can't run (a TrueNAS SCALE host, say), so it
+  enrolls as the nested box it is rather than as `linux-metal`.
   """
   use CrewWeb, :live_view
 
@@ -66,6 +68,60 @@ defmodule CrewWeb.BoxLive.New do
       nil -> ""
       key -> " --release-key #{Base.encode64(key)}"
     end
+  end
+
+  # The Ignition download, the command that fetches it on the machine,
+  # and the install from Flatcar's live image: bare metal's way in, and
+  # a linux-vm box's when its VM is built by hand.
+  attr :token, :string, required: true
+  attr :box_name, :string, required: true
+  attr :os_disk, :string, required: true
+  attr :fetch_id, :string, required: true
+
+  defp ignition_steps(assigns) do
+    ~H"""
+    <p class="mb-3 text-sm text-ink-2">
+      Download the box's Ignition. It holds the join token (and the box's Tailscale key), so keep it to yourself.
+      Delete it once the box has enrolled.
+    </p>
+    <form
+      id="ignition-download"
+      action="/agent/flatcar/ignition"
+      method="post"
+      class="mb-4 flex flex-wrap items-end gap-3"
+    >
+      <input type="hidden" name="join_token" value={@token} />
+      <div class="w-40">
+        <.input
+          type="select"
+          name="arch"
+          id="ignition-arch"
+          label="Architecture"
+          value="amd64"
+          options={[{"x86_64 (amd64)", "amd64"}, {"arm64", "arm64"}]}
+        />
+      </div>
+      <div class="mb-3">
+        <.button type="submit" size="sm" icon="hero-arrow-down-tray-micro">
+          Download Ignition
+        </.button>
+      </div>
+    </form>
+    <p class="mb-2 text-sm text-ink-2">
+      Or fetch it on the machine (a new file only you can read):
+    </p>
+    <.command
+      id={@fetch_id}
+      command={"(umask 077; f=crew-#{@box_name}.ign; rm -f \"$f.new\" && curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o \"$f.new\" && mv -f \"$f.new\" \"$f\")"}
+    />
+    <p class="mb-2 mt-4 text-sm text-ink-2">
+      Then, from Flatcar's live image, install it to the OS disk (not the data disk) and reboot:
+    </p>
+    <.command
+      id="flatcar-install"
+      command={"sudo flatcar-install -d #{@os_disk} -i crew-#{@box_name}.ign && sudo reboot"}
+    />
+    """
   end
 
   @impl true
@@ -196,47 +252,27 @@ defmodule CrewWeb.BoxLive.New do
               and <span class="font-mono">--data GiB</span>
               (the data disk, 200 by default, at least 100). It prints the box's progress until it has enrolled.
             </p>
+            <div :if={type == "linux-vm"} id="hand-built-vm" class="mt-6 border-t border-line pt-4">
+              <p class="mb-3 text-sm text-ink-2">
+                Or, where the launcher can't run (TrueNAS SCALE, say), build the VM yourself:
+                host CPU passthrough (it runs VMs of its own), UEFI, fixed memory, and two VirtIO disks,
+                the OS disk (<span class="font-mono">/dev/vda</span>) and then the data disk
+                (<span class="font-mono">/dev/vdb</span>, at least 100 GiB), which the Ignition formats.
+                Boot Flatcar's ISO in it.
+              </p>
+              <.ignition_steps
+                token={@token}
+                box_name={@box_name}
+                os_disk="/dev/vda"
+                fetch_id="ignition-fetch-command"
+              />
+            </div>
           <% "linux-metal" -> %>
-            <p class="mb-3 text-sm text-ink-2">
-              Download the box's Ignition. It holds the join token (and the box's Tailscale key), so keep it to yourself.
-              Delete it once the box has enrolled.
-            </p>
-            <form
-              id="ignition-download"
-              action="/agent/flatcar/ignition"
-              method="post"
-              class="mb-4 flex flex-wrap items-end gap-3"
-            >
-              <input type="hidden" name="join_token" value={@token} />
-              <div class="w-40">
-                <.input
-                  type="select"
-                  name="arch"
-                  id="ignition-arch"
-                  label="Architecture"
-                  value="amd64"
-                  options={[{"x86_64 (amd64)", "amd64"}, {"arm64", "arm64"}]}
-                />
-              </div>
-              <div class="mb-3">
-                <.button type="submit" size="sm" icon="hero-arrow-down-tray-micro">
-                  Download Ignition
-                </.button>
-              </div>
-            </form>
-            <p class="mb-2 text-sm text-ink-2">
-              Or fetch it on the machine (a new file only you can read):
-            </p>
-            <.command
-              id="join-command"
-              command={"(umask 077; f=crew-#{@box_name}.ign; rm -f \"$f.new\" && curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o \"$f.new\" && mv -f \"$f.new\" \"$f\")"}
-            />
-            <p class="mb-2 mt-4 text-sm text-ink-2">
-              Then, from Flatcar's live image, install it to the OS disk (not the data disk) and reboot:
-            </p>
-            <.command
-              id="flatcar-install"
-              command={"sudo flatcar-install -d /dev/sda -i crew-#{@box_name}.ign && sudo reboot"}
+            <.ignition_steps
+              token={@token}
+              box_name={@box_name}
+              os_disk="/dev/sda"
+              fetch_id="join-command"
             />
         <% end %>
 

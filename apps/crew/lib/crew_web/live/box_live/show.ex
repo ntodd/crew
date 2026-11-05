@@ -745,6 +745,15 @@ defmodule CrewWeb.BoxLive.Show do
             id="reprovision-command"
             command={"sudo crew-box reimage crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign"}
           />
+          <div :if={@box.type == "linux-vm"}>
+            <p class="mb-2 mt-4 text-sm text-ink-2">
+              Or, for a VM built by hand, from Flatcar's live image in it, onto the OS disk:
+            </p>
+            <.command
+              id="reprovision-install-command"
+              command={"sudo flatcar-install -d /dev/vda -i crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign && sudo reboot"}
+            />
+          </div>
         <% end %>
       </.panel>
 

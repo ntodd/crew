@@ -129,6 +129,51 @@ defmodule CrewWeb.BoxLiveTest do
         |> render_submit()
 
       assert html =~ "/agent/mac-vm.sh | sudo sh -s -- --token cj_"
+      refute has_element?(view, "#ignition-download")
+    end
+
+    # A Flatcar VM built by hand, on a host the launcher can't run on
+    # (TrueNAS SCALE, say), is still a linux-vm box: nested, unlike
+    # linux-metal, which repos pin for isolation (issue #23).
+    test "linux-vm shows the launcher command, and the Ignition for a VM built by hand", %{
+      conn: conn
+    } do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-vm"}}) |> render_change()
+      refute has_element?(view, "#box_data_disk")
+
+      html =
+        view
+        |> form("#add-box", %{"box" => %{"box_name" => "nas1", "box_type" => "linux-vm"}})
+        |> render_submit()
+
+      # The launcher stays the way in.
+      assert [_, token] =
+               Regex.run(~r/linux-vm\.sh \| sudo sh -s -- --token (cj_[A-Za-z0-9_-]+)/, html)
+
+      assert has_element?(
+               view,
+               "#ignition-download[action='/agent/flatcar/ignition'][method='post']"
+             )
+
+      assert has_element?(view, "#ignition-download input[name=join_token][value='#{token}']")
+      assert has_element?(view, "#ignition-fetch-command", "(umask 077; ")
+      assert has_element?(view, "#ignition-fetch-command", "arch=amd64")
+      # VirtIO disks: the OS disk is /dev/vda, and the Ignition formats
+      # /dev/vdb as the data disk.
+      assert has_element?(view, "#hand-built-vm", "/dev/vdb")
+
+      assert has_element?(
+               view,
+               "#flatcar-install",
+               "flatcar-install -d /dev/vda -i crew-nas1.ign"
+             )
+
+      refute has_element?(view, "#flatcar-install", "/dev/sda")
+
+      join = Crew.Repo.get_by!(Crew.Boxes.JoinToken, box_name: "nas1")
+      assert join.box_type == "linux-vm"
+      assert join.data_disk == nil
     end
 
     test "names are checked", %{conn: conn} do
@@ -323,6 +368,19 @@ defmodule CrewWeb.BoxLiveTest do
       {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
       assert has_element?(view, "#reprovision", "crew-box reimage")
       refute has_element?(view, "#reprovision input[name=data_disk]")
+      refute has_element?(view, "#reprovision-install-command")
+    end
+
+    test "a linux-vm box's also says how to reinstall a VM built by hand", %{conn: conn} do
+      box = box_fixture(type: "linux-vm")
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#reprovision-command", "crew-box reimage")
+
+      assert has_element?(
+               view,
+               "#reprovision-install-command",
+               "flatcar-install -d /dev/vda -i crew-#{box.name}-arm64-reprovision.ign"
+             )
     end
 
     test "a mac-vz box has none", %{conn: conn} do

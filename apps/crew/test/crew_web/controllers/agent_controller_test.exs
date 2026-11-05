@@ -117,6 +117,27 @@ defmodule CrewWeb.AgentControllerTest do
       assert json_response(conn, 503)["error"] =~ "linux-amd64"
     end
 
+    # What Add box downloads for a VM built by hand (issue #23): a
+    # linux-vm box's Ignition, with the VMs' /dev/vdb data disk.
+    test "a linux-vm box's token gets a VM's Ignition", %{conn: conn} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+
+      {:ok, token} =
+        Crew.Boxes.create_join_token(admin, %{"box_name" => "nas1", "box_type" => "linux-vm"})
+
+      conn = post(conn, "/agent/flatcar/ignition", %{"join_token" => token, "arch" => "arm64"})
+      config = json_response(conn, 200)
+      assert get_resp_header(conn, "x-crew-box") == ["nas1"]
+
+      %{"contents" => %{"source" => "data:;base64," <> env}} =
+        Enum.find(config["storage"]["files"], &(&1["path"] == "/etc/crew-box/box.env"))
+
+      assert Base.decode64!(env) =~ ~s(CREW_BOX_TYPE="linux-vm")
+
+      format = Enum.find(config["systemd"]["units"], &(&1["name"] == "crew-format-data.service"))
+      assert format["contents"] =~ "format-data.sh /dev/vdb"
+    end
+
     test "a mac-vz box's token doesn't get one", %{conn: conn, token: vz_token} do
       conn = post(conn, "/agent/flatcar/ignition", %{"join_token" => vz_token, "arch" => "arm64"})
       assert json_response(conn, 400)["error"] =~ "mac-vz"
