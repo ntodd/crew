@@ -10,10 +10,16 @@ export async function shot(page, layer, name, { fullPage = true } = {}) {
   await page.screenshot({ path: resolve(dir, `${name}.png`), fullPage })
 }
 
+// Waits out the color transitions the switch starts, so a screenshot
+// right after it isn't caught halfway between the themes. Only the
+// transitions: a running job's pulsing dot is an animation that never
+// finishes.
 export async function setTheme(page, theme) {
-  await page.evaluate(t => {
+  await page.evaluate(async t => {
     localStorage.setItem("phx:theme", t)
     document.documentElement.setAttribute("data-theme", t)
+    const transitions = document.getAnimations().filter(a => a instanceof CSSTransition)
+    await Promise.all(transitions.map(a => a.finished.catch(() => {})))
   }, theme)
 }
 

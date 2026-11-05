@@ -49,4 +49,26 @@ defmodule CrewWeb.JobBarTest do
     assert length(Regex.scan(~r/data-job-state=/, html)) == 2
     assert html =~ ~s(aria-label="20 success, 10 queued")
   end
+
+  # The accent is green, close to success: running work has a color of
+  # its own, so a bar of running and passed jobs still reads.
+  test "running jobs aren't drawn in the accent or success colors" do
+    bar =
+      render_component(&CrewComponents.job_bar/1,
+        id: "bar",
+        jobs: [
+          job(1, gh_state: "in_progress"),
+          job(2, gh_state: "completed", conclusion: "success")
+        ]
+      )
+
+    [segment] = Regex.run(~r/<span[^>]*data-job-state="running"[^>]*>/, bar)
+    assert segment =~ "bg-running"
+    refute bar =~ "bg-accent"
+
+    status = render_component(&CrewComponents.job_status/1, job: job(1, gh_state: "in_progress"))
+    assert status =~ "text-running-ink"
+    assert status =~ "bg-running"
+    refute status =~ "accent"
+  end
 end

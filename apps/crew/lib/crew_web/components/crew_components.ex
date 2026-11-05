@@ -285,7 +285,7 @@ defmodule CrewWeb.CrewComponents do
   defp op_color("failed"), do: "text-danger"
   defp op_color("queued"), do: "text-ink-3"
   defp op_color("cancelled"), do: "text-ink-3"
-  defp op_color(_), do: "text-accent-ink"
+  defp op_color(_), do: "text-running-ink"
 
   defp op_label("dispatched"), do: "Sent"
   defp op_label(status), do: String.capitalize(status)
@@ -327,8 +327,8 @@ defmodule CrewWeb.CrewComponents do
       class={["inline-flex min-w-0 items-center gap-1.5 text-sm", tone(@status.tone)]}
     >
       <span :if={@status.icon == "dot"} class="relative flex size-2.5 shrink-0" aria-hidden="true">
-        <span class="absolute inline-flex size-full animate-ping rounded-full bg-accent opacity-60"></span>
-        <span class="relative inline-flex size-2.5 rounded-full bg-accent"></span>
+        <span class="absolute inline-flex size-full animate-ping rounded-full bg-running opacity-60"></span>
+        <span class="relative inline-flex size-2.5 rounded-full bg-running"></span>
       </span>
       <.icon :if={@status.icon not in ["", "dot"]} name={@status.icon} class="size-4 shrink-0" />
       <span class="font-medium">{@status.label}</span>
@@ -340,7 +340,7 @@ defmodule CrewWeb.CrewComponents do
   defp tone(:success), do: "text-success"
   defp tone(:danger), do: "text-danger"
   defp tone(:warning), do: "text-warning"
-  defp tone(:accent), do: "text-accent-ink"
+  defp tone(:running), do: "text-running-ink"
   defp tone(:muted), do: "text-ink-3"
 
   @doc "One segment per job, each with its state: the per-job state bar of the Runs page."
@@ -404,7 +404,7 @@ defmodule CrewWeb.CrewComponents do
   defp segment("success"), do: "bg-success"
   defp segment("failure"), do: "bg-danger"
   defp segment("refused"), do: "bg-danger"
-  defp segment("running"), do: "bg-accent"
+  defp segment("running"), do: "bg-running"
   defp segment("blocked"), do: "bg-warning"
   defp segment("unsatisfiable"), do: "bg-warning"
   defp segment("queued"), do: "bg-ink-3/50"
