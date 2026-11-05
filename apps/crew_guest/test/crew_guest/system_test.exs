@@ -210,10 +210,24 @@ defmodule CrewGuest.SystemTest do
     end
 
     test "powers off through systemd, forcing it if that fails", %{cfg: cfg, opts: opts} do
+      opts = Keyword.put(opts, :arch, "aarch64-unknown-linux-gnu")
       Process.put({:fail, "systemctl", ["poweroff"]}, true)
       assert :ok = Linux.poweroff(cfg, opts)
       assert_received {:run, "systemctl", ["poweroff"]}
       assert_received {:run, "systemctl", ["poweroff", "--force"]}
+    end
+
+    # Firecracker x86 has no poweroff: a halted guest just sits there. Its
+    # VM ends when the guest reboots (reboot=k), so that's how it stops.
+    test "reboots on x86_64, where that's what ends a Firecracker VM", %{cfg: cfg, opts: opts} do
+      opts = Keyword.put(opts, :arch, "x86_64-pc-linux-gnu")
+      assert :ok = Linux.poweroff(cfg, opts)
+      assert_received {:run, "systemctl", ["reboot"]}
+      refute_received {:run, "systemctl", ["poweroff" | _]}
+
+      Process.put({:fail, "systemctl", ["reboot"]}, true)
+      assert :ok = Linux.poweroff(cfg, opts)
+      assert_received {:run, "systemctl", ["reboot", "--force"]}
     end
   end
 

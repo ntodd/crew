@@ -1976,6 +1976,11 @@ header timeout.
 12. **When the runner exits:** report `job_finished` with its exit code,
     flush (≤ 10 s), and `systemctl poweroff`.
 
+On x86_64, read `systemctl reboot` for `systemctl poweroff` throughout:
+Firecracker x86 has no poweroff (the guest only halts and the VM keeps
+running), and `reboot=k` turns the guest's reboot into Firecracker
+exiting.
+
 **When the guest API can't be reached:**
 - crew-guest buffers up to 16 MiB of logs, steps and states, retrying every
   0.5–5 s, for up to 15 minutes;
@@ -1985,7 +1990,8 @@ header timeout.
 **Fallbacks for a graceful stop:**
 - logind `HandlePowerKey=poweroff` (VZ's `requestStop`, and Firecracker
   arm64's power button);
-- `ctrl-alt-del.target` → `poweroff.target` (Firecracker x86).
+- `ctrl-alt-del.target` → `reboot.target` (Firecracker x86, which ends
+  the VM on a reboot).
 
 ## 14. Networking and isolation
 
