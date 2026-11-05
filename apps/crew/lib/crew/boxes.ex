@@ -402,6 +402,7 @@ defmodule Crew.Boxes do
       offline_at: nil
     )
     |> Repo.update!()
+    |> Crew.Boxes.Reboots.joined()
     |> changed()
   end
 
@@ -524,6 +525,7 @@ defmodule Crew.Boxes do
         cache_vm_reboot: r[:cache_vm] && stringify(r.cache_vm)
       )
       |> Repo.update!()
+      |> Crew.Boxes.Reboots.reported(r)
 
     if newly,
       do:

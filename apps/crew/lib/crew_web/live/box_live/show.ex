@@ -56,6 +56,40 @@ defmodule CrewWeb.BoxLive.Show do
     end
   end
 
+  defp reboot_error(:cannot_restart), do: "This box can't be rebooted from Crew."
+  defp reboot_error(:no_cache_vm), do: "This box has no cache VM."
+  defp reboot_error(reason), do: "Couldn't start the reboot: #{inspect(reason)}"
+
+  # Flatcar's release notes for a flagged version (§12.1); other packages
+  # are named as they are.
+  defp package_link("flatcar-" <> version),
+    do: "https://www.flatcar.org/releases#release-#{version}"
+
+  defp package_link(_package), do: nil
+
+  defp busy_count(vms), do: Enum.count(vms, &(&1.state == "busy"))
+
+  attr :packages, :list, required: true
+
+  defp packages(assigns) do
+    ~H"""
+    <ul class="flex flex-wrap gap-1.5">
+      <li :for={p <- @packages}>
+        <.link
+          :if={package_link(p)}
+          href={package_link(p)}
+          target="_blank"
+          rel="noopener"
+          class="font-mono text-xs text-accent-ink underline"
+        >
+          {p}
+        </.link>
+        <span :if={!package_link(p)} class="font-mono text-xs text-ink-2">{p}</span>
+      </li>
+    </ul>
+    """
+  end
+
   # A repo the member can't read is named as such (§18.3).
   defp repo_name(%{repo: repo}, :all), do: repo.full_name
 
@@ -104,6 +138,32 @@ defmodule CrewWeb.BoxLive.Show do
     case result do
       {:ok, box} -> {:noreply, load(socket, box)}
       {:error, :unauthorized} -> {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
+  def handle_event(event, _params, socket)
+      when event in ["reboot", "reboot_now", "reboot_cache_vm"] do
+    {target, opts} =
+      case event do
+        "reboot" -> {:box, []}
+        "reboot_now" -> {:box, [now: true]}
+        "reboot_cache_vm" -> {:cache_vm, []}
+      end
+
+    case Crew.Boxes.Reboots.request(
+           socket.assigns.current_scope,
+           socket.assigns.box,
+           target,
+           opts
+         ) do
+      {:ok, box} ->
+        {:noreply, load(socket, box)}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, reboot_error(reason))}
     end
   end
 
@@ -406,6 +466,80 @@ defmodule CrewWeb.BoxLive.Show do
             </p>
           </div>
           <p :if={is_nil(@metrics)} class="text-sm text-ink-3">No metrics yet.</p>
+        </.panel>
+
+        <.panel
+          :if={
+            @box.reboot_required or @box.reboot_target == "box" or
+              Crew.Boxes.Reboots.rolled_back?(@box)
+          }
+          id="reboot"
+          title="Reboot"
+        >
+          <:subtitle>
+            Updates are applied; they take effect on the next boot, which an admin starts (§12.1).
+          </:subtitle>
+          <div class="space-y-3 text-sm">
+            <p :if={@box.reboot_target == "box"} class="font-medium text-ink">
+              Rebooting{if @vms != [],
+                do: ": waiting for #{length(@vms)} VMs to finish (the box is drained)",
+                else: "."}
+            </p>
+            <p :if={Crew.Boxes.Reboots.rolled_back?(@box)} class="text-warning">
+              The update was rolled back: the box came back on {@box.os_version}.
+            </p>
+            <div :if={@box.reboot_required} class="space-y-1.5">
+              <p class="text-ink-2">Waiting for a reboot:</p>
+              <.packages packages={@box.reboot_packages} />
+            </div>
+            <div
+              :if={Scope.admin?(@current_scope) and @box.can_restart and @box.reboot_target != "box"}
+              class="flex gap-2"
+            >
+              <.button
+                id="reboot-box"
+                size="sm"
+                phx-click="reboot"
+                data-confirm={"Drain #{@box.name} and reboot it once its jobs are done?"}
+              >
+                Reboot
+              </.button>
+              <.button
+                id="reboot-box-now"
+                size="sm"
+                variant="danger_outline"
+                phx-click="reboot_now"
+                data-confirm={"Reboot #{@box.name} now? #{busy_count(@vms)} running jobs fail."}
+              >
+                Reboot now
+              </.button>
+            </div>
+          </div>
+        </.panel>
+
+        <.panel :if={@box.type == "mac-vz" and @box.cache_vm_reboot} id="cache-vm" title="Cache VM">
+          <:subtitle>The registry cache's VM on this Mac (§15.6).</:subtitle>
+          <div class="space-y-3 text-sm">
+            <p :if={@box.reboot_target == "cache_vm"} class="font-medium text-ink">
+              Restarting{if @vms != [],
+                do: ": waiting for #{length(@vms)} VMs to finish (the box is drained)",
+                else: "."}
+            </p>
+            <div :if={@box.cache_vm_reboot["required"]} class="space-y-1.5">
+              <p class="text-ink-2">Waiting for a reboot:</p>
+              <.packages packages={@box.cache_vm_reboot["packages"] || []} />
+            </div>
+            <p :if={!@box.cache_vm_reboot["required"]} class="text-ink-3">Up to date.</p>
+            <.button
+              :if={Scope.admin?(@current_scope) and @box.reboot_target != "cache_vm"}
+              id="reboot-cache-vm"
+              size="sm"
+              phx-click="reboot_cache_vm"
+              data-confirm={"Drain #{@box.name} and restart its cache VM once its jobs are done?"}
+            >
+              Reboot cache VM
+            </.button>
+          </div>
         </.panel>
 
         <.panel id="vms" title="VMs" padded={false} class="lg:col-span-2">

@@ -411,6 +411,100 @@ defmodule CrewWeb.BoxLiveTest do
     end
   end
 
+  describe "reboots (§12.1)" do
+    defp flatcar(attrs \\ []) do
+      box_fixture(Keyword.merge([type: "linux-metal", name: "rack1"], attrs))
+      |> Ecto.Changeset.change(
+        can_restart: true,
+        boot_id: "11111111-1111-4111-8111-111111111111",
+        os_version: "4757.2.3",
+        reboot_required: true,
+        reboot_packages: ["flatcar-4800.0.0", "tailscale-v1.106.0"]
+      )
+      |> Crew.Repo.update!()
+    end
+
+    defp as_agent(box) do
+      {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+      box
+    end
+
+    test "a box that needs one says what's pending, with Flatcar's release notes", %{conn: conn} do
+      box = flatcar()
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#reboot", "flatcar-4800.0.0")
+      assert has_element?(view, "#reboot", "tailscale-v1.106.0")
+
+      assert has_element?(
+               view,
+               ~s(#reboot a[href="https://www.flatcar.org/releases#release-4800.0.0"])
+             )
+    end
+
+    test "Reboot drains the box and, with nothing running, reboots it", %{conn: conn} do
+      box = flatcar() |> as_agent()
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      view |> element("#reboot-box") |> render_click()
+
+      assert_receive {:dispatch, %CrewProtocol.Command{type: "box.restart"}}
+      assert has_element?(view, "#reboot", "Rebooting")
+      assert Boxes.get!(box.id).draining
+      refute has_element?(view, "#reboot-box")
+    end
+
+    test "Reboot now says how many jobs it cuts short", %{conn: conn} do
+      box = flatcar()
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert render(element(view, "#reboot-box-now")) =~ "0 running jobs fail"
+    end
+
+    test "a box that can't restart from Crew has no Reboot", %{conn: conn} do
+      box = box_fixture(name: "m1")
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      refute has_element?(view, "#reboot-box")
+    end
+
+    test "an update that rolled back says so", %{conn: conn} do
+      box =
+        flatcar()
+        |> Ecto.Changeset.change(previous_os_version: "4757.2.3", reboot_required: false)
+        |> Crew.Repo.update!()
+
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#reboot", "rolled back")
+    end
+
+    test "a mac-vz box's cache VM: its pending update, and Reboot cache VM", %{conn: conn} do
+      box =
+        box_fixture(name: "m1ultra")
+        |> Ecto.Changeset.change(
+          cache_vm_reboot: %{
+            "required" => true,
+            "packages" => ["flatcar-4800.0.0"],
+            "boot_id" => "c1c1c1c1-1111-4111-8111-111111111111"
+          }
+        )
+        |> Crew.Repo.update!()
+        |> as_agent()
+
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#cache-vm", "flatcar-4800.0.0")
+      view |> element("#reboot-cache-vm") |> render_click()
+
+      assert_receive {:dispatch, %CrewProtocol.Command{type: "cachevm.restart"}}
+      assert has_element?(view, "#cache-vm", "Restarting")
+    end
+
+    test "members see the state but get no buttons" do
+      box = flatcar()
+      conn = log_in(build_conn(), user_fixture(role: "member"))
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      assert has_element?(view, "#reboot", "flatcar-4800.0.0")
+      refute has_element?(view, "#reboot-box")
+      refute has_element?(view, "#reboot-box-now")
+    end
+  end
+
   test "members see boxes but can't add, approve or revoke" do
     member = user_fixture()
     box = box_fixture()

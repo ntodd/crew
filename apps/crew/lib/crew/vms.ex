@@ -132,6 +132,7 @@ defmodule Crew.VMs do
   def handle_agent_event(box_id, %CrewProtocol.Event{type: "box.inventory", payload: inventory}) do
     :persistent_term.put({__MODULE__, :inventory, box_id}, inventory)
     apply_inventory(box_id, inventory)
+    Crew.Boxes.Reboots.advance(box_id)
     Phoenix.PubSub.broadcast(Crew.PubSub, "box:#{box_id}", {:box_changed, box_id})
     :ok
   end

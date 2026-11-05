@@ -37,6 +37,7 @@ defmodule Crew.Boxes.Box do
     field :can_restart, :boolean, default: false
     field :reboot_requested_at, :utc_datetime_usec
     field :reboot_boot_id, :string
+    field :reboot_target, :string
     field :cache_vm_reboot, :map
     field :cache_ca_generation, :integer, default: 1
     field :cache_top, {:array, :map}, default: []
