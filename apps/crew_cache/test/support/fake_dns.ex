@@ -7,6 +7,8 @@ defmodule CrewCache.FakeDNS do
   """
   use GenServer
 
+  alias CrewCache.DNS.Bind
+
   def start(zones, opts \\ []) do
     {:ok, pid} = GenServer.start_link(__MODULE__, {zones, opts})
     %{pid: pid, port: GenServer.call(pid, :port)}
@@ -17,7 +19,7 @@ defmodule CrewCache.FakeDNS do
   @impl true
   def init({zones, opts}) do
     {:ok, udp, listen, port} =
-      CrewCache.DNS.Bind.open(
+      Bind.open(
         0,
         [:binary, ip: {127, 0, 0, 1}, active: true],
         [:binary, ip: {127, 0, 0, 1}, packet: 2, active: false, reuseaddr: true]
