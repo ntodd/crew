@@ -17,7 +17,7 @@ name: Guest image
 # write them; pull requests only read.
 #
 # Runners: with the repo variable CREW_CI set to `on`, the builds run on
-# this project's own Crew boxes (crew-l-x64, crew-xl-arm64), where zstd
+# this project's own Crew boxes (crew-l-x64, crew-l-arm64), where zstd
 # has more cores than a hosted runner. Unset it to go back to GitHub's
 # runners, say when Crew itself is broken. Pull requests from forks
 # always build on GitHub's runners.
@@ -121,7 +121,7 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-xl-arm64' || 'ubuntu-24.04-arm' }}
+            runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-l-arm64' || 'ubuntu-24.04-arm' }}
           - arch: x64
             runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-l-x64' || 'ubuntu-24.04' }}
     runs-on: ${{ matrix.runner }}
@@ -181,7 +181,11 @@ jobs:
         with:
           path: images/guest/out/${{ matrix.arch }}/kernel
           key: ${{ env.KERNEL_KEY }}
+      # Each step's limit is about 1.5x its slowest cold run on a hosted
+      # runner. A download that stalls (BuildKit has no timeout of its
+      # own) costs that step's limit, not the job's two hours.
       - if: steps.kernel.outputs.cache-hit != 'true'
+        timeout-minutes: 45
         run: make -C images/guest kernel
       # Saved from main only: tags and pull requests can read main's
       # caches, but not each other's.
@@ -196,9 +200,11 @@ jobs:
       # built, the unpacked rootfs tree and BuildKit's cache once the
       # image is assembled.
       - run: (docker volume rm crew-guest-kernel || true) && df -h /
-      - run: make -C images/guest rootfs
+      - timeout-minutes: 50
+        run: make -C images/guest rootfs
       - run: docker volume rm crew-guest-rootfs && docker buildx prune -af >/dev/null && df -h /
       - name: Release files (unsigned)
+        timeout-minutes: 20
         run: make -C images/guest artifacts SIGN=none
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
