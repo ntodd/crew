@@ -75,6 +75,9 @@ jobs:
           mkdir -p lock-diff
           if [ -n "$prev" ]; then
             git diff "$prev" "$GITHUB_SHA" -- images/guest/packages.lock > lock-diff/packages.lock.diff
+            # The release uploads it, and GitHub refuses an empty asset.
+            [ -s lock-diff/packages.lock.diff ] ||
+              echo "No package changes since $prev." > lock-diff/packages.lock.diff
           else
             echo "No earlier release: every package is new." > lock-diff/packages.lock.diff
           fi
