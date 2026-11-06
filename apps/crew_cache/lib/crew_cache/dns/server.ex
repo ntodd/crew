@@ -11,6 +11,8 @@ defmodule CrewCache.DNS.Server do
   """
   use GenServer
 
+  alias CrewCache.DNS.Bind
+
   require Logger
 
   alias CrewCache.DNS.{Cache, Query}
@@ -25,7 +27,7 @@ defmodule CrewCache.DNS.Server do
   @impl true
   def init(config) do
     {:ok, udp, listen, port} =
-      CrewCache.DNS.Bind.open(
+      Bind.open(
         config.dns_port,
         [:binary, ip: config.listen, active: 100, recbuf: 1_048_576],
         [:binary, ip: config.listen, packet: 2, active: false, reuseaddr: true, backlog: 128]
