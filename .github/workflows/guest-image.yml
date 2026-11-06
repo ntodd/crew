@@ -15,6 +15,12 @@ name: Guest image
 # build whose packages.lock and kernel haven't changed doesn't touch
 # snapshot.ubuntu.com or kernel.org. Only main, tags and manual runs
 # write them; pull requests only read.
+#
+# Runners: with the repo variable CREW_CI set to `on`, the builds run on
+# this project's own Crew boxes (crew-l-x64, crew-xl-arm64), where zstd
+# has more cores than a hosted runner. Unset it to go back to GitHub's
+# runners, say when Crew itself is broken. Pull requests from forks
+# always build on GitHub's runners.
 
 on:
   push:
@@ -115,9 +121,9 @@ jobs:
       matrix:
         include:
           - arch: arm64
-            runner: ubuntu-24.04-arm
+            runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-xl-arm64' || 'ubuntu-24.04-arm' }}
           - arch: x64
-            runner: ubuntu-24.04
+            runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-l-x64' || 'ubuntu-24.04' }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     permissions:
