@@ -222,6 +222,11 @@ run chmod 0750 "$DATA/images"
 staged="$DATA/agent/.install.$version"
 run rm -rf "$staged"
 run ditto "$here" "$staged"
+# A release downloaded in a browser carries com.apple.quarantine, which
+# ditto keeps, and Gatekeeper refuses its unnotarized binaries (erlexec,
+# crew-vz) when launchd starts them. Running this as root is the trust
+# decision; the agent's own updates are checked against the release key.
+run xattr -dr com.apple.quarantine "$staged"
 run chown -R _crewagent:crewvm "$staged"
 run chmod -R go-w "$staged"
 run rm -rf "${DATA:?}/agent/$version"

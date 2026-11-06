@@ -62,6 +62,15 @@ boot=$(grep -n "bootout' 'system/com.crew.agent'" "$out/log" | cut -d: -f1)
 copy=$(grep -n "'ditto'" "$out/log" | cut -d: -f1)
 [ "$boot" -lt "$copy" ] || fail "the release was replaced under a running agent"
 
+# A release downloaded in a browser carries com.apple.quarantine, which
+# ditto copies, and Gatekeeper then refuses its unnotarized binaries
+# (erlexec first) when launchd starts them. The installed copy loses it
+# before anything runs from it.
+has "$out/log" "'xattr' '-dr' 'com.apple.quarantine' '/Library/Application Support/Crew Test/agent/.install.0.0.0'"
+unq=$(grep -n "'xattr' '-dr' 'com.apple.quarantine'" "$out/log" | cut -d: -f1)
+start=$(grep -n "'launchctl' 'bootstrap'" "$out/log" | head -n 1 | cut -d: -f1)
+[ "$copy" -lt "$unq" ] && [ "$unq" -lt "$start" ] || fail "quarantine must be cleared after the copy, before the services start"
+
 # A key that isn't one is refused.
 "$here/install-macos.sh" --dry-run --url wss://x --token cj_t --name m4 --release-key nope > /dev/null 2>&1 &&
   fail "a bad release key was accepted"
