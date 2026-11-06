@@ -170,6 +170,19 @@ defmodule Crew.ReposTest do
       {:ok, i} = Repos.upsert_installation(@installation)
       assert Repos.missing_permissions(i) == []
     end
+
+    # members is an organization permission: GitHub never grants it to an
+    # installation on a personal account, so it can't be missing there.
+    test "a personal account's installation isn't asked for members" do
+      {:ok, i} =
+        Repos.upsert_installation(%{
+          @installation
+          | "account" => %{"login" => "ntodd", "id" => 10, "type" => "User"},
+            "permissions" => Map.delete(@installation["permissions"], "members")
+        })
+
+      assert Repos.missing_permissions(i) == []
+    end
   end
 
   describe "settings (§7.4)" do

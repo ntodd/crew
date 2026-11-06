@@ -301,7 +301,9 @@ flow is Foreman's (`Foreman.Setup`, the setup controller and
 The setup page asks for the tailnet hostname (stored in `settings.public_host`)
 and builds every URL from it. Crew records what each installation actually
 granted at every sync, as Foreman does. A missing permission disables the
-feature that needs it, and the repo page flags it.
+feature that needs it, and the repo page flags it. Members is an
+organization permission, which GitHub never grants an installation on a
+personal account, so it's never missing there.
 
 ### 6.2 Webhook ingress
 
