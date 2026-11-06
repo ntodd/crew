@@ -14,7 +14,8 @@ defmodule CrewWeb.JobStatus do
           tone: atom(),
           verb: String.t() | nil,
           since: DateTime.t() | nil,
-          ours: boolean()
+          ours: boolean(),
+          note: String.t() | nil
         }
 
   @doc "The status of `job` at `now`."
@@ -22,8 +23,9 @@ defmodule CrewWeb.JobStatus do
   def of(job, now \\ DateTime.utc_now())
 
   # A job for GitHub's runners (or another pool): how it went there, in
-  # the same words, and that it isn't Crew's. Queued, not Waiting: Crew
-  # isn't the one placing it.
+  # the same words, with GitHub's own reason. Whose it was is a `note`
+  # apart (pages show GitHub's mark, and the note on hover). Queued, not
+  # Waiting: Crew isn't the one placing it.
   def of(%{classification: "not_ours"} = job, now) do
     status =
       case job.gh_state do
@@ -38,12 +40,12 @@ defmodule CrewWeb.JobStatus do
           of(%{job | classification: "ours", blocked_reason: nil}, now)
       end
 
-    reason =
-      [status.reason, "not a Crew job", job.runner_name && "ran on #{job.runner_name}"]
+    note =
+      ["Not a Crew job", job.runner_name && "ran on #{job.runner_name}"]
       |> Enum.reject(&is_nil/1)
       |> Enum.join(", ")
 
-    %{status | reason: reason, ours: false}
+    %{status | ours: false, note: note}
   end
 
   def of(%{classification: "unsatisfiable", unsatisfiable_reason: @fork_reason}, _now),
@@ -114,7 +116,8 @@ defmodule CrewWeb.JobStatus do
       tone: tone,
       verb: nil,
       since: nil,
-      ours: true
+      ours: true,
+      note: nil
     }
 
   # A label that counts up from `since` ("Running · 3m 04s"): `verb` is

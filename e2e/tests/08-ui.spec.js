@@ -3,7 +3,7 @@
 // view, a run's actions and jobs table, a box's controls, and Sizes &
 // labels. No page may trip the CSP.
 import {expect, test} from "@playwright/test"
-import {addBox, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, cellOverflows, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "08-ui"
 let agent
@@ -77,6 +77,12 @@ test("runs by branch, and a run's actions and jobs", async ({page, request}) => 
   await expect(page.locator("[id^=group-e2e]")).toContainText("e2e (1)")
   await expect(page.locator("#rerun-all")).toBeVisible()
   await shot(page, layer, "run")
+  // Nothing in the jobs table spills out of its cell, at any width.
+  for (const width of [1024, 1440, 1920]) {
+    await page.setViewportSize({width, height: 900})
+    expect(await cellOverflows(page, "#run-jobs tr[id^=job-]"), `at ${width}`).toEqual([])
+  }
+  await page.setViewportSize({width: 1440, height: 900})
 
   // The box a job ran on links to its page, and hovering it shows the
   // box's card, above the table rather than clipped by it.

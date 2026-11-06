@@ -235,7 +235,14 @@ defmodule CrewWeb.RunsLiveTest do
       assert has_element?(view, "#job-11", "Can't run")
       assert has_element?(view, "#job-11", "unknown size huge")
       assert has_element?(view, "#job-12", "Succeeded")
-      assert has_element?(view, "#job-12", "not a Crew job")
+      # Not Crew's: GitHub's mark, saying so on hover and to a screen reader.
+      assert has_element?(
+               view,
+               ~s(#job-12 [data-not-ours][title="Not a Crew job, ran on GitHub Actions 2"]),
+               "Not a Crew job, ran on GitHub Actions 2"
+             )
+
+      assert has_element?(view, "#job-12 [data-not-ours] svg")
       assert has_element?(view, "#job-12", "GitHub Actions 2")
     end
 

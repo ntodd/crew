@@ -109,7 +109,8 @@ defmodule CrewWeb.JobStatusTest do
     assert %{
              state: "success",
              label: "Succeeded in 4m 31s",
-             reason: "not a Crew job, ran on ubuntu-24.04",
+             reason: nil,
+             note: "Not a Crew job, ran on ubuntu-24.04",
              tone: :success,
              ours: false
            } =
@@ -132,14 +133,18 @@ defmodule CrewWeb.JobStatusTest do
                @now
              )
 
-    assert %{state: "queued", verb: "Queued", label: "Queued · 1m 12s", reason: "not a Crew job"} =
+    assert %{state: "queued", verb: "Queued", label: "Queued · 1m 12s", note: "Not a Crew job"} =
              JobStatus.of(job(classification: "not_ours"), @now)
 
-    assert %{ours: true} = JobStatus.of(job([]), @now)
+    assert %{ours: true, note: nil} = JobStatus.of(job([]), @now)
   end
 
-  test "a job that isn't Crew's keeps what GitHub said, before saying whose it was" do
-    assert %{label: "Completed", reason: "timed_out, not a Crew job, ran on ubuntu-24.04"} =
+  test "a job that isn't Crew's keeps GitHub's reason, and notes whose it was apart" do
+    assert %{
+             label: "Completed",
+             reason: "timed_out",
+             note: "Not a Crew job, ran on ubuntu-24.04"
+           } =
              JobStatus.of(
                job(
                  classification: "not_ours",
@@ -150,7 +155,7 @@ defmodule CrewWeb.JobStatusTest do
                @now
              )
 
-    assert %{label: "Waiting", reason: "for an environment approval, not a Crew job"} =
+    assert %{label: "Waiting", reason: "for an environment approval", note: "Not a Crew job"} =
              JobStatus.of(job(classification: "not_ours", gh_state: "waiting"), @now)
   end
 
