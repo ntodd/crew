@@ -24,20 +24,12 @@ defmodule CrewCache.DNS.Server do
 
   @impl true
   def init(config) do
-    {:ok, udp} =
-      :gen_udp.open(config.dns_port, [:binary, ip: config.listen, active: 100, recbuf: 1_048_576])
-
-    {:ok, port} = :inet.port(udp)
-
-    {:ok, listen} =
-      :gen_tcp.listen(port, [
-        :binary,
-        ip: config.listen,
-        packet: 2,
-        active: false,
-        reuseaddr: true,
-        backlog: 128
-      ])
+    {:ok, udp, listen, port} =
+      CrewCache.DNS.Bind.open(
+        config.dns_port,
+        [:binary, ip: config.listen, active: 100, recbuf: 1_048_576],
+        [:binary, ip: config.listen, packet: 2, active: false, reuseaddr: true, backlog: 128]
+      )
 
     :persistent_term.put({CrewCache.DNS, :port}, port)
     acceptor = spawn_link(fn -> accept(listen) end)

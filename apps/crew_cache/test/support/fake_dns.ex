@@ -16,17 +16,12 @@ defmodule CrewCache.FakeDNS do
 
   @impl true
   def init({zones, opts}) do
-    {:ok, udp} = :gen_udp.open(0, [:binary, ip: {127, 0, 0, 1}, active: true])
-    {:ok, port} = :inet.port(udp)
-
-    {:ok, listen} =
-      :gen_tcp.listen(port, [
-        :binary,
-        ip: {127, 0, 0, 1},
-        packet: 2,
-        active: false,
-        reuseaddr: true
-      ])
+    {:ok, udp, listen, port} =
+      CrewCache.DNS.Bind.open(
+        0,
+        [:binary, ip: {127, 0, 0, 1}, active: true],
+        [:binary, ip: {127, 0, 0, 1}, packet: 2, active: false, reuseaddr: true]
+      )
 
     me = self()
     spawn_link(fn -> accept(listen, me) end)
