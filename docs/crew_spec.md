@@ -353,6 +353,11 @@ personal account, so it's never missing there.
   | `labels` | the class's label key (§7.2). JIT runners get only the labels passed, and no default `self-hosted`, OS or arch labels (spike S6 confirms this). |
   | `work_folder` | `_work` |
 
+- **The control plane sets `DisableUpdate: true` in the JIT config's
+  `.runner`** before it goes to the box (`Crew.GitHub.JitConfig`).
+  GitHub's `.runner` leaves it out and the API has no switch for it
+  (spike S9); it's the setting `config.sh --disableupdate` writes. The
+  guest still checks it (§13.5 step 7).
 - **The JIT config (`encoded_jit_config`) is a credential.**
   - It's held only in the memory of the VM's `Crew.VMs.Server` process
     (§9.3), and then by the agent and the guest.
@@ -1969,8 +1974,8 @@ header timeout.
    - start `containerd` and `docker`.
 7. **Check the JIT config:** decode it, and refuse to start (reporting
    `boot_failed` detail `update_not_disabled`) unless its `.runner`
-   settings have `DisableUpdate: true` (spike S9). The runner must never
-   self-update in a VM.
+   settings have `DisableUpdate: true` (spike S9; the control plane sets
+   it, §6.3). The runner must never self-update in a VM.
 8. **Start the runner:**
    - write the JIT config to `/run/crew/jit` (0600, `runner`);
    - start `run.sh --jitconfig "$(cat /run/crew/jit)"` as `runner`, from a

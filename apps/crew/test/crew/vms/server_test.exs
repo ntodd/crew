@@ -31,6 +31,10 @@ defmodule Crew.VMs.ServerTest do
       assert cmd.payload.labels == ["crew-m"]
       assert cmd.payload.policy.fork_prs == "refuse"
       assert is_binary(cmd.payload.jit_config)
+      # GitHub's JIT configs leave the runner free to update itself; the
+      # guest refuses one that is (§13.5 step 7).
+      files = cmd.payload.jit_config |> Base.decode64!() |> Jason.decode!()
+      assert (files[".runner"] |> Base.decode64!() |> Jason.decode!())["DisableUpdate"] == true
 
       vm = eventually(fn -> VMs.get!(id).start_op_id && VMs.get!(id) end)
       assert vm.runner_id

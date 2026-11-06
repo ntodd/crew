@@ -12,7 +12,7 @@ defmodule Crew.GitHub.Client do
 
   require Logger
 
-  alias Crew.GitHub.JWT
+  alias Crew.GitHub.{JitConfig, JWT}
 
   @doc "GitHub's API. Configurable so end-to-end runs can use a fake GitHub."
   def api_url, do: Application.get_env(:crew, :github_api_url) || "https://api.github.com"
@@ -480,7 +480,7 @@ defmodule Crew.GitHub.Client do
            json: %{name: name, runner_group_id: 1, labels: labels, work_folder: "_work"}
          ) do
       {:ok, %{status: 201, body: %{"runner" => %{"id" => id}, "encoded_jit_config" => jit}}} ->
-        {:ok, %{runner_id: id, jit_config: jit}}
+        {:ok, %{runner_id: id, jit_config: JitConfig.disable_update(jit)}}
 
       other ->
         unexpected(other)

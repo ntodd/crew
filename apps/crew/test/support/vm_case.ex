@@ -96,7 +96,7 @@ defmodule Crew.VMCase do
 
         Crew.GitHubStub.json(conn, 201, %{
           "runner" => %{"id" => id, "name" => body["name"]},
-          "encoded_jit_config" => Base.encode64(Jason.encode!(%{"runner" => id}))
+          "encoded_jit_config" => jit_config(id, body["name"])
         })
       end,
       {"DELETE", "/repos/#{repo.full_name}/actions/runners/*"} => fn conn ->
@@ -105,6 +105,18 @@ defmodule Crew.VMCase do
         Plug.Conn.send_resp(conn, status, if(status == 422, do: ~s({"message":"busy"}), else: ""))
       end
     }
+  end
+
+  @doc """
+  A JIT config shaped like GitHub's: base64 of a JSON object of base64'd
+  settings files. Like GitHub's, its `.runner` has no DisableUpdate.
+  """
+  def jit_config(id, name) do
+    runner = Jason.encode!(%{"AgentId" => id, "AgentName" => name, "PoolId" => 1})
+
+    %{".runner" => Base.encode64(runner), ".credentials" => Base.encode64("{}")}
+    |> Jason.encode!()
+    |> Base.encode64()
   end
 
   @doc "Polls `fun` until it returns a truthy value."
