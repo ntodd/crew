@@ -40,8 +40,13 @@ for app in crew_agent crew_cache; do
     -v "$root/apps/crew_protocol:/src/crew_protocol:ro" -v "$root/apps/$app:/src/$app:ro" \
     -v "$work:/out" -e MIX_ENV=prod -e APP="$app" -e CREW_VERSION="$version" \
     "$ELIXIR_IMAGE" bash -euc '
-      # muontrap builds a small C port: the image has no compiler.
-      command -v make >/dev/null || { apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential >/dev/null; }
+      # muontrap builds a small C port: the image has no compiler. Its amd64
+      # variant has no CA certificates either (its arm64 one does), and Hex
+      # needs them to reach hex.pm.
+      missing=""
+      command -v make >/dev/null || missing="$missing build-essential"
+      [ -s /etc/ssl/certs/ca-certificates.crt ] || missing="$missing ca-certificates"
+      [ -z "$missing" ] || { apt-get update -qq && apt-get install -y -qq --no-install-recommends $missing >/dev/null; }
       mkdir -p /w && cp -r /src/crew_protocol "/src/$APP" /w/ && rm -rf /w/*/_build /w/*/deps
       cd "/w/$APP"
       mix local.hex --force >/dev/null && mix local.rebar --force >/dev/null

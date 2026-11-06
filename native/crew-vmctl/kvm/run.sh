@@ -246,9 +246,9 @@ else
   # The image, plus make and a compiler (muontrap compiles a C port) and
   # nft (a test changes the ruleset, as root on the host's network, so the
   # container has NET_ADMIN).
-  tag=crew-kvm-elixir:2
+  tag=crew-kvm-elixir:3
   if ! dock image inspect "$tag" >/dev/null 2>&1; then
-    printf 'FROM %s\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends make gcc libc6-dev nftables >/dev/null && rm -rf /var/lib/apt/lists/*\n' \
+    printf 'FROM %s\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends make gcc libc6-dev nftables ca-certificates >/dev/null && rm -rf /var/lib/apt/lists/*\n' \
       "$ELIXIR_IMAGE" | dock build --network host -q -t "$tag" -
   fi
   mkdir -p "$work/mix" "$work/hex"

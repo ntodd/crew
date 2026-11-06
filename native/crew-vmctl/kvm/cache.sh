@@ -79,6 +79,8 @@ up() {
     -e CREW_CACHE_MGMT_LISTEN=127.0.0.1:7780 -e CREW_CACHE_MGMT_TOKEN="$token" -e CREW_CACHE_MAX_GIB=20 \
     "$ELIXIR_IMAGE" bash -c '
       set -e
+      # The amd64 variant of this image has no CA certificates, which Hex needs.
+      [ -s /etc/ssl/certs/ca-certificates.crt ] || { apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates >/dev/null; }
       mkdir -p /w && cp -r /src/crew_cache /src/crew_protocol /w/ && rm -rf /w/*/_build /w/*/deps
       cd /w/crew_cache && mix local.hex --force --if-missing >/dev/null && mix local.rebar --force --if-missing >/dev/null
       mix deps.get >/dev/null && mix compile >/dev/null && exec mix run --no-halt' >/dev/null
