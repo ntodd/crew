@@ -6,7 +6,7 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/crew"
 import topbar from "../vendor/topbar"
 import {LogViewer} from "./log_viewer"
-import {formatDuration, HoverController, ServerClock} from "./live_core"
+import {formatDuration, HoverController, placeAbove, ServerClock} from "./live_core"
 
 // Keeps a log pinned to its newest line while the reader is at the
 // bottom; scrolling up to read stops the pinning until they come back.
@@ -133,6 +133,73 @@ const HoverCardPanel = {
   },
 }
 
+// The run page's step tips: one popover (the element `data-tip-el` names)
+// for every step segment ([data-tip]) in the panel, filled from the
+// segment (its data-tip, and its running time, counting, from
+// data-tip-from) and put over it. Delegated: one set of listeners for
+// the panel, not a hook per segment. The popover is phx-update=ignore,
+// so a patch never takes its text or its place.
+const StepTips = {
+  mounted() {
+    this.clock = new ServerClock()
+    this.ctl = new HoverController({show: a => this.show(a), hide: () => this.hide(), openMs: 60, closeMs: 40})
+    const segment = e => e.target.closest?.("[data-tip]")
+    this.onOver = e => {
+      const a = segment(e)
+      if (a && this.el.contains(a)) this.ctl.enter(a)
+    }
+    this.onOut = e => {
+      const a = segment(e)
+      if (a && !a.contains(e.relatedTarget)) this.ctl.leave(a)
+    }
+    this.onKey = e => e.key === "Escape" && this.ctl.dismiss()
+    this.onScroll = () => this.ctl.dismiss()
+    this.el.addEventListener("pointerover", this.onOver)
+    this.el.addEventListener("pointerout", this.onOut)
+    document.addEventListener("keydown", this.onKey)
+    window.addEventListener("scroll", this.onScroll, {passive: true, capture: true})
+  },
+  updated() {
+    if (!this.anchor) return
+    if (this.anchor.isConnected) this.render()
+    else this.ctl.dismiss()
+  },
+  destroyed() {
+    this.ctl.dismiss()
+    document.removeEventListener("keydown", this.onKey)
+    window.removeEventListener("scroll", this.onScroll, {capture: true})
+  },
+  tip() {
+    return document.getElementById(this.el.dataset.tipEl)
+  },
+  show(anchor) {
+    const tip = this.tip()
+    if (!tip) return
+    this.anchor = anchor
+    if (!tip.matches(":popover-open")) tip.showPopover()
+    this.render()
+    clearInterval(this.timer)
+    if (anchor.dataset.tipFrom) this.timer = setInterval(() => this.render(), 1000)
+  },
+  hide() {
+    this.anchor = null
+    clearInterval(this.timer)
+    const tip = this.tip()
+    if (tip?.matches(":popover-open")) tip.hidePopover()
+  },
+  render() {
+    const tip = this.tip()
+    const a = this.anchor
+    if (!tip || !a) return
+    this.clock.sync(this.el.closest("[data-now]")?.dataset.now)
+    const from = Date.parse(a.dataset.tipFrom)
+    tip.textContent = Number.isNaN(from) ? a.dataset.tip : `${a.dataset.tip} ${formatDuration((this.clock.now() - from) / 1000)}`
+    const {left, top} = placeAbove(a.getBoundingClientRect(), tip.getBoundingClientRect(), window.innerWidth, window.innerHeight)
+    tip.style.left = `${left}px`
+    tip.style.top = `${top}px`
+  },
+}
+
 // Counts up every [data-from] under it once a second, so running times
 // move between server renders without the server sending them. It runs
 // on the server's clock (`data-now`, the time of the last render).
@@ -163,7 +230,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, LogTail, Copy, LogViewer, Grow, HoverCard, HoverCardPanel, Clock},
+  hooks: {...colocatedHooks, LogTail, Copy, LogViewer, Grow, HoverCard, HoverCardPanel, StepTips, Clock},
 })
 
 topbar.config({barColors: {0: "#5b50e8"}, shadowColor: "rgba(0, 0, 0, .15)"})

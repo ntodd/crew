@@ -99,9 +99,10 @@ defmodule CrewWeb.JobLive.Show do
     end
   end
 
-  # The steps the page shows: the API's (names and statuses from GitHub),
-  # else the guest's. Each carries the step_ref its log lines use, for
-  # the current source.
+  # The steps the page shows (JobSteps.source/2): the guest's while the
+  # job runs and it has them, else the API's (names and statuses from
+  # GitHub), else the guest's. Each carries the step_ref its log lines
+  # use, for the current source.
   defp steps(source, job, vm) do
     guest = if vm, do: Logs.steps(vm.id), else: []
     by_number = Map.new(guest, &{&1.number, &1})
@@ -120,7 +121,8 @@ defmodule CrewWeb.JobLive.Show do
         }
       end
 
-    if api != [],
+    # The same choice as the run page's bar, so its #step-N links land.
+    if CrewWeb.JobSteps.source(job, guest) == :api,
       do: Enum.sort_by(api, & &1.number),
       else:
         for(
@@ -139,7 +141,13 @@ defmodule CrewWeb.JobLive.Show do
   end
 
   defp ms(nil), do: nil
-  defp ms(n) when is_integer(n), do: DateTime.from_unix!(n, :millisecond)
+
+  defp ms(n) when is_integer(n) do
+    case DateTime.from_unix(n, :millisecond) do
+      {:ok, at} -> at
+      _ -> nil
+    end
+  end
 
   # "usually X": each step's median over the last 10 successful runs of
   # the same job.

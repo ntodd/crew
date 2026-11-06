@@ -82,6 +82,9 @@ test("runs by branch, and a run's actions and jobs", async ({page, request}) => 
     await page.setViewportSize({width, height: 900})
     expect(await cellOverflows(page, "#run-jobs tr[id^=job-]"), `at ${width}`).toEqual([])
   }
+  // And on a phone the table scrolls in its panel, not the page.
+  await page.setViewportSize({width: 390, height: 844})
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
   await page.setViewportSize({width: 1440, height: 900})
 
   // The box a job ran on links to its page, and hovering it shows the

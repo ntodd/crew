@@ -126,7 +126,10 @@ defmodule CrewWeb.RunPageTest do
           "name" => name,
           "number" => i,
           "status" => status,
-          "conclusion" => conclusion
+          "conclusion" => conclusion,
+          # The guest's times are Unix milliseconds.
+          "started_at" =>
+            if(status != "pending", do: System.os_time(:millisecond) - (10 - i) * 5000)
         }
       end
 
@@ -236,6 +239,29 @@ defmodule CrewWeb.RunPageTest do
 
     assert has_element?(view, "#box-summary-#{box.id}", "m4")
     assert has_element?(view, "#box-summary-#{box.id}", "1 VM")
+  end
+
+  test "each step links to it on the job page, and says which it is", %{conn: conn, path: path} do
+    {:ok, view, _} = live(conn, path)
+    job = ~p"/runs/#{@run}/attempts/2/jobs/501"
+    segment = ~s(#job-501 [data-steps] a[href="#{job}#step-3"][data-tip])
+
+    # Named for a screen reader, and out of the Tab order (the step named
+    # under the bar is the keyboard's link); its tip is the page's one
+    # popover, filled in on hover.
+    assert has_element?(view, ~s(#{segment}[aria-label="Step 3 of 4 · Run tests · running"]))
+    assert has_element?(view, ~s(#{segment}[data-tip="Step 3 of 4 · Run tests · running"]))
+    assert has_element?(view, ~s(#{segment}[tabindex="-1"][data-tip-from]))
+    refute has_element?(view, "#job-501 [data-steps] [aria-hidden]")
+    assert has_element?(view, "#job-501 [data-steps] .sr-only", "2 of 4 steps done")
+    assert has_element?(view, "#step-tip[popover]")
+
+    assert has_element?(
+             view,
+             ~s(#job-502 [data-steps] a[href$="/jobs/502#step-2"][aria-label="Step 2 of 2 · Lint · succeeded"])
+           )
+
+    assert has_element?(view, ~s(#job-501 [data-steps] p a[href="#{job}#step-3"]), "Run tests")
   end
 
   test "the steps keep up while the run is live", %{conn: conn, path: path, vm: vm} do

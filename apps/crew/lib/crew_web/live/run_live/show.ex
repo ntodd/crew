@@ -296,8 +296,10 @@ defmodule CrewWeb.RunLive.Show do
           </dl>
         </.panel>
 
-        <.panel id="run-jobs" title="Jobs" padded={false}>
-          <div class="overflow-x-auto">
+        <.panel id="run-jobs" title="Jobs" padded={false} phx-hook="StepTips" data-tip-el="step-tip">
+          <%!-- relative: so what's absolutely placed in the table (sr-only
+               text) is placed in this scroll box, not past the page's edge --%>
+          <div class="relative overflow-x-auto">
             <table class="w-full min-w-[64rem] text-sm">
               <thead class="text-left text-xs text-ink-3">
                 <tr>
@@ -346,7 +348,14 @@ defmodule CrewWeb.RunLive.Show do
                     )}</span>
                   </td>
                   <td class="max-w-0 px-3 py-2.5"><.job_status job={job} now={@now} /></td>
-                  <td class="max-w-0 px-3 py-2.5"><.step_progress steps={@steps[job.id]} /></td>
+                  <td class="max-w-0 px-3 py-2.5">
+                    <.step_progress
+                      steps={@steps[job.id]}
+                      href={
+                        ~p"/runs/#{@attempt.github_run_id}/attempts/#{@attempt.run_attempt}/jobs/#{job.github_id}"
+                      }
+                    />
+                  </td>
                   <td data-col="size" class="whitespace-nowrap px-2 py-2.5 text-ink-2">
                     {job.size_id && @sizes[job.size_id] && @sizes[job.size_id].name}
                   </td>
@@ -407,6 +416,14 @@ defmodule CrewWeb.RunLive.Show do
           class="inset-auto m-0 w-80 rounded-xl border border-line bg-raised p-4 text-sm text-ink shadow-overlay"
         >
           <BoxCard.box_card card={card} />
+        </div>
+        <div
+          id="step-tip"
+          popover="manual"
+          role="tooltip"
+          phx-update="ignore"
+          class="pointer-events-none inset-auto m-0 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs font-medium text-canvas shadow-raised"
+        >
         </div>
         <span :for={{id, card} <- @box_cards} id={"box-summary-#{id}"} hidden>
           {BoxCard.summary(card)}
@@ -475,37 +492,66 @@ defmodule CrewWeb.RunLive.Show do
   end
 
   attr :steps, :list, default: []
+  attr :href, :string, required: true, doc: "the job's page"
 
   # One segment per step, coloured by its state, with how many are done
-  # and the one running (or the one that failed).
+  # and the step running (or the one that failed). Each segment links to
+  # its step on the job page, is named for a screen reader, and shows
+  # its tip (#step-tip) on hover. They're out of the Tab order: the step
+  # named under the bar is the keyboard's link.
   defp step_progress(assigns) do
-    assigns = assign(assigns, :progress, JobSteps.progress(assigns.steps || []))
+    steps = assigns.steps || []
+
+    assigns =
+      assign(assigns,
+        progress: JobSteps.progress(steps),
+        described: Enum.map(steps, &{&1, JobSteps.describe(&1, length(steps))})
+      )
 
     ~H"""
     <div data-steps class="min-w-0">
       <%= if @progress do %>
         <div class="flex items-center gap-2">
-          <span
-            class="flex h-1.5 min-w-0 flex-1 gap-px overflow-hidden rounded-full"
-            role="img"
-            aria-label={"#{@progress.done} of #{@progress.total} steps done"}
-          >
-            <span
-              :for={step <- @steps}
-              data-step-state={JobSteps.state(step)}
-              title={"#{step.name}: #{JobSteps.state(step)}"}
-              class={["h-full min-w-px flex-1", step_segment(JobSteps.state(step))]}
-            ></span>
+          <span class="sr-only">{@progress.done} of {@progress.total} steps done</span>
+          <span class="flex h-1.5 min-w-0 flex-1 items-center gap-px">
+            <.link
+              :for={{step, d} <- @described}
+              navigate={"#{@href}#step-#{step.number}"}
+              tabindex="-1"
+              aria-label={tip(d)}
+              data-tip={tip(d)}
+              data-tip-from={d.since && DateTime.to_iso8601(d.since)}
+              class="group/seg flex h-4 min-w-px flex-1 items-center [&:first-child>span]:rounded-l-full [&:last-child>span]:rounded-r-full"
+            >
+              <span
+                data-step-state={JobSteps.state(step)}
+                class={[
+                  "h-1.5 w-full transition-[height] duration-150 group-hover/seg:h-2.5",
+                  step_segment(JobSteps.state(step))
+                ]}
+              ></span>
+            </.link>
           </span>
           <span class="shrink-0 text-xs tabular-nums text-ink-3">
             {@progress.done}/{@progress.total}
           </span>
         </div>
-        <p :if={@progress.current} class="mt-1 truncate text-xs text-ink-2" title={@progress.current}>
-          {@progress.current}
+        <p :if={@progress.current} class="mt-1 truncate text-xs text-ink-2">
+          <.link
+            navigate={"#{@href}#step-#{@progress.current_number}"}
+            title={@progress.current}
+            class="underline-offset-2 hover:text-ink hover:underline"
+          >
+            {@progress.current}
+          </.link>
         </p>
         <p :if={!@progress.current && @progress.failed} class="mt-1 truncate text-xs text-danger">
-          Failed at {@progress.failed}
+          <.link
+            navigate={"#{@href}#step-#{@progress.failed_number}"}
+            class="underline-offset-2 hover:underline"
+          >
+            Failed at {@progress.failed}
+          </.link>
         </p>
       <% else %>
         <span class="text-ink-3">–</span>
@@ -513,6 +559,10 @@ defmodule CrewWeb.RunLive.Show do
     </div>
     """
   end
+
+  # "Step 4 of 7 · Run tests · running": the StepTips hook adds the
+  # running time, counting, from data-tip-from.
+  defp tip(%{title: title, outcome: outcome}), do: "#{title} · #{outcome}"
 
   defp step_segment("success"), do: "bg-success"
   defp step_segment("failure"), do: "bg-danger"

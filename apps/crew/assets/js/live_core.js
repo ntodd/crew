@@ -136,3 +136,14 @@ export class HoverController {
     this.hideFn()
   }
 }
+
+// Where a tip goes for an anchor: over it, centred, `gap` px off, kept
+// 8 px inside the window; under it when there's no room over it. Rects
+// are viewport ones (getBoundingClientRect), the tip's just its size.
+export function placeAbove(anchor, tip, vw, vh, gap = 6) {
+  const centre = (anchor.left + anchor.right) / 2
+  const left = Math.round(Math.min(Math.max(8, centre - tip.width / 2), vw - tip.width - 8))
+  const over = anchor.top - gap - tip.height
+  const top = Math.round(over >= 0 ? over : anchor.bottom + gap)
+  return {left, top}
+}

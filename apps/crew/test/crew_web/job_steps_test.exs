@@ -68,4 +68,115 @@ defmodule CrewWeb.JobStepsTest do
     assert %{done: 3, total: 3, current: nil, failed: "b"} = JobSteps.progress(failed)
     assert JobSteps.progress([]) == nil
   end
+
+  describe "times and what a step says on hover" do
+    test "GitHub's ISO times and the guest's Unix milliseconds both come out as DateTimes" do
+      [api] =
+        JobSteps.of(
+          %{
+            gh_state: "completed",
+            steps: [
+              %{
+                "number" => 1,
+                "name" => "Build",
+                "status" => "completed",
+                "conclusion" => "success",
+                "started_at" => "2026-11-03T10:00:00Z",
+                "completed_at" => "2026-11-03T10:00:04Z"
+              }
+            ]
+          },
+          []
+        )
+
+      assert api.started_at == ~U[2026-11-03 10:00:00Z]
+      assert api.completed_at == ~U[2026-11-03 10:00:04Z]
+
+      [guest] =
+        JobSteps.of(%{gh_state: "in_progress", steps: []}, [
+          %{
+            number: 1,
+            name: "Build",
+            status: "in_progress",
+            conclusion: nil,
+            started_at: 1_793_700_000_000
+          }
+        ])
+
+      assert guest.started_at == DateTime.from_unix!(1_793_700_000_000, :millisecond)
+      assert guest.completed_at == nil
+    end
+
+    test "which step it is of how many, and how it went or since when it's been going" do
+      done = %{
+        number: 2,
+        name: "Checkout",
+        status: "completed",
+        conclusion: "success",
+        started_at: ~U[2026-11-03 10:00:00Z],
+        completed_at: ~U[2026-11-03 10:00:04Z]
+      }
+
+      assert JobSteps.describe(done, 7) ==
+               %{title: "Step 2 of 7 · Checkout", outcome: "succeeded in 4s", since: nil}
+
+      running = %{
+        done
+        | number: 4,
+          name: "Run tests",
+          status: "in_progress",
+          conclusion: nil,
+          completed_at: nil
+      }
+
+      assert JobSteps.describe(running, 7) ==
+               %{
+                 title: "Step 4 of 7 · Run tests",
+                 outcome: "running",
+                 since: ~U[2026-11-03 10:00:00Z]
+               }
+
+      assert %{outcome: "failed in 4s"} = JobSteps.describe(%{done | conclusion: "failure"}, 7)
+
+      assert %{outcome: "skipped"} =
+               JobSteps.describe(%{done | conclusion: "skipped", started_at: nil}, 7)
+
+      assert %{outcome: "done"} =
+               JobSteps.describe(%{done | conclusion: nil, completed_at: nil}, 7)
+
+      assert %{title: "Step 5 of 7 · Step 5", outcome: "not started"} =
+               JobSteps.describe(%{number: 5, name: nil, status: "pending", conclusion: nil}, 7)
+    end
+
+    test "progress names the number of the step running, or the one that failed" do
+      steps = [
+        %{number: 1, name: "a", status: "completed", conclusion: "failure"},
+        %{number: 2, name: "b", status: "in_progress", conclusion: nil}
+      ]
+
+      assert %{current: "b", current_number: 2, failed: "a", failed_number: 1} =
+               JobSteps.progress(steps)
+    end
+  end
+
+  describe "which steps, for both pages" do
+    test "a running job with the guest's steps uses them; otherwise GitHub's, else the guest's" do
+      api = [%{"number" => 1, "name" => "Set up job", "status" => "completed"}]
+      guest = [%{number: 1, name: "Set up job", status: "completed", conclusion: "success"}]
+
+      assert JobSteps.source(%{gh_state: "in_progress", steps: api}, guest) == :guest
+      assert JobSteps.source(%{gh_state: "in_progress", steps: api}, []) == :api
+      assert JobSteps.source(%{gh_state: "completed", steps: api}, guest) == :api
+      assert JobSteps.source(%{gh_state: "completed", steps: []}, guest) == :guest
+    end
+
+    test "a time no clock could hold is no time, not a crash" do
+      [step] =
+        JobSteps.of(%{gh_state: "in_progress", steps: []}, [
+          %{number: 1, name: "a", status: "in_progress", started_at: 10 ** 20}
+        ])
+
+      assert step.started_at == nil
+    end
+  end
 end

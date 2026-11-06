@@ -2,7 +2,7 @@
 // controller. node --test assets/js/test
 import {test} from "node:test"
 import assert from "node:assert/strict"
-import {formatDuration, ServerClock, HoverController} from "../live_core.js"
+import {formatDuration, ServerClock, HoverController, placeAbove} from "../live_core.js"
 
 test("durations read like JobStatus.format", () => {
   assert.equal(formatDuration(0), "0s")
@@ -179,4 +179,15 @@ test("a server time that arrives late doesn't take the clock backwards", () => {
   // One that's ahead still moves it on.
   clock.sync("2026-11-03T10:00:12Z")
   assert.equal(clock.now(), t0 + 12_000)
+})
+
+test("a tip goes over its anchor, centred, kept inside the window", () => {
+  const vw = 1000, vh = 800
+  // Room above: over it, centred.
+  assert.deepEqual(placeAbove({left: 400, right: 420, top: 300, bottom: 316}, {width: 200, height: 24}, vw, vh), {left: 310, top: 270})
+  // Near the left or right edge: pushed in, 8 px from it.
+  assert.deepEqual(placeAbove({left: 0, right: 10, top: 300, bottom: 316}, {width: 200, height: 24}, vw, vh).left, 8)
+  assert.deepEqual(placeAbove({left: 990, right: 1000, top: 300, bottom: 316}, {width: 200, height: 24}, vw, vh).left, 792)
+  // No room above: under it.
+  assert.deepEqual(placeAbove({left: 400, right: 420, top: 10, bottom: 26}, {width: 200, height: 24}, vw, vh).top, 32)
 })

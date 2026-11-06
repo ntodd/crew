@@ -118,6 +118,27 @@ defmodule CrewWeb.JobLiveTest do
     end
   end
 
+  test "while it runs, its steps are the guest's, numbered as the run page's bar links to them",
+       %{
+         conn: conn,
+         path: path,
+         vm: vm
+       } do
+    steps =
+      for {name, status, n} <- [
+            {"Set up job", "completed", 1},
+            {"Checkout", "completed", 2},
+            {"Run tests", "in_progress", 3}
+          ],
+          do: %{"ref" => "s#{n}", "name" => name, "number" => n, "status" => status}
+
+    :ok = Logs.handle_agent_event(vm, "vm.steps", %{steps: steps})
+
+    {:ok, view, _} = live(conn, path)
+    assert has_element?(view, "#step-2", "Checkout")
+    assert has_element?(view, "#step-3", "Run tests")
+  end
+
   test "shows the steps, the timing bar, placement and the viewer", %{
     conn: conn,
     path: path,
