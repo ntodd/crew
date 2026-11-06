@@ -375,4 +375,126 @@ defmodule Crew.JobsTest do
     {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(other))
     assert Crew.Repos.get_by_full_name("acme/brand-new").id == job.repo_id
   end
+
+  describe "list_runs search (§17.3)" do
+    setup %{repo: repo} do
+      for {id, attrs} <- [
+            {901, head_branch: "main", actor: "mona"},
+            {902, head_branch: "Feature/Login", actor: "hubot"},
+            {903,
+             head_branch: "fix-718", actor: "dependabot[bot]", pull_requests: [%{"number" => 42}]},
+            {904, head_branch: "release/v2", actor: "mona", pull_requests: [%{"number" => 718}]}
+          ] do
+        {:ok, _} = Jobs.handle_workflow_run(workflow_run_payload(repo, [id: id] ++ attrs))
+      end
+
+      %{scope: Crew.Scope.for_user(user_fixture(role: "admin"))}
+    end
+
+    defp search(scope, filters),
+      do: scope |> Jobs.list_runs(filters) |> Enum.map(& &1.github_run_id) |> Enum.sort()
+
+    test "a term matches part of a branch or an actor, any case", %{scope: scope} do
+      assert search(scope, %{"q" => "login"}) == [902]
+      assert search(scope, %{"q" => "MONA"}) == [901, 904]
+      assert search(scope, %{"q" => "bot"}) == [902, 903]
+    end
+
+    test "a number matches a PR, and also branches and actors containing it", %{scope: scope} do
+      assert search(scope, %{"q" => "718"}) == [903, 904]
+      assert search(scope, %{"q" => "#718"}) == [904]
+    end
+
+    test "every term has to match", %{scope: scope} do
+      assert search(scope, %{"q" => "mona release"}) == [904]
+      assert search(scope, %{"q" => "  mona   main "}) == [901]
+    end
+
+    test "branch:, pr: and actor: match that field exactly", %{scope: scope} do
+      assert search(scope, %{"q" => "branch:main"}) == [901]
+      assert search(scope, %{"q" => "branch:mai"}) == []
+      assert search(scope, %{"q" => "actor:Mona"}) == [901, 904]
+      assert search(scope, %{"q" => "actor:dependabot[bot]"}) == [903]
+      assert search(scope, %{"q" => "pr:42"}) == [903]
+    end
+
+    test "LIKE wildcards and the escape character are matched literally", %{
+      scope: scope,
+      repo: repo
+    } do
+      for {id, branch} <- [{905, "fix_bug"}, {906, "fixAbug"}, {907, "wow!"}] do
+        {:ok, _} =
+          Jobs.handle_workflow_run(workflow_run_payload(repo, id: id, head_branch: branch))
+      end
+
+      assert search(scope, %{"q" => "%"}) == []
+      assert search(scope, %{"q" => "fix_b"}) == [905]
+      assert search(scope, %{"q" => "w!"}) == [907]
+    end
+
+    test "a number too big for a PR doesn't fail the search", %{scope: scope, repo: repo} do
+      big = "92233720368547758080"
+
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 908, head_branch: "fix-#{big}-2147483648")
+        )
+
+      assert search(scope, %{"q" => big}) == [908]
+      assert search(scope, %{"q" => "2147483648"}) == [908]
+      assert search(scope, %{"q" => "#" <> big}) == []
+      assert search(scope, %{"q" => "pr:" <> big}) == []
+      assert search(scope, %{"q" => "#2147483648"}) == []
+
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 910, pull_requests: [%{"number" => 2_147_483_647}])
+        )
+
+      assert search(scope, %{"q" => "#2147483647"}) == [910]
+    end
+
+    test "a branch with non-ASCII capitals is found by its own spelling", %{
+      scope: scope,
+      repo: repo
+    } do
+      {:ok, _} =
+        Jobs.handle_workflow_run(workflow_run_payload(repo, id: 909, head_branch: "Fix-École"))
+
+      assert search(scope, %{"q" => "École"}) == [909]
+      assert search(scope, %{"q" => "fix-É"}) == [909]
+    end
+
+    test "a qualifier still being typed doesn't filter", %{scope: scope} do
+      assert search(scope, %{"q" => "branch: mona"}) == [901, 904]
+      assert search(scope, %{"q" => "#"}) == [901, 902, 903, 904]
+    end
+
+    test "a blank search matches everything", %{scope: scope} do
+      assert search(scope, %{"q" => "   "}) == [901, 902, 903, 904]
+    end
+  end
+
+  describe "list_runs with crew" do
+    setup %{repo: repo} do
+      for {run_id, labels} <- [{911, ["crew-m"]}, {912, ["ubuntu-latest"]}, {913, ["crew-huge"]}] do
+        {:ok, _} = Jobs.handle_workflow_run(workflow_run_payload(repo, id: run_id))
+
+        {:ok, _} =
+          Jobs.handle_workflow_job(workflow_job_payload(repo, run_id: run_id, labels: labels))
+      end
+
+      # A run with no jobs seen yet.
+      {:ok, _} = Jobs.handle_workflow_run(workflow_run_payload(repo, id: 914))
+
+      %{scope: Crew.Scope.for_user(user_fixture(role: "admin"))}
+    end
+
+    test "keeps only runs with a job for Crew, runnable or not", %{scope: scope} do
+      assert scope |> Jobs.list_runs(%{"crew" => "true"}) |> Enum.map(& &1.github_run_id) ==
+               [913, 911]
+
+      assert length(Jobs.list_runs(scope, %{})) == 4
+    end
+  end
 end

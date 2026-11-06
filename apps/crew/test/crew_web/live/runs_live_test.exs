@@ -66,12 +66,112 @@ defmodule CrewWeb.RunsLiveTest do
     refute has_element?(view, "#run-103")
     assert has_element?(view, "#run-104")
 
-    {:ok, view, _} = live(conn, ~p"/runs?branch=main")
+    {:ok, view, _} = live(conn, ~p"/runs?q=main")
     assert has_element?(view, "#run-103")
     refute has_element?(view, "#run-104")
 
     view |> form("#run-filters", %{"status" => "queued"}) |> render_change()
-    assert_patch(view, ~p"/runs?branch=main&status=queued")
+    assert_patch(view, ~p"/runs?q=main&status=queued")
+  end
+
+  test "branch, PR and actor share one search box", %{conn: conn, repo: repo} do
+    run_with_jobs(repo, 120, [{40, []}], head_branch: "feature/x")
+    run_with_jobs(repo, 121, [{41, []}], head_branch: "main")
+
+    {:ok, view, _} = live(conn, ~p"/runs")
+    assert has_element?(view, ~s(#run-filters input[type="search"][name="q"]))
+    refute has_element?(view, ~s(#run-filters input[name="branch"]))
+    refute has_element?(view, ~s(#run-filters input[name="pr"]))
+    refute has_element?(view, ~s(#run-filters input[name="actor"]))
+
+    view |> form("#run-filters", %{"q" => "feature"}) |> render_change()
+    assert_patch(view, ~p"/runs?q=feature")
+    assert has_element?(view, "#run-120")
+    refute has_element?(view, "#run-121")
+  end
+
+  test "Crew jobs only hides runs with no job for Crew", %{conn: conn, repo: repo} do
+    run_with_jobs(repo, 122, [{42, labels: ["crew-m"]}])
+    run_with_jobs(repo, 123, [{43, labels: ["ubuntu-latest"]}])
+
+    {:ok, view, _} = live(conn, ~p"/runs")
+    assert has_element?(view, "#run-123")
+
+    view |> form("#run-filters", %{"crew" => "true", "status" => "queued"}) |> render_change()
+    assert_patch(view, ~p"/runs?crew=true&status=queued")
+    assert has_element?(view, "#run-122")
+    refute has_element?(view, "#run-123")
+
+    # Unchecked, the box sends nothing; the other filters stay.
+    view |> render_change("filter", %{"status" => "queued"})
+    assert_patch(view, ~p"/runs?status=queued")
+    assert has_element?(view, "#run-123")
+  end
+
+  test "a toggle that's off or an unknown status in the URL isn't a filter", %{conn: conn} do
+    {:ok, view, _} = live(conn, ~p"/runs?crew=false&mine=no&q=&status=garbage")
+    assert has_element?(view, "#runs-empty", "No runs yet")
+  end
+
+  test "the search box explains the qualifiers to screen readers", %{conn: conn} do
+    {:ok, view, _} = live(conn, ~p"/runs")
+    assert has_element?(view, ~s(#run-search[aria-describedby="run-search-help"]))
+    assert has_element?(view, "#run-search-help", "branch:")
+  end
+
+  test "the repo, PR and commit link to GitHub in a new tab", %{conn: conn, repo: repo} do
+    run_with_jobs(repo, 124, [{44, []}],
+      head_sha: "f00dfacecafe",
+      pull_requests: [%{"number" => 718}]
+    )
+
+    run_with_jobs(repo, 125, [{45, []}], head_branch: "release/v2")
+    run_with_jobs(repo, 128, [{48, []}], head_branch: "feat/a#b+c")
+
+    {:ok, view, _} = live(conn, ~p"/runs")
+
+    for href <- [
+          "https://github.com/acme/app",
+          "https://github.com/acme/app/pull/718",
+          "https://github.com/acme/app/commit/f00dfacecafe"
+        ] do
+      assert has_element?(
+               view,
+               ~s(#run-124 a[href="#{href}"][target="_blank"][rel~="noopener"])
+             )
+    end
+
+    assert has_element?(view, ~s(#run-124 a[href$="/pull/718"]), "PR #718")
+    assert has_element?(view, ~s(#run-124 a[href$="/commit/f00dfacecafe"]), "f00dfac")
+
+    assert has_element?(
+             view,
+             ~s(#run-125 a[href="https://github.com/acme/app/tree/release/v2"][target="_blank"]),
+             "release/v2"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#run-128 a[href="https://github.com/acme/app/tree/feat/a%23b%2Bc"]),
+             "feat/a#b+c"
+           )
+  end
+
+  test "no matches says so, not that there are no runs", %{conn: conn, repo: repo} do
+    run_with_jobs(repo, 127, [{47, []}])
+
+    {:ok, view, _} = live(conn, ~p"/runs?q=nothing-matches&view=stack")
+    assert has_element?(view, "#runs-empty", "No runs match")
+    refute has_element?(view, "#runs-empty", "No runs yet")
+    view |> element("#runs-empty a", "Clear filters") |> render_click()
+    assert_patch(view, ~p"/runs?view=stack")
+    assert has_element?(view, ~s([data-run="127"]))
+  end
+
+  test "a run's status icon is solid", %{conn: conn, repo: repo} do
+    run_with_jobs(repo, 126, [{46, []}], status: "completed", conclusion: "success")
+    {:ok, view, _} = live(conn, ~p"/runs")
+    assert has_element?(view, ~s(#run-126 [class~="hero-check-circle-micro"]))
   end
 
   test "earlier attempts fold under the latest", %{conn: conn, repo: repo} do

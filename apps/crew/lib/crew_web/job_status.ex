@@ -29,13 +29,13 @@ defmodule CrewWeb.JobStatus do
   end
 
   def of(%{classification: "unsatisfiable", unsatisfiable_reason: @fork_reason}, _now),
-    do: status("refused", "hero-shield-exclamation", "Refused", @fork_reason, :danger)
+    do: status("refused", "hero-shield-exclamation-micro", "Refused", @fork_reason, :danger)
 
   def of(%{classification: "unsatisfiable"} = job, _now),
     do:
       status(
         "unsatisfiable",
-        "hero-exclamation-triangle",
+        "hero-exclamation-triangle-micro",
         "Can't run",
         job.unsatisfiable_reason,
         :warning
@@ -46,19 +46,19 @@ defmodule CrewWeb.JobStatus do
 
     case job.conclusion do
       "success" ->
-        status("success", "hero-check-circle", "Succeeded" <> in_time(took), nil, :success)
+        status("success", "hero-check-circle-micro", "Succeeded" <> in_time(took), nil, :success)
 
       "failure" ->
-        status("failure", "hero-x-circle", "Failed" <> in_time(took), nil, :danger)
+        status("failure", "hero-x-circle-micro", "Failed" <> in_time(took), nil, :danger)
 
       "cancelled" ->
-        status("cancelled", "hero-no-symbol", "Cancelled", nil, :muted)
+        status("cancelled", "hero-no-symbol-micro", "Cancelled", nil, :muted)
 
       "skipped" ->
-        status("skipped", "hero-minus-circle", "Skipped", nil, :muted)
+        status("skipped", "hero-minus-circle-micro", "Skipped", nil, :muted)
 
       other ->
-        status("completed", "hero-check", "Completed", other, :muted)
+        status("completed", "hero-check-micro", "Completed", other, :muted)
     end
   end
 
@@ -73,16 +73,16 @@ defmodule CrewWeb.JobStatus do
       )
 
   def of(%{gh_state: "waiting"}, _now),
-    do: status("waiting", "hero-clock", "Waiting", "for an environment approval", :muted)
+    do: status("waiting", "hero-clock-micro", "Waiting", "for an environment approval", :muted)
 
   def of(%{gh_state: "queued", blocked_reason: reason}, _now) when is_binary(reason),
-    do: status("blocked", "hero-pause-circle", "Blocked", reason, :warning)
+    do: status("blocked", "hero-pause-circle-micro", "Blocked", reason, :warning)
 
   def of(%{gh_state: "queued"} = job, now),
     do:
       status(
         "queued",
-        "hero-clock",
+        "hero-clock-micro",
         "Waiting · " <> format(duration(job.queued_at || job.seen_at, now)),
         Map.get(job, :wait_reason),
         :muted

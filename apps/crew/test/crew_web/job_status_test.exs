@@ -32,7 +32,7 @@ defmodule CrewWeb.JobStatusTest do
   end
 
   test "the vocabulary of §17.4" do
-    assert %{label: "Waiting · 1m 12s", icon: "hero-clock"} = JobStatus.of(job([]), @now)
+    assert %{label: "Waiting · 1m 12s", icon: "hero-clock-micro"} = JobStatus.of(job([]), @now)
 
     assert %{label: "Blocked", reason: "checking fork status"} =
              JobStatus.of(job(blocked_reason: "checking fork status"), @now)
@@ -43,7 +43,7 @@ defmodule CrewWeb.JobStatusTest do
                @now
              )
 
-    assert %{label: "Succeeded in 4m 31s", icon: "hero-check-circle"} =
+    assert %{label: "Succeeded in 4m 31s", icon: "hero-check-circle-micro"} =
              JobStatus.of(
                job(
                  gh_state: "completed",
@@ -80,7 +80,7 @@ defmodule CrewWeb.JobStatusTest do
                @now
              )
 
-    assert %{label: "Refused", icon: "hero-shield-exclamation"} =
+    assert %{label: "Refused", icon: "hero-shield-exclamation-micro"} =
              JobStatus.of(
                job(
                  classification: "unsatisfiable",
