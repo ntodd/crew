@@ -11,31 +11,51 @@ defmodule CrewWeb.JobStatus do
           icon: String.t(),
           label: String.t(),
           reason: String.t() | nil,
-          tone: atom()
+          tone: atom(),
+          verb: String.t() | nil,
+          since: DateTime.t() | nil,
+          ours: boolean(),
+          note: String.t() | nil
         }
 
   @doc "The status of `job` at `now`."
   @spec of(map(), DateTime.t()) :: t()
   def of(job, now \\ DateTime.utc_now())
 
-  def of(%{classification: "not_ours"} = job, _now) do
-    status(
-      "not_ours",
-      "",
-      "Not a Crew job",
-      job.runner_name && "ran on #{job.runner_name}",
-      :muted
-    )
+  # A job for GitHub's runners (or another pool): how it went there, in
+  # the same words, with GitHub's own reason. Whose it was is a `note`
+  # apart (pages show GitHub's mark, and the note on hover). Queued, not
+  # Waiting: Crew isn't the one placing it.
+  def of(%{classification: "not_ours"} = job, now) do
+    status =
+      case job.gh_state do
+        "queued" ->
+          since = job.queued_at || job.seen_at
+
+          "queued"
+          |> status("hero-clock-micro", "Queued · " <> format(duration(since, now)), nil, :muted)
+          |> counting("Queued", since)
+
+        _ ->
+          of(%{job | classification: "ours", blocked_reason: nil}, now)
+      end
+
+    note =
+      ["Not a Crew job", job.runner_name && "ran on #{job.runner_name}"]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(", ")
+
+    %{status | ours: false, note: note}
   end
 
   def of(%{classification: "unsatisfiable", unsatisfiable_reason: @fork_reason}, _now),
-    do: status("refused", "hero-shield-exclamation", "Refused", @fork_reason, :danger)
+    do: status("refused", "hero-shield-exclamation-micro", "Refused", @fork_reason, :danger)
 
   def of(%{classification: "unsatisfiable"} = job, _now),
     do:
       status(
         "unsatisfiable",
-        "hero-exclamation-triangle",
+        "hero-exclamation-triangle-micro",
         "Can't run",
         job.unsatisfiable_reason,
         :warning
@@ -46,50 +66,63 @@ defmodule CrewWeb.JobStatus do
 
     case job.conclusion do
       "success" ->
-        status("success", "hero-check-circle", "Succeeded" <> in_time(took), nil, :success)
+        status("success", "hero-check-circle-micro", "Succeeded" <> in_time(took), nil, :success)
 
       "failure" ->
-        status("failure", "hero-x-circle", "Failed" <> in_time(took), nil, :danger)
+        status("failure", "hero-x-circle-micro", "Failed" <> in_time(took), nil, :danger)
 
       "cancelled" ->
-        status("cancelled", "hero-no-symbol", "Cancelled", nil, :muted)
+        status("cancelled", "hero-no-symbol-micro", "Cancelled", nil, :muted)
 
       "skipped" ->
-        status("skipped", "hero-minus-circle", "Skipped", nil, :muted)
+        status("skipped", "hero-minus-circle-micro", "Skipped", nil, :muted)
 
       other ->
-        status("completed", "hero-check", "Completed", other, :muted)
+        status("completed", "hero-check-micro", "Completed", other, :muted)
     end
   end
 
   def of(%{gh_state: "in_progress"} = job, now),
     do:
-      status(
-        "running",
-        "dot",
-        "Running · " <> format(duration(job.started_at, now)),
-        nil,
-        :running
-      )
+      "running"
+      |> status("dot", "Running · " <> format(duration(job.started_at, now)), nil, :running)
+      |> counting("Running", job.started_at)
 
   def of(%{gh_state: "waiting"}, _now),
-    do: status("waiting", "hero-clock", "Waiting", "for an environment approval", :muted)
+    do: status("waiting", "hero-clock-micro", "Waiting", "for an environment approval", :muted)
 
   def of(%{gh_state: "queued", blocked_reason: reason}, _now) when is_binary(reason),
-    do: status("blocked", "hero-pause-circle", "Blocked", reason, :warning)
+    do: status("blocked", "hero-pause-circle-micro", "Blocked", reason, :warning)
 
-  def of(%{gh_state: "queued"} = job, now),
-    do:
-      status(
-        "queued",
-        "hero-clock",
-        "Waiting · " <> format(duration(job.queued_at || job.seen_at, now)),
-        Map.get(job, :wait_reason),
-        :muted
-      )
+  def of(%{gh_state: "queued"} = job, now) do
+    since = job.queued_at || job.seen_at
+
+    "queued"
+    |> status(
+      "hero-clock-micro",
+      "Waiting · " <> format(duration(since, now)),
+      Map.get(job, :wait_reason),
+      :muted
+    )
+    |> counting("Waiting", since)
+  end
 
   defp status(state, icon, label, reason, tone),
-    do: %{state: state, icon: icon, label: label, reason: reason, tone: tone}
+    do: %{
+      state: state,
+      icon: icon,
+      label: label,
+      reason: reason,
+      tone: tone,
+      verb: nil,
+      since: nil,
+      ours: true,
+      note: nil
+    }
+
+  # A label that counts up from `since` ("Running · 3m 04s"): `verb` is
+  # the words before the time, so a page can tick the time itself.
+  defp counting(status, verb, since), do: %{status | verb: verb, since: since}
 
   defp in_time(nil), do: ""
   defp in_time(seconds), do: " in " <> format(seconds)

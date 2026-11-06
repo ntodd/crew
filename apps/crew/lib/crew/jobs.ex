@@ -69,9 +69,15 @@ defmodule Crew.Jobs do
 
   @doc """
   The latest attempt of each run, newest first, that `scope` may see,
-  with `filters` (`repo`, `branch`, `pr`, `status`, `actor`, `mine`) and
-  keyset pagination (`before:` an attempt id). Each comes with its repo,
-  its jobs and the numbers of its earlier attempts.
+  with `filters` (`repo`, `q`, `status`, `crew`, `mine`) and keyset
+  pagination (`before:` an attempt id). Each comes with its repo, its
+  jobs and the numbers of its earlier attempts.
+
+  `q` is a search where every word has to match. A bare word matches
+  part of the branch or the actor in any case (ASCII case only on
+  SQLite), or the PR when it's a number; `#718` matches only the PR. `branch:`, `actor:` and `pr:`
+  match that field exactly, actors in any case. `crew` keeps runs with
+  a job for Crew, runnable or not.
   """
   def list_runs(%Crew.Scope{} = scope, filters \\ %{}, opts \\ []) do
     limit = Keyword.get(opts, :limit, @page)
@@ -115,11 +121,20 @@ defmodule Crew.Jobs do
       {"repo", name}, q when is_binary(name) and name != "" ->
         join(q, :inner, [a], r in assoc(a, :repo), on: r.full_name == ^name)
 
-      {"branch", branch}, q when is_binary(branch) and branch != "" ->
-        where(q, [a], a.head_branch == ^branch)
+      {"q", search}, q when is_binary(search) ->
+        search |> String.split() |> Enum.reduce(q, &search_term/2)
 
-      {"actor", actor}, q when is_binary(actor) and actor != "" ->
-        where(q, [a], a.actor_login == ^actor)
+      {"crew", "true"}, q ->
+        where(
+          q,
+          [a],
+          exists(
+            from j in Job,
+              where:
+                j.run_attempt_id == parent_as(:attempt).id and
+                  j.classification in ["ours", "unsatisfiable"]
+          )
+        )
 
       {"status", status}, q when status in ["queued", "in_progress", "completed"] ->
         where(q, [a], a.status == ^status)
@@ -133,15 +148,62 @@ defmodule Crew.Jobs do
           _ -> q
         end
 
-      {"pr", pr}, q when is_binary(pr) ->
-        case Integer.parse(pr) do
-          {n, ""} -> where(q, [a], a.pr_number == ^n)
-          _ -> q
-        end
-
       _, q ->
         q
     end)
+  end
+
+  # A qualifier still being typed ("branch:") doesn't filter yet.
+  defp search_term(term, q) when term in ["branch:", "actor:", "pr:", "#"], do: q
+
+  defp search_term("branch:" <> branch, q), do: where(q, [a], a.head_branch == ^branch)
+
+  defp search_term("actor:" <> actor, q),
+    do: where(q, [a], fragment("lower(?) = lower(?)", a.actor_login, ^actor))
+
+  defp search_term("pr:" <> pr, q), do: pr_term(pr, q)
+
+  defp search_term("#" <> digits = term, q) do
+    if digits =~ ~r/^\d+$/, do: pr_term(digits, q), else: text_term(term, q)
+  end
+
+  defp search_term(term, q) do
+    case pr_number(term) do
+      nil -> text_term(term, q)
+      n -> where(q, ^dynamic([a], a.pr_number == ^n or ^text_match(term)))
+    end
+  end
+
+  defp pr_term(pr, q) do
+    case pr_number(pr) do
+      nil -> where(q, false)
+      n -> where(q, [a], a.pr_number == ^n)
+    end
+  end
+
+  # A PR number is positive and fits the column, a 32-bit integer; a
+  # bigger one would fail the query rather than match nothing.
+  @max_pr 2_147_483_647
+  defp pr_number(text) do
+    case Integer.parse(text) do
+      {n, ""} when n in 1..@max_pr -> n
+      _ -> nil
+    end
+  end
+
+  defp text_term(term, q), do: where(q, ^text_match(term))
+
+  # lower() on both sides, so the database folds case the same way for
+  # the column and the search (SQLite's lower() is ASCII only). "!" is
+  # the escape: no string-literal backslash rules to depend on.
+  defp text_match(term) do
+    pattern = "%" <> String.replace(term, ["!", "%", "_"], &("!" <> &1)) <> "%"
+
+    dynamic(
+      [a],
+      fragment("lower(?) LIKE lower(?) ESCAPE '!'", a.head_branch, ^pattern) or
+        fragment("lower(?) LIKE lower(?) ESCAPE '!'", a.actor_login, ^pattern)
+    )
   end
 
   defp with_earlier_attempts(%RunAttempt{} = attempt) do
@@ -203,6 +265,13 @@ defmodule Crew.Jobs do
       )
 
     if n == 1, do: broadcast_job(job)
+  end
+
+  @doc "Every attempt of run `run_id` that `scope` may see, oldest first."
+  def list_attempts(%Crew.Scope{} = scope, run_id) do
+    from(a in RunAttempt, where: a.github_run_id == ^run_id, order_by: a.run_attempt)
+    |> readable(scope)
+    |> Repo.all()
   end
 
   @doc """

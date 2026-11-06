@@ -117,7 +117,7 @@ defmodule Crew.Fixtures do
         "head_branch" => Map.get(attrs, :head_branch, "main"),
         "head_sha" => Map.get(attrs, :head_sha, "abc1234def"),
         "head_commit" => %{"message" => Map.get(attrs, :message, "Fix the thing")},
-        "actor" => %{"login" => "mona", "id" => 1},
+        "actor" => %{"login" => Map.get(attrs, :actor, "mona"), "id" => 1},
         "pull_requests" => Map.get(attrs, :pull_requests, []),
         "head_repository" => if(head_repo, do: %{"full_name" => head_repo}),
         "created_at" => "2026-11-03T10:00:00Z",

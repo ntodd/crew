@@ -3,7 +3,7 @@
 // view, a run's actions and jobs table, a box's controls, and Sizes &
 // labels. No page may trip the CSP.
 import {expect, test} from "@playwright/test"
-import {addBox, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, cellOverflows, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "08-ui"
 let agent
@@ -77,6 +77,36 @@ test("runs by branch, and a run's actions and jobs", async ({page, request}) => 
   await expect(page.locator("[id^=group-e2e]")).toContainText("e2e (1)")
   await expect(page.locator("#rerun-all")).toBeVisible()
   await shot(page, layer, "run")
+  // Nothing in the jobs table spills out of its cell, at any width.
+  for (const width of [1024, 1440, 1920]) {
+    await page.setViewportSize({width, height: 900})
+    expect(await cellOverflows(page, "#run-jobs tr[id^=job-]"), `at ${width}`).toEqual([])
+  }
+  // And on a phone the table scrolls in its panel, not the page.
+  await page.setViewportSize({width: 390, height: 844})
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+  await page.setViewportSize({width: 1440, height: 900})
+
+  // The box a job ran on links to its page, and hovering it shows the
+  // box's card, above the table rather than clipped by it.
+  await connected(page)
+  const boxLink = page.locator("[id^=box-link-]").first()
+  await expect(boxLink).toHaveText("null-ui")
+  const card = page.locator("[id^=box-card-]")
+  await expect(card).toBeHidden()
+  await boxLink.hover()
+  await expect(card).toBeVisible()
+  await expect(card).toContainText("null-ui")
+  await expect(card).toContainText(/\d+ VMs?/)
+  const [link, box] = await Promise.all([boxLink.boundingBox(), card.boundingBox()])
+  expect(box.y).toBeGreaterThanOrEqual(link.y + link.height)
+  await shot(page, layer, "run-box-card", {fullPage: false})
+  await page.mouse.move(0, 0)
+  await expect(card).toBeHidden()
+  await boxLink.focus()
+  await expect(card).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(card).toBeHidden()
 
   // The held run can be cancelled.
   const held = (await fakeState(request)).runs.find(r => r.name === "Release")

@@ -115,3 +115,22 @@ export async function addBox(page, name, type = "mac-vz") {
   const text = await page.locator("#dev-join-command, #join-command").first().innerText()
   return text.match(/(cj_[A-Za-z0-9_-]+)/)[1]
 }
+
+// Content that spills out of its table cell (a status running into the
+// next column): each cell's descendants must end inside it. Returns the
+// offenders, as text, for the assertion message.
+export async function cellOverflows(page, rows) {
+  return page.locator(rows).evaluateAll(trs => {
+    const out = []
+    for (const tr of trs) {
+      for (const td of tr.querySelectorAll("td")) {
+        const edge = td.getBoundingClientRect().right
+        for (const el of td.querySelectorAll("*")) {
+          const r = el.getBoundingClientRect()
+          if (r.width > 0 && r.right > edge + 1) out.push(`${tr.id}: "${el.textContent.trim().slice(0, 60)}" ends ${Math.round(r.right - edge)}px past its cell`)
+        }
+      }
+    }
+    return [...new Set(out)]
+  })
+}

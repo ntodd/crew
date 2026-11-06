@@ -11,8 +11,8 @@ defmodule CrewWeb.DashboardLive do
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Agents, Boxes, Jobs, Metrics, Repos, Scheduler, VMs}
-  alias CrewWeb.{Charts, JobStatus}
+  alias Crew.{Boxes, Jobs, Repos}
+  alias CrewWeb.{BoxCard, Charts, JobStatus}
   alias CrewWeb.Charts.Geometry
 
   @refresh_ms 5_000
@@ -30,13 +30,12 @@ defmodule CrewWeb.DashboardLive do
 
   defp load(socket) do
     now = DateTime.utc_now()
-    since = System.os_time(:second) - 1800
     boxes = Boxes.list()
 
     assign(socket,
       now: now,
       readable: Repos.readable_ids(socket.assigns.current_scope),
-      fleet: Enum.map(boxes, &fleet_card(&1, since)),
+      fleet: Enum.map(boxes, &BoxCard.load/1),
       counts: Jobs.counts(),
       waiting: Jobs.longest_waiting(10),
       recent: Jobs.recently_completed(20),
@@ -44,19 +43,6 @@ defmodule CrewWeb.DashboardLive do
       phases: Crew.Cache.fetch(:phase_series, chart_cache_ms(), &Jobs.phase_series/0),
       repos?: Repos.list() != []
     )
-  end
-
-  defp fleet_card(box, since) do
-    vms = VMs.for_box(box.id)
-
-    %{
-      box: box,
-      online: Agents.online?(box.id),
-      series: Metrics.box_series(box.id, since),
-      allocation: VMs.allocation(box.id),
-      capacity: Scheduler.capacity(box),
-      by_size: vms |> Enum.frequencies_by(&{&1.vcpus, &1.memory_mib}) |> Enum.sort()
-    }
   end
 
   @impl true
@@ -82,13 +68,6 @@ defmodule CrewWeb.DashboardLive do
   defp reason(readable, job) do
     reason = job.blocked_reason || job.wait_reason
     if readable?(readable, job.repo_id), do: reason, else: JobStatus.masked_reason(reason)
-  end
-
-  defp pct(points, field, total_field \\ nil) do
-    Enum.map(points, fn m ->
-      v = Map.fetch!(m, field)
-      if total_field, do: {m.t, v * 100 / max(Map.fetch!(m, total_field), 1)}, else: {m.t, v}
-    end)
   end
 
   @impl true
@@ -140,49 +119,7 @@ defmodule CrewWeb.DashboardLive do
           navigate={~p"/boxes/#{card.box.id}"}
           class="block rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
         >
-          <div class="flex items-start justify-between gap-2">
-            <span class="truncate font-medium text-ink">{card.box.name}</span>
-            <.box_status box={card.box} online={card.online} />
-          </div>
-          <div class="mt-3 grid grid-cols-2 gap-3">
-            <div>
-              <p class="text-xs text-ink-3">CPU</p>
-              <Charts.sparkline
-                points={pct(card.series, :cpu_pct)}
-                since={System.os_time(:second) - 1800}
-                until={System.os_time(:second)}
-                ymax={100}
-                gap={30}
-              />
-            </div>
-            <div>
-              <p class="text-xs text-ink-3">Memory</p>
-              <Charts.sparkline
-                points={pct(card.series, :mem_used_mib, :mem_total_mib)}
-                since={System.os_time(:second) - 1800}
-                until={System.os_time(:second)}
-                ymax={100}
-                gap={30}
-              />
-            </div>
-          </div>
-          <div :if={card.capacity} class="mt-3 space-y-2">
-            <.capacity_bar
-              label="vCPUs"
-              value={card.allocation.vcpus}
-              max={trunc(card.capacity.vcpus)}
-            />
-            <.capacity_bar
-              label="Memory (GiB)"
-              value={round(card.allocation.memory_mib / 1024)}
-              max={round(card.capacity.memory_mib / 1024)}
-            />
-          </div>
-          <p class="mt-2 text-xs text-ink-3">
-            {card.allocation.count} VMs<span :for={{{vcpus, mem}, n} <- card.by_size}> · {n} × {vcpus}c/{gib(
-              mem
-            )}G</span>
-          </p>
+          <BoxCard.box_card card={card} />
         </.link>
       </section>
 
