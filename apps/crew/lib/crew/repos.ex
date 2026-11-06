@@ -247,11 +247,16 @@ defmodule Crew.Repos do
 
   @levels %{"none" => 0, "read" => 1, "write" => 2, "admin" => 3}
 
+  # Organization permissions: GitHub doesn't grant these to an installation
+  # on a personal account, so they're never missing there.
+  @org_permissions ~w(members)
+
   @doc "The permissions Crew needs that the installation didn't grant (§6.1)."
-  def missing_permissions(%Installation{permissions: granted}) do
+  def missing_permissions(%Installation{permissions: granted, account_type: type}) do
     granted = granted || %{}
 
     for {perm, needed} <- Enum.sort(GitHub.required_permissions()),
+        type == "Organization" or perm not in @org_permissions,
         Map.get(@levels, granted[perm], 0) < @levels[needed],
         do: {perm, needed}
   end
