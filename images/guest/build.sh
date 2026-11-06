@@ -4,6 +4,7 @@
 # The Makefile is the usual way in; each target is one step here:
 #
 #   build.sh builder        the build-tools image (builder/Dockerfile)
+#   build.sh kernel-key     a hash of the kernel build's inputs (CI's cache key)
 #   build.sh kernel-config  regenerate kernel/<arch>.config from the fragment
 #   build.sh kernel         fetch, verify and build: out/<arch>/kernel/
 #   build.sh kernel-check [config]
@@ -23,7 +24,9 @@
 # development test key), `release` (CREW_RELEASE_SIGNING_KEY, never the
 # test key) or `none`; PUBLIC_KEY (base64) to verify against instead of
 # the test key; BUILDX_ARGS, extra `docker buildx build` arguments for the
-# rootfs (a cache, or `--no-cache-filter packages` to re-run apt).
+# rootfs (a cache, or `--no-cache-filter packages` to re-run apt);
+# CREW_GUEST_REGISTRY (e.g. ghcr.io/<owner>) to pull the builder image
+# from, and CREW_GUEST_PUSH=1 to push it there when it had to be built.
 # Caches: the Docker volumes crew-guest-kernel (kernel downloads, source
 # and object trees) and crew-guest-rootfs (the unpacked tree), and
 # BuildKit's cache (layers, the apt archive, downloads).
@@ -65,16 +68,42 @@ builder_tag() {
   echo "crew-guest-builder:$ARCH-$h"
 }
 
+# With CREW_GUEST_REGISTRY, the builder comes from there when it's been
+# pushed (its tag is a hash of its inputs), and is pushed there after a
+# build if CREW_GUEST_PUSH=1.
 builder() {
-  local tag
+  local tag remote=""
   tag=$(builder_tag)
+  [ -n "${CREW_GUEST_REGISTRY:-}" ] && remote="$CREW_GUEST_REGISTRY/$tag"
   if ! docker image inspect "$tag" >/dev/null 2>&1; then
+    if [ -n "$remote" ] && docker pull -q --platform "$platform" "$remote" >&2 2>/dev/null; then
+      docker tag "$remote" "$tag" >&2
+      echo "$tag"
+      return
+    fi
     echo "== builder $tag" >&2
     docker buildx build --platform "$platform" --load -t "$tag" \
       --build-arg UBUNTU_IMAGE="$UBUNTU_IMAGE" --build-arg UBUNTU_SNAPSHOT="$UBUNTU_SNAPSHOT" \
       -f "$here/builder/Dockerfile" "$here" >&2
+    if [ -n "$remote" ] && [ "${CREW_GUEST_PUSH:-}" = 1 ]; then
+      docker tag "$tag" "$remote" >&2
+      docker push -q "$remote" >&2
+    fi
   fi
   echo "$tag"
+}
+
+# A hash of everything the kernel build reads: the builder, the kernel's
+# pins in versions.env, and kernel/ for this arch. The kernel's timestamp
+# is its source's, so the same key always means the same kernel.
+kernel_key() {
+  {
+    echo "$ARCH $(builder_tag)"
+    grep '^KERNEL_' "$here/versions.env"
+    cat "$here/kernel/$ARCH.config" "$here/kernel/$ARCH.fragment" \
+      "$here/kernel/build-in-container.sh" "$here/kernel/fetch.sh"
+    find "$here/kernel/keys" -type f | LC_ALL=C sort | xargs cat
+  } | sha256 | cut -d' ' -f1
 }
 
 # Runs a command in the builder. Extra docker args come before --.
@@ -124,10 +153,13 @@ rootfs_build() {
     ${BUILDX_ARGS:+$BUILDX_ARGS} "$@" "$here"
 }
 
-step=${1:?usage: build.sh builder|kernel-config|kernel|kernel-check|kernel-check-test|rootfs|lock|artifacts}
+step=${1:?usage: build.sh builder|kernel-key|kernel-config|kernel|kernel-check|kernel-check-test|rootfs|lock|artifacts}
 case "$step" in
 builder)
   builder
+  ;;
+kernel-key)
+  kernel_key
   ;;
 kernel-config)
   in_builder -v "$here:/guest" -v crew-guest-kernel:/build -- \

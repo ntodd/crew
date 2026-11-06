@@ -235,7 +235,10 @@ jobs:
       # The log viewer's pure parts (assets/js/log_core.js).
       - run: node --test js/test/*.test.mjs
         working-directory: apps/crew/assets
-      - run: npm ci && npx playwright install --with-deps chromium
+      # The runner image already has Chrome's libraries; --with-deps only
+      # added fonts, at minutes of apt from a slow mirror, and the tests
+      # don't compare screenshots.
+      - run: npm ci && npx playwright install chromium
         working-directory: e2e
       - run: npx playwright test
         working-directory: e2e

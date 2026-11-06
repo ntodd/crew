@@ -8,7 +8,7 @@
 #   make rootfs         the root filesystem, out/$(ARCH)/rootfs.ext4
 #   make artifacts      out/$(ARCH)/release/: .kernel, .rootfs.ext4.zst,
 #                       .manifest.json, .manifest.sig (SIGN=test|release|none)
-#   make check          the checks' and tools' own tests
+#   make check          the checks' and tools' own tests, and build.sh's caching
 #   make lock           re-resolve packages.lock for $(ARCH) (then review the diff)
 #   make smoke          boot the built image on this Mac through crew-vz (macOS only)
 #
@@ -24,7 +24,7 @@ OUT := out/$(ARCH)
 CREW_VZ := ../../native/crew-vz/bin/crew-vz
 
 .PHONY: all builder kernel-config kernel kernel-check kernel-check-test rootfs lock \
-	artifacts check conformance-test tools tools-test smoke clean
+	artifacts check build-test conformance-test tools tools-test smoke clean
 
 all: kernel kernel-check rootfs artifacts
 
@@ -34,7 +34,11 @@ builder kernel-config kernel kernel-check kernel-check-test rootfs lock:
 artifacts: tools
 	./build.sh artifacts
 
-check: kernel-check kernel-check-test tools-test conformance-test
+check: kernel-check kernel-check-test tools-test conformance-test build-test
+
+# build.sh's caching: the builder's registry, and kernel-key.
+build-test:
+	./build_test.sh
 
 # The conformance check's input handling (bash and jq, any OS).
 conformance-test:
