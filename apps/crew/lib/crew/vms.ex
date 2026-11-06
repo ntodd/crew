@@ -27,6 +27,10 @@ defmodule Crew.VMs do
   # -- reads ------------------------------------------------------------------------
 
   def get(id), do: Repo.get(VM, id)
+
+  @doc "The VMs with these ids, in one query; ids with no VM are skipped."
+  def get_many([]), do: []
+  def get_many(ids), do: Repo.all(from v in VM, where: v.id in ^ids)
   def get!(id), do: Repo.get!(VM, id)
   def get_by_name(name), do: Repo.get_by(VM, name: name)
 
@@ -351,9 +355,10 @@ defmodule Crew.VMs do
   end
 
   @doc "What a box's VMs hold of it: every VM that isn't destroyed counts (§8.6)."
-  def allocation(box_id) do
-    vms = for_box(box_id)
+  def allocation(box_id), do: box_id |> for_box() |> allocation_of()
 
+  @doc "What these VMs (a box's, from `for_box/1`) hold of it."
+  def allocation_of(vms) do
     %{
       vcpus: Enum.sum_by(vms, & &1.vcpus),
       memory_mib: Enum.sum_by(vms, &(&1.memory_mib + &1.vmm_overhead_mib)),

@@ -267,6 +267,13 @@ defmodule Crew.Jobs do
     if n == 1, do: broadcast_job(job)
   end
 
+  @doc "Every attempt of run `run_id` that `scope` may see, oldest first."
+  def list_attempts(%Crew.Scope{} = scope, run_id) do
+    from(a in RunAttempt, where: a.github_run_id == ^run_id, order_by: a.run_attempt)
+    |> readable(scope)
+    |> Repo.all()
+  end
+
   @doc """
   A run attempt by GitHub run id and attempt number, if `scope` may see
   it. Raises `Ecto.NoResultsError` otherwise, so the page 404s.

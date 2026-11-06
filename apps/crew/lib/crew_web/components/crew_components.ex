@@ -195,6 +195,24 @@ defmodule CrewWeb.CrewComponents do
     """
   end
 
+  @doc "A link out to GitHub (`CrewWeb.GitHub`), in a new tab."
+  attr :href, :string, required: true
+  attr :class, :any, default: nil
+  attr :rest, :global
+  slot :inner_block, required: true
+
+  def gh_link(assigns) do
+    ~H"""
+    <a
+      href={@href}
+      target="_blank"
+      rel="noopener noreferrer"
+      class={["underline-offset-2 transition-colors hover:text-ink hover:underline", @class]}
+      {@rest}
+    >{render_slot(@inner_block)}</a>
+    """
+  end
+
   @doc "A titled panel, the basic surface for page sections."
   attr :title, :string, default: nil
   attr :id, :string, default: nil
@@ -331,8 +349,19 @@ defmodule CrewWeb.CrewComponents do
         <span class="relative inline-flex size-2.5 rounded-full bg-running"></span>
       </span>
       <.icon :if={@status.icon not in ["", "dot"]} name={@status.icon} class="size-4 shrink-0" />
-      <span class="font-medium">{@status.label}</span>
-      <span :if={@reason and @status.reason} class="truncate text-ink-3">· {@status.reason}</span>
+      <span class="whitespace-nowrap font-medium">
+        <%= if @status.since do %>
+          {@status.verb} ·
+          <span data-from={DateTime.to_iso8601(@status.since)}>{CrewWeb.JobStatus.format(
+            CrewWeb.JobStatus.duration(@status.since, @now || DateTime.utc_now())
+          )}</span>
+        <% else %>
+          {@status.label}
+        <% end %>
+      </span>
+      <span :if={@reason and @status.reason} class="truncate text-ink-3" title={@status.reason}>
+        · {@status.reason}
+      </span>
     </span>
     """
   end
@@ -342,6 +371,37 @@ defmodule CrewWeb.CrewComponents do
   defp tone(:warning), do: "text-warning"
   defp tone(:running), do: "text-running-ink"
   defp tone(:muted), do: "text-ink-3"
+
+  @doc """
+  A run's (or one attempt's) status as a solid icon, never colour alone:
+  the state is named for screen readers.
+  """
+  attr :run, :map, required: true
+  attr :class, :any, default: "size-4"
+  attr :rest, :global
+
+  def run_status_icon(assigns) do
+    ~H"""
+    <span class={["flex shrink-0", run_tone(@run)]} {@rest}>
+      <.icon name={run_icon_name(@run)} class={@class} />
+      <span class="sr-only">{run_label(@run)}</span>
+    </span>
+    """
+  end
+
+  defp run_icon_name(%{status: "completed", conclusion: "success"}), do: "hero-check-circle-micro"
+  defp run_icon_name(%{status: "completed", conclusion: "failure"}), do: "hero-x-circle-micro"
+  defp run_icon_name(%{status: "completed"}), do: "hero-no-symbol-micro"
+  defp run_icon_name(%{status: "in_progress"}), do: "hero-play-circle-micro"
+  defp run_icon_name(_), do: "hero-clock-micro"
+
+  defp run_tone(%{status: "completed", conclusion: "success"}), do: "text-success"
+  defp run_tone(%{status: "completed", conclusion: "failure"}), do: "text-danger"
+  defp run_tone(%{status: "in_progress"}), do: "text-running-ink"
+  defp run_tone(_), do: "text-ink-3"
+
+  defp run_label(%{status: "completed", conclusion: c}), do: c || "completed"
+  defp run_label(%{status: s}), do: s || "queued"
 
   @doc "One segment per job, each with its state: the per-job state bar of the Runs page."
   attr :id, :string, required: true

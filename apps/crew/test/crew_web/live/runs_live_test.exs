@@ -45,7 +45,21 @@ defmodule CrewWeb.RunsLiveTest do
     assert has_element?(view, "#run-100", "CI")
     assert has_element?(view, "#run-100", "#7")
     assert has_element?(view, "#run-100 [data-job-state=queued]")
-    assert has_element?(view, "#run-100 [data-job-state=not_ours]")
+    refute has_element?(view, "#run-100 [data-job-state=not_ours]")
+  end
+
+  test "a job that isn't Crew's shows how it went on GitHub in the bar", %{
+    conn: conn,
+    repo: repo
+  } do
+    run_with_jobs(repo, 130, [
+      {50, labels: ["ubuntu-latest"], status: "completed", conclusion: "success"},
+      {51, labels: ["ubuntu-latest"], status: "completed", conclusion: "failure"}
+    ])
+
+    {:ok, view, _} = live(conn, ~p"/runs")
+    assert has_element?(view, "#run-130 [data-job-state=success]")
+    assert has_element?(view, "#run-130 [data-job-state=failure]")
   end
 
   test "updates live when a webhook lands", %{conn: conn, repo: repo} do
@@ -220,7 +234,8 @@ defmodule CrewWeb.RunsLiveTest do
       assert has_element?(view, "#job-10", "Waiting")
       assert has_element?(view, "#job-11", "Can't run")
       assert has_element?(view, "#job-11", "unknown size huge")
-      assert has_element?(view, "#job-12", "Not a Crew job")
+      assert has_element?(view, "#job-12", "Succeeded")
+      assert has_element?(view, "#job-12", "not a Crew job")
       assert has_element?(view, "#job-12", "GitHub Actions 2")
     end
 

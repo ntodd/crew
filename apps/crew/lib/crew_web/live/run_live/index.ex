@@ -12,6 +12,8 @@ defmodule CrewWeb.RunLive.Index do
   alias Crew.{Jobs, Repos}
   alias CrewWeb.JobStatus
 
+  import CrewWeb.GitHub
+
   @flush_ms 250
   @filters ~w(repo q status crew mine view)
   @toggles ~w(crew mine)
@@ -342,7 +344,7 @@ defmodule CrewWeb.RunLive.Index do
             navigate={~p"/runs/#{@run.github_run_id}/attempts/#{@run.run_attempt}"}
             class="flex min-w-0 items-center gap-2 font-medium text-ink hover:underline"
           >
-            <.run_icon run={@run} />
+            <.run_status_icon run={@run} />
             <span class="flex min-w-0 items-baseline gap-1.5">
               <span class="truncate">{@run.workflow_name}</span>
               <span class="shrink-0 font-normal text-ink-3">#{@run.run_number}</span>
@@ -398,59 +400,8 @@ defmodule CrewWeb.RunLive.Index do
     """
   end
 
-  attr :href, :string, required: true
-  attr :class, :any, default: nil
-  slot :inner_block, required: true
-
-  # Out to GitHub, in a new tab.
-  defp gh_link(assigns) do
-    ~H"""
-    <a
-      href={@href}
-      target="_blank"
-      rel="noopener noreferrer"
-      class={["underline-offset-2 transition-colors hover:text-ink hover:underline", @class]}
-    >{render_slot(@inner_block)}</a>
-    """
-  end
-
-  attr :run, :map, required: true
-
-  defp run_icon(assigns) do
-    ~H"""
-    <span class={["flex shrink-0", run_tone(@run)]}>
-      <.icon name={run_icon_name(@run)} class="size-4" />
-      <span class="sr-only">{run_label(@run)}</span>
-    </span>
-    """
-  end
-
-  defp run_icon_name(%{status: "completed", conclusion: "success"}), do: "hero-check-circle-micro"
-  defp run_icon_name(%{status: "completed", conclusion: "failure"}), do: "hero-x-circle-micro"
-  defp run_icon_name(%{status: "completed"}), do: "hero-no-symbol-micro"
-  defp run_icon_name(%{status: "in_progress"}), do: "hero-play-circle-micro"
-  defp run_icon_name(_), do: "hero-clock-micro"
-
-  defp run_tone(%{status: "completed", conclusion: "success"}), do: "text-success"
-  defp run_tone(%{status: "completed", conclusion: "failure"}), do: "text-danger"
-  defp run_tone(%{status: "in_progress"}), do: "text-running-ink"
-  defp run_tone(_), do: "text-ink-3"
-
-  defp run_label(%{status: "completed", conclusion: c}), do: c || "completed"
-  defp run_label(%{status: s}), do: s || "queued"
-
   defp pr_number(%{pull_requests: [%{"number" => n} | _]}), do: n
   defp pr_number(_run), do: nil
-
-  @github "https://github.com"
-
-  defp repo_url(repo), do: "#{@github}/#{repo.full_name}"
-  defp pr_url(repo, n), do: "#{repo_url(repo)}/pull/#{n}"
-  defp commit_url(repo, sha), do: "#{repo_url(repo)}/commit/#{sha}"
-
-  defp branch_url(repo, branch),
-    do:
-      "#{repo_url(repo)}/tree/#{URI.encode(branch || "", &(URI.char_unreserved?(&1) or &1 == ?/))}"
 
   defp short(nil), do: ""
   defp short(sha), do: String.slice(sha, 0, 7)

@@ -48,14 +48,15 @@ test("repos, runs and jobs come in over webhooks", async ({ page, request }) => 
   await expect(page.locator(`#job-${jobs[1].id}`)).toContainText("crew-l-arm64")
   await expect(page.locator(`#job-${jobs[2].id}`)).toContainText("Can't run")
   await expect(page.locator(`#job-${jobs[2].id}`)).toContainText("unknown size huge")
-  await expect(page.locator(`#job-${jobs[3].id}`)).toContainText("Not a Crew job")
+  await expect(page.locator(`#job-${jobs[3].id}`)).toContainText("not a Crew job")
   await shot(page, layer, "run")
 
   // A GitHub-hosted job runs and finishes: the page follows.
   await fakePost(request, `/__fake/jobs/${jobs[3].id}`, { status: "in_progress", runner_name: "GitHub Actions 7" })
   await expect(page.locator(`#job-${jobs[3].id}`)).toContainText("ran on GitHub Actions 7")
   await fakePost(request, `/__fake/jobs/${jobs[3].id}`, { status: "completed", conclusion: "success" })
-  await expect(page.locator(`#job-${jobs[3].id} [data-job-state=not_ours]`)).toBeVisible()
+  // How it went on GitHub, even though it isn't Crew's.
+  await expect(page.locator(`#job-${jobs[3].id} [data-job-state=success]`)).toContainText("Succeeded")
 })
 
 test("a fork PR is refused, and its run cancelled", async ({ page, request }) => {

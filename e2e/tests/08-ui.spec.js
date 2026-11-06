@@ -78,6 +78,27 @@ test("runs by branch, and a run's actions and jobs", async ({page, request}) => 
   await expect(page.locator("#rerun-all")).toBeVisible()
   await shot(page, layer, "run")
 
+  // The box a job ran on links to its page, and hovering it shows the
+  // box's card, above the table rather than clipped by it.
+  await connected(page)
+  const boxLink = page.locator("[id^=box-link-]").first()
+  await expect(boxLink).toHaveText("null-ui")
+  const card = page.locator("[id^=box-card-]")
+  await expect(card).toBeHidden()
+  await boxLink.hover()
+  await expect(card).toBeVisible()
+  await expect(card).toContainText("null-ui")
+  await expect(card).toContainText(/\d+ VMs?/)
+  const [link, box] = await Promise.all([boxLink.boundingBox(), card.boundingBox()])
+  expect(box.y).toBeGreaterThanOrEqual(link.y + link.height)
+  await shot(page, layer, "run-box-card", {fullPage: false})
+  await page.mouse.move(0, 0)
+  await expect(card).toBeHidden()
+  await boxLink.focus()
+  await expect(card).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(card).toBeHidden()
+
   // The held run can be cancelled.
   const held = (await fakeState(request)).runs.find(r => r.name === "Release")
   await page.goto(`/runs/${held.id}/attempts/1`)

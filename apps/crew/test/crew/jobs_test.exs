@@ -497,4 +497,34 @@ defmodule Crew.JobsTest do
       assert length(Jobs.list_runs(scope, %{})) == 4
     end
   end
+
+  describe "list_attempts" do
+    test "every attempt of a run, oldest first, for whoever may read it", %{repo: repo} do
+      for {n, status, conclusion} <- [
+            {1, "completed", "failure"},
+            {2, "completed", "cancelled"},
+            {3, "in_progress", nil}
+          ] do
+        {:ok, _} =
+          Jobs.handle_workflow_run(
+            workflow_run_payload(repo,
+              id: 930,
+              run_attempt: n,
+              status: status,
+              conclusion: conclusion
+            )
+          )
+      end
+
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+
+      assert [
+               %{run_attempt: 1, conclusion: "failure"},
+               %{run_attempt: 2, conclusion: "cancelled"},
+               %{run_attempt: 3, status: "in_progress"}
+             ] = Jobs.list_attempts(admin, 930)
+
+      assert Jobs.list_attempts(Crew.Scope.for_user(user_fixture()), 930) == []
+    end
+  end
 end

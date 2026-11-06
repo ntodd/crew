@@ -815,9 +815,9 @@ defmodule CrewWeb.CoreComponents do
         <h1 class="text-2xl/8 font-semibold tracking-[-0.02em] text-ink">
           {render_slot(@inner_block)}
         </h1>
-        <p :if={@subtitle != []} class="mt-1 text-sm text-ink-2">
+        <div :if={@subtitle != []} class="mt-1 text-sm text-ink-2">
           {render_slot(@subtitle)}
-        </p>
+        </div>
       </div>
       <div :if={@actions != []} class="flex flex-wrap items-center gap-2">
         {render_slot(@actions)}
