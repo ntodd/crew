@@ -327,6 +327,28 @@ defmodule Crew.Boxes.FlatcarTest do
       for m <- ~w(nf_conntrack nft_compat xt_connlimit), do: assert(modules =~ m)
     end
 
+    # Flatcar points /etc/resolv.conf at the uplink's servers, and its curl
+    # (c-ares) reads that file directly, so it never saw Tailscale's split
+    # DNS: with Funnel on, the control plane's name resolved to its public
+    # Funnel address and provisioning hung (#31). resolved's stub does the
+    # split. The guests' resolver doesn't use the host's (§15.2).
+    for {name, config} <- [
+          provision: quote(do: ignition()),
+          reprovision: quote(do: reprovision())
+        ] do
+      test "resolves through resolved's stub (#{name})" do
+        assert %{
+                 "target" => "/run/systemd/resolve/stub-resolv.conf",
+                 "overwrite" => true,
+                 "hard" => false
+               } =
+                 Enum.find(
+                   unquote(config)["storage"]["links"],
+                   &(&1["path"] == "/etc/resolv.conf")
+                 )
+      end
+    end
+
     test "asks DHCP for an address by MAC, as the mac-vm launcher looks it up" do
       assert contents(ignition(), "/etc/systemd/network/zz-default.network.d/crew-dhcp.conf") =~
                "ClientIdentifier=mac"

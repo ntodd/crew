@@ -473,7 +473,7 @@ defmodule Crew.Boxes.Flatcar do
       "storage" => %{
         "directories" => [%{"path" => "/etc/crew-box", "mode" => 0o700}],
         "files" => files,
-        "links" => [sysext_link]
+        "links" => [sysext_link, resolv_conf_link()]
       },
       "systemd" => %{"units" => units(opts, provision?)}
     }
@@ -553,6 +553,19 @@ defmodule Crew.Boxes.Flatcar do
     vm.swappiness = 0
     -net.netfilter.nf_conntrack_max = 262144
     """
+  end
+
+  # Flatcar links /etc/resolv.conf to the uplink's servers, and its curl
+  # (c-ares) reads that file directly, missing Tailscale's split DNS. With
+  # Funnel on, the control plane's name then resolves to its public Funnel
+  # address, where 443 isn't served (#31). resolved's stub does the split.
+  defp resolv_conf_link do
+    %{
+      "path" => "/etc/resolv.conf",
+      "target" => "/run/systemd/resolve/stub-resolv.conf",
+      "overwrite" => true,
+      "hard" => false
+    }
   end
 
   defp tailscale_sysext(arch) do
