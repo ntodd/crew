@@ -10,7 +10,10 @@
 #                                  pinned defconfig plus <arch>.fragment
 #   build-in-container.sh build    build from kernel/<arch>.config
 #
-# Env: CREW_ARCH (arm64 | x64), KBUILD_BUILD_TIMESTAMP, and versions.env.
+# Env: CREW_ARCH (arm64 | x64) and versions.env. The build's timestamp
+# is the kernel source's (its Makefile's mtime in the verified tarball),
+# never the commit's, so the same inputs make the same kernel, and CI can
+# reuse one from an earlier commit (build.sh kernel-key).
 set -euo pipefail
 
 step=${1:?config|build}
@@ -30,7 +33,6 @@ src=/build/src/linux-$KERNEL_VERSION
 obj=/build/obj/$arch-$KERNEL_VERSION
 
 export KBUILD_BUILD_USER=crew KBUILD_BUILD_HOST=crew
-export KBUILD_BUILD_TIMESTAMP=${KBUILD_BUILD_TIMESTAMP:-@0}
 kmake() { make -s -C "$src" O="$obj" ARCH="$karch" "$@"; }
 
 # The source tree is extracted only from a tarball fetch.sh has just
@@ -43,6 +45,8 @@ if [ "$(cat "$src/.crew-verified" 2>/dev/null)" != "$KERNEL_SHA256" ]; then
   echo "$KERNEL_SHA256" > "$src/.crew-verified"
 fi
 mkdir -p "$obj"
+KBUILD_BUILD_TIMESTAMP="@$(stat -c %Y "$src/Makefile")"
+export KBUILD_BUILD_TIMESTAMP
 
 # Fails if a line of the fragment didn't survive into the config.
 check_fragment() {

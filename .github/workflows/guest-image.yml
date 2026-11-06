@@ -5,9 +5,25 @@ name: Guest image
 # runs it; for a release tag, release.yml calls it, and its sign job signs
 # the manifests uploaded here with everything else in the release, its
 # verify job checks them as a box will, and its publish job publishes
-# them.
+# them. A push to main that touches it builds it too, which keeps the
+# build's caches warm for pull requests and releases.
+#
+# Caches: the builder image (ghcr.io/<owner>/crew-guest-builder, tagged
+# with a hash of its inputs), BuildKit's layers for the rootfs
+# (ghcr.io/<owner>/crew-guest-cache:rootfs-<arch>), and the built kernel
+# (the Actions cache, keyed by build.sh kernel-key). Between them, a
+# build whose packages.lock and kernel haven't changed doesn't touch
+# snapshot.ubuntu.com or kernel.org. Only main, tags and manual runs
+# write them; pull requests only read.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - images/guest/**
+      - apps/crew_guest/**
+      - apps/crew_protocol/**
+      - .github/workflows/guest-image.yml
   pull_request:
     paths:
       - images/guest/**
@@ -47,6 +63,7 @@ jobs:
       - run: images/guest/build.sh kernel-check-test
       - run: ARCH=x64 images/guest/build.sh kernel-check
       - run: ARCH=x64 images/guest/build.sh kernel-check-test
+      - run: images/guest/build_test.sh
       - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
@@ -105,9 +122,12 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
+      # The caches in ghcr (see the top).
+      packages: write
     env:
       ARCH: ${{ matrix.arch }}
       MIX: mix
+      KERNEL_CACHE_WRITE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Version
@@ -129,15 +149,49 @@ jobs:
         with:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
-      - run: make -C images/guest kernel
+      # A BuildKit that can export a cache to a registry (the default
+      # docker driver can't), and the caches' settings for build.sh.
+      - name: Caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx create --use --name crew --driver docker-container
+          registry=$(echo "ghcr.io/$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          cache="$registry/crew-guest-cache:rootfs-$ARCH"
+          args="--cache-from type=registry,ref=$cache"
+          if [ "$EVENT" != pull_request ]; then
+            echo "CREW_GUEST_PUSH=1" >> "$GITHUB_ENV"
+            args="$args --cache-to type=registry,ref=$cache,mode=max,image-manifest=true,oci-mediatypes=true,compression=zstd"
+          fi
+          {
+            echo "CREW_GUEST_REGISTRY=$registry"
+            echo "BUILDX_ARGS=$args"
+            echo "KERNEL_KEY=guest-kernel-$ARCH-$(images/guest/build.sh kernel-key)"
+          } >> "$GITHUB_ENV"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: kernel
+        with:
+          path: images/guest/out/${{ matrix.arch }}/kernel
+          key: ${{ env.KERNEL_KEY }}
+      - if: steps.kernel.outputs.cache-hit != 'true'
+        run: make -C images/guest kernel
+      # Saved from main only: tags and pull requests can read main's
+      # caches, but not each other's.
+      - if: steps.kernel.outputs.cache-hit != 'true' && env.KERNEL_CACHE_WRITE == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: images/guest/out/${{ matrix.arch }}/kernel
+          key: ${{ env.KERNEL_KEY }}
       - name: The built kernel's config
         run: images/guest/build.sh kernel-check "images/guest/out/$ARCH/kernel/config"
       # Hosted runners have little disk: the kernel's trees go once it's
       # built, the unpacked rootfs tree and BuildKit's cache once the
       # image is assembled.
-      - run: docker volume rm crew-guest-kernel && df -h /
+      - run: (docker volume rm crew-guest-kernel || true) && df -h /
       - run: make -C images/guest rootfs
-      - run: docker volume rm crew-guest-rootfs && docker builder prune -af >/dev/null && df -h /
+      - run: docker volume rm crew-guest-rootfs && docker buildx prune -af >/dev/null && df -h /
       - name: Release files (unsigned)
         run: make -C images/guest artifacts SIGN=none
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

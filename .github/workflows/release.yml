@@ -186,6 +186,8 @@ jobs:
       version: ${{ needs.check.outputs.version }}
     permissions:
       contents: read
+      # The guest build's caches in ghcr (guest-image.yml).
+      packages: write
 
   # Signs every tarball (over its version, target and SHA-256) and every
   # guest image manifest (its exact bytes) with the release key. The only

@@ -10,7 +10,7 @@ which builds, checks, signs and publishes everything (spec §20.1):
 | ci | All of [`ci.yml`](../.github/workflows/ci.yml), on the tagged commit |
 | native | `crew-vmctl` (Linux) and `crew-vz` (macOS arm64, ad-hoc signed) from `native/vendor` with no network, then `govulncheck` |
 | agents | The agent and cache tarballs for linux-amd64 and linux-arm64 (`build-linux.sh`) and the darwin-arm64 agent (`build-darwin.sh`), each built and smoke-tested ([`smoke.sh`](../packaging/release/smoke.sh)) on a runner of its own OS and arch |
-| guest | [`guest-image.yml`](../.github/workflows/guest-image.yml): the guest images, built and checked per arch, unsigned |
+| guest | [`guest-image.yml`](../.github/workflows/guest-image.yml): the guest images, built and checked per arch, unsigned. The builder image, the rootfs's layers and the kernel come from caches that main's builds keep warm, so a release whose `packages.lock` and kernel haven't changed doesn't need snapshot.ubuntu.com or kernel.org |
 | sign | The only job in the `release-signing` environment. [`images/guest/sign.sh`](../images/guest/sign.sh) signs every tarball and every guest manifest with openssl, after checking the key's public half is the committed one |
 | verify | Checks every signature and file as the control plane and boxes will (`mix crew.verify`, `mix crew_image.verify`) |
 | images | The control plane's images, SQLite and Postgres, amd64 and arm64, with the signed tarballs and manifests inside. The SQLite one is started once and must answer `/healthz` and register everything it carries |
