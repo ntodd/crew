@@ -93,7 +93,7 @@ test("30 jobs over 3 sizes run on 2 boxes", async ({ page, request }) => {
   // JIT runners are ephemeral: none is left registered.
   await expect.poll(async () => (await fakeState(request)).runners.length, { timeout: 60_000 }).toBe(0)
 
-  await expect(page.locator("[data-job-state=success]")).toHaveCount(30, { timeout: 30_000 })
+  await expect(page.locator("[id^=job-] [data-job-state=success]")).toHaveCount(30, { timeout: 30_000 })
   await shot(page, layer, "run-done")
 
   // No VM is left: everything was destroyed once its guest powered off.
