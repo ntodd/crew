@@ -112,6 +112,7 @@ defmodule CrewWeb.BoxLive.Index do
           <.provisioned
             id="provisioned-vcpus"
             title="vCPUs provisioned"
+            of="online vCPUs"
             fleet={@fleet}
             series={@fleet.provisioned.vcpus}
             held={@fleet.totals.provisioned_vcpus}
@@ -122,6 +123,7 @@ defmodule CrewWeb.BoxLive.Index do
           <.provisioned
             id="provisioned-memory"
             title="Memory provisioned"
+            of="online memory"
             fleet={@fleet}
             series={@fleet.provisioned.memory}
             held={@fleet.totals.provisioned_memory_mib / 1024}
@@ -216,6 +218,7 @@ defmodule CrewWeb.BoxLive.Index do
   attr :offered, :any, required: true
   attr :number, :any, required: true, doc: "the headline's numbers"
   attr :unit, :string, default: ""
+  attr :of, :string, required: true, doc: "what the share is of, for the note"
   attr :format, :any, required: true, doc: "a value on the chart, with its unit"
 
   defp provisioned(assigns) do
@@ -254,7 +257,7 @@ defmodule CrewWeb.BoxLive.Index do
       id={@id}
       title={@title}
       value={"#{@number.(@held)} / #{@number.(@offered)}#{@unit}"}
-      note={"#{round(@ratio * 100)}% of what the online boxes offer job VMs"}
+      note={"#{round(@ratio * 100)}% of #{@of}"}
       series={@series}
       since={@fleet.since}
       until={@fleet.until}
