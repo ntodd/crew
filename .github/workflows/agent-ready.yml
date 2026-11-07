@@ -22,7 +22,7 @@ jobs:
       contains(fromJSON('["ntodd"]'), github.event.issue.user.login)
     concurrency:
       group: agent-ready-${{ github.event.issue.number }}
-    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@bc16244223a59823aca46081eb1ae74cdee9c96f # agent-ready/v1.0.0
+    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@main
     permissions:
       contents: read
       issues: read
