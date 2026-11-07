@@ -512,6 +512,23 @@ func (s *Server) verifyRuleset(ctx context.Context) error {
 	return nil
 }
 
+// loadMangle loads etc/connlimit.rules into the box's mangle table,
+// which isn't only Crew's (ruleset/mangle.go): one --noflush transaction
+// that refills Crew's chain and puts its jumps first, and leaves other
+// rules, Tailscale's connmarks say, where they are.
+func loadMangle(ctx context.Context, sys Sys) error {
+	current, err := sys.Run(ctx, nil, "iptables-nft-save", "-t", "mangle")
+	if err != nil {
+		return err
+	}
+	script, err := ruleset.MangleScript(etc.ConnlimitRules, string(current))
+	if err != nil {
+		return err
+	}
+	_, err = sys.Run(ctx, []byte(script), "iptables-nft-restore", "--noflush")
+	return err
+}
+
 // NetUp is crew-net at boot (§12.2, §14.2): the crew0 dummy interface
 // with the service address, the ruleset and the connection cap loaded
 // once, vm_pairs for any tap that already exists (a restart of
@@ -541,7 +558,7 @@ func (s *Server) NetUp(ctx context.Context) error {
 	if _, err := s.Sys.Run(ctx, []byte(script), "nft", "-f", "-"); err != nil {
 		return fmt.Errorf("loading nft.conf: %w", err)
 	}
-	if _, err := s.Sys.Run(ctx, []byte(etc.ConnlimitRules), "iptables-nft-restore"); err != nil {
+	if err := loadMangle(ctx, s.Sys); err != nil {
 		return fmt.Errorf("loading connlimit.rules: %w", err)
 	}
 	if err := s.Sys.WriteFile(uplinkFile, []byte(up+"\n")); err != nil {

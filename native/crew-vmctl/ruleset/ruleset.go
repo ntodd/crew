@@ -11,6 +11,10 @@
 // counters and the elements of the sets filled at runtime (vm_pairs and
 // site4) don't count. Anything else does: a rule, a policy, a priority,
 // a blocked4 range, an extra chain or set.
+//
+// The mangle table is shared (mangle.go): only Crew's chains and the
+// jumps into them, first in their built-in chains, are held to the
+// reference.
 package ruleset
 
 import (
@@ -75,9 +79,7 @@ func Compare(ref, got Listing) error {
 		return fmt.Errorf("the box's listing: %w", err)
 	}
 	diffs := diff(want, have)
-	if a, b := normalizeSave(ref.Mangle), normalizeSave(got.Mangle); a != b {
-		diffs = append(diffs, "the mangle table (the connection cap) differs:\n"+a+"\n--- the box has ---\n"+b)
-	}
+	diffs = append(diffs, compareMangle(ref.Mangle, got.Mangle)...)
 	if len(diffs) == 0 {
 		return nil
 	}

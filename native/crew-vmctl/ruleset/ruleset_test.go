@@ -15,7 +15,10 @@ import (
 // mangle` as nftables 1.0.6 / iptables 1.8.9 (Debian bookworm) and
 // nftables 1.1.6 / iptables 1.8.13 (Flatcar 4757.2.3) print them, after
 // loading etc/ with UPLINK=eth0. "busy" adds a vm_pairs and a site4
-// element, as a box with a VM has.
+// element, as a box with a VM has. iptables-1.8.13-mangle-tailscale.save
+// is the mangle table after Tailscale 1.104.5 added its two connmark
+// rules to it (iptables-nft -t mangle -A, as tailscaled does), recorded
+// on Fedora rawhide's iptables 1.8.13.
 func read(t *testing.T, name string) []byte {
 	t.Helper()
 	b, err := os.ReadFile("testdata/" + name)
@@ -239,6 +242,12 @@ func TestTheConnectionCapMustMatch(t *testing.T) {
 			"-A INPUT -i crewt+ -j ACCEPT\n-A INPUT -i crewt+ -j CREW-CONNLIMIT", 1),
 		"a policy drop":  strings.Replace(base, ":OUTPUT ACCEPT", ":OUTPUT DROP", 1),
 		"nothing loaded": "",
+		"someone else's rule before the jump": strings.Replace(base, "-A FORWARD -i crewt+ -j CREW-CONNLIMIT",
+			"-A FORWARD -j MARK --set-xmark 0x1/0xffffffff\n-A FORWARD -i crewt+ -j CREW-CONNLIMIT", 1),
+		"an extra rule in Crew's chain": strings.Replace(base, "COMMIT",
+			"-A CREW-CONNLIMIT -j RETURN\nCOMMIT", 1),
+		"a Crew chain it doesn't ship": strings.Replace(base, "COMMIT",
+			":CREW-OTHER - [0:0]\nCOMMIT", 1),
 	} {
 		got := Listing{Nft: ref.Nft, Mangle: m}
 		if err := Compare(ref, got); err == nil {
@@ -250,6 +259,69 @@ func TestTheConnectionCapMustMatch(t *testing.T) {
 	counted = strings.Replace(counted, "Wed Nov  4", "Thu Nov  5", -1)
 	if err := Compare(ref, Listing{Nft: ref.Nft, Mangle: counted}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// Crew owns its chain and the first rules of mangle's INPUT and FORWARD,
+// not the table: Tailscale 1.104 keeps its connmarks there.
+func TestTheMangleTableIsShared(t *testing.T) {
+	ref := listing(t, "1.1.6", "1.8.13", "clean")
+	base := string(read(t, "iptables-1.8.13-mangle.save"))
+	for name, m := range map[string]string{
+		"Tailscale's connmarks": string(read(t, "iptables-1.8.13-mangle-tailscale.save")),
+		"a rule after the jump": strings.Replace(base, "-A FORWARD -i crewt+ -j CREW-CONNLIMIT",
+			"-A FORWARD -i crewt+ -j CREW-CONNLIMIT\n-A FORWARD -j MARK --set-xmark 0x1/0xffffffff", 1),
+		"someone else's chain": strings.Replace(base, "COMMIT",
+			":ts-mangle - [0:0]\n-A ts-mangle -j RETURN\nCOMMIT", 1),
+	} {
+		if err := Compare(ref, Listing{Nft: ref.Nft, Mangle: m}); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+// crew-net's load: Crew's chain refilled and its jumps first, in one
+// iptables-nft-restore --noflush, with everyone else's rules left alone.
+func TestMangleScript(t *testing.T) {
+	jumps := "-I INPUT 1 -i crewt+ -j CREW-CONNLIMIT\n-I FORWARD 1 -i crewt+ -j CREW-CONNLIMIT\n"
+	head := "*mangle\n:PREROUTING ACCEPT [0:0]\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n" +
+		":OUTPUT ACCEPT [0:0]\n:POSTROUTING ACCEPT [0:0]\n:CREW-CONNLIMIT - [0:0]\n"
+	tail := "-A CREW-CONNLIMIT -m conntrack --ctstate NEW -m connlimit --connlimit-above 2048 " +
+		"--connlimit-mask 32 --connlimit-saddr -j DROP\nCOMMIT\n"
+
+	// Nothing there yet: nothing to delete.
+	got, err := MangleScript(etc.ConnlimitRules, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := head + jumps + tail; got != want {
+		t.Fatalf("fresh:\n%s\nwant:\n%s", got, want)
+	}
+
+	// Loaded before, with Tailscale's rules since and a stray second jump:
+	// every copy of a jump goes (a -D of one that isn't there fails the
+	// whole load), and nothing of Tailscale's does.
+	box := strings.Replace(string(read(t, "iptables-1.8.13-mangle-tailscale.save")),
+		"-A FORWARD -i crewt+ -j CREW-CONNLIMIT", "-A FORWARD -i crewt+ -j CREW-CONNLIMIT\n-A FORWARD -i crewt+ -j CREW-CONNLIMIT", 1)
+	got, err = MangleScript(etc.ConnlimitRules, box)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletes := "-D INPUT -i crewt+ -j CREW-CONNLIMIT\n-D FORWARD -i crewt+ -j CREW-CONNLIMIT\n-D FORWARD -i crewt+ -j CREW-CONNLIMIT\n"
+	if want := head + deletes + jumps + tail; got != want {
+		t.Fatalf("loaded:\n%s\nwant:\n%s", got, want)
+	}
+
+	for name, rules := range map[string]string{
+		"no table":                "-A INPUT -j ACCEPT\nCOMMIT\n",
+		"another table":           "*filter\n:INPUT ACCEPT [0:0]\nCOMMIT\n",
+		"no commit":               "*mangle\n:INPUT ACCEPT [0:0]\n",
+		"a rule in no chain":      "*mangle\n-A NOWHERE -j ACCEPT\nCOMMIT\n",
+		"a chain that isn't ours": "*mangle\n:ts-x - [0:0]\nCOMMIT\n",
+	} {
+		if _, err := MangleScript(rules, ""); err == nil {
+			t.Errorf("%s: no error", name)
+		}
 	}
 }
 
