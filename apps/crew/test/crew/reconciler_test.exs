@@ -230,6 +230,230 @@ defmodule Crew.ReconcilerTest do
     end
   end
 
+  describe "stale jobs (§8.8)" do
+    defp hosted_job(repo, attrs) do
+      payload = workflow_job_payload(repo, [labels: ["ubuntu-latest"]] ++ attrs)
+      {:ok, job} = Jobs.handle_workflow_job(payload)
+      assert job.classification == "not_ours"
+      job
+    end
+
+    defp listed(repo, attrs),
+      do: workflow_job_payload(repo, [labels: ["ubuntu-latest"]] ++ attrs)["workflow_job"]
+
+    test "an unfinished job Crew doesn't run, with no event for an hour, is re-checked", %{
+      repo: repo,
+      inst: inst
+    } do
+      running = hosted_job(repo, id: 80, run_id: 70, status: "in_progress")
+      queued = hosted_job(repo, id: 81, run_id: 70)
+      age_job(running, 61 * 60)
+      age_job(queued, 61 * 60)
+      pid = self()
+
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/70/attempts/1/jobs"} => fn conn ->
+            send(pid, :listed)
+
+            GitHubStub.json(conn, 200, %{
+              "jobs" => [
+                listed(repo, id: 80, run_id: 70, status: "completed", conclusion: "failure"),
+                listed(repo, id: 81, run_id: 70, status: "in_progress")
+              ]
+            })
+          end
+        })
+      )
+
+      assert :ok = Reconciler.check_queued()
+      assert_received :listed
+      refute_received :listed
+
+      assert %{gh_state: "completed", conclusion: "failure"} = Jobs.get_job!(running.id)
+      assert Jobs.get_job!(queued.id).gh_state == "in_progress"
+    end
+
+    test "one with an event in the last hour, or checked lately, is left alone", %{repo: repo} do
+      fresh = hosted_job(repo, id: 82, run_id: 71, status: "in_progress")
+      age_job(fresh, 50 * 60)
+
+      checked = hosted_job(repo, id: 83, run_id: 72, status: "in_progress")
+      checked = age_job(checked, 3 * 3600)
+      at = DateTime.add(DateTime.utc_now(), -60)
+      Repo.update!(Ecto.Changeset.change(checked, checked_at: at))
+
+      GitHubStub.stub(%{})
+      assert :ok = Reconciler.check_queued()
+      assert Jobs.get_job!(fresh.id).checked_at == nil
+      assert Jobs.get_job!(checked.id).checked_at == at
+    end
+
+    test "a repo the App lost isn't re-checked", %{repo: repo} do
+      job = hosted_job(repo, id: 84, run_id: 73, status: "in_progress")
+      age_job(job, 2 * 3600)
+
+      Repo.update!(
+        Ecto.Changeset.change(Crew.Repos.get!(repo.id), archived_at: DateTime.utc_now())
+      )
+
+      GitHubStub.stub(%{})
+      assert :ok = Reconciler.check_queued()
+      assert Jobs.get_job!(job.id).checked_at == nil
+    end
+
+    test "a check counts for every job of the attempt, so a matrix costs one call per 5 minutes",
+         %{repo: repo, inst: inst} do
+      first = hosted_job(repo, id: 87, run_id: 76, status: "in_progress")
+      second = hosted_job(repo, id: 88, run_id: 76, status: "in_progress")
+      age_job(first, 2 * 3600)
+      # Not stale yet: the listing covers it anyway.
+      age_job(second, 50 * 60)
+
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/76/attempts/1/jobs"} =>
+            {200,
+             %{
+               "jobs" => [
+                 listed(repo, id: 87, run_id: 76, status: "in_progress"),
+                 listed(repo, id: 88, run_id: 76, status: "in_progress")
+               ]
+             }}
+        })
+      )
+
+      assert :ok = Reconciler.check_queued()
+      assert Jobs.get_job!(first.id).checked_at
+      assert Jobs.get_job!(second.id).checked_at
+    end
+  end
+
+  describe "open run attempts (§8.8)" do
+    defp open_attempt(repo, run_id, job_state) do
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(workflow_run_payload(repo, id: run_id, status: "in_progress"))
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: run_id * 10,
+            run_id: run_id,
+            labels: ["ubuntu-latest"],
+            status: job_state,
+            conclusion: if(job_state == "completed", do: "success")
+          )
+        )
+
+      {attempt, job}
+    end
+
+    defp run_json(repo, id, status),
+      do:
+        workflow_run_payload(repo,
+          id: id,
+          status: status,
+          conclusion: if(status == "completed", do: "success")
+        )["workflow_run"]
+
+    test "one with every job done and quiet for 15 minutes is fetched until GitHub says it's done",
+         %{repo: repo, inst: inst} do
+      {attempt, job} = open_attempt(repo, 90, "completed")
+      age_job(job, 16 * 60)
+      pid = self()
+
+      fetched = fn status ->
+        fn conn ->
+          send(pid, :fetched)
+          GitHubStub.json(conn, 200, run_json(repo, 90, status))
+        end
+      end
+
+      # Its jobs only just finished on GitHub's side.
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/90/attempts/1"} =>
+            fetched.("in_progress")
+        })
+      )
+
+      assert :ok = Reconciler.check_attempts()
+      assert_received :fetched
+      assert %{status: "in_progress", checked_at: %DateTime{}} = Jobs.get_run_attempt(attempt.id)
+
+      # Not again for 5 minutes.
+      assert :ok = Reconciler.check_attempts()
+      refute_received :fetched
+
+      Repo.update!(
+        Ecto.Changeset.change(Jobs.get_run_attempt(attempt.id),
+          checked_at: DateTime.add(DateTime.utc_now(), -301)
+        )
+      )
+
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/90/attempts/1"} => fetched.("completed")
+        })
+      )
+
+      assert :ok = Reconciler.check_attempts()
+      assert_received :fetched
+      assert %{status: "completed", conclusion: "success"} = Jobs.get_run_attempt(attempt.id)
+    end
+
+    test "a failed fetch is tried again 5 minutes later", %{repo: repo, inst: inst} do
+      {attempt, job} = open_attempt(repo, 91, "completed")
+      age_job(job, 16 * 60)
+
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/91/attempts/1"} =>
+            {404, %{"message" => "Not Found"}}
+        })
+      )
+
+      assert :ok = Reconciler.check_attempts()
+      assert %{status: "in_progress", checked_at: %DateTime{}} = Jobs.get_run_attempt(attempt.id)
+    end
+
+    test "one with a job still going, a recent job event, or in a lost repo is left alone",
+         %{repo: repo} do
+      {running, job} = open_attempt(repo, 92, "in_progress")
+      age_job(job, 2 * 3600)
+      {recent, job} = open_attempt(repo, 93, "completed")
+      age_job(job, 10 * 60)
+
+      lost_repo = repo_fixture(name: "lost")
+      {lost, job} = open_attempt(lost_repo, 94, "completed")
+      age_job(job, 2 * 3600)
+      Repo.update!(Ecto.Changeset.change(lost_repo, archived_at: DateTime.utc_now()))
+
+      GitHubStub.stub(%{})
+      assert :ok = Reconciler.check_attempts()
+
+      for a <- [running, recent, lost],
+          do: assert(Jobs.get_run_attempt(a.id).checked_at == nil)
+    end
+
+    test "every reconciler run checks them", %{repo: repo, inst: inst} do
+      :persistent_term.put({Reconciler, :swept_at}, System.monotonic_time(:second))
+      on_exit(fn -> :persistent_term.erase({Reconciler, :swept_at}) end)
+      {attempt, job} = open_attempt(repo, 95, "completed")
+      age_job(job, 16 * 60)
+
+      GitHubStub.stub(
+        Map.merge(token(inst), %{
+          {"GET", "/repos/#{repo.full_name}/actions/runs/95/attempts/1"} =>
+            {200, run_json(repo, 95, "completed")}
+        })
+      )
+
+      assert :ok = perform_job(Reconciler, %{})
+      assert Jobs.get_run_attempt(attempt.id).status == "completed"
+    end
+  end
+
   describe "missed jobs" do
     test "the sweep lists a repo's queued and in-progress runs and adds jobs Crew doesn't know",
          %{repo: repo, inst: inst} do
