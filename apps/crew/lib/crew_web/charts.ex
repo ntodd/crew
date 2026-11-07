@@ -95,7 +95,7 @@ defmodule CrewWeb.Charts do
         >
           <span
             :if={label}
-            class="chart-tick absolute bottom-0.5 left-0 text-[11px] tabular-nums text-ink-3"
+            class="chart-tick absolute bottom-0.5 left-0 z-[1] text-[11px] tabular-nums text-ink-3"
           >
             {label}
           </span>
