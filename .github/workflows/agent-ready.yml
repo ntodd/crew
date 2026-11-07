@@ -1,0 +1,42 @@
+name: agent-ready
+
+# Label an issue you wrote agent-ready, and an agent works it into draft
+# pull requests on Crew, then keeps at them until CI is green and review
+# threads are answered. See
+# https://github.com/ntodd/github-actions/tree/main/agent-ready.
+#
+# An effort:<level> label (low, medium, high, xhigh, max) or an
+# "/effort <level>" comment changes the effort from medium.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  agent:
+    if: >-
+      github.event.label.name == 'agent-ready' &&
+      contains(fromJSON('["ntodd"]'), github.event.sender.login) &&
+      contains(fromJSON('["ntodd"]'), github.event.issue.user.login)
+    concurrency:
+      group: agent-ready-${{ github.event.issue.number }}
+    uses: ntodd/github-actions/.github/workflows/agent-ready.yml@bc16244223a59823aca46081eb1ae74cdee9c96f # agent-ready/v1.0.0
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      checks: read
+      statuses: read
+      actions: read
+    with:
+      trusted-users: ntodd
+      app-id: ${{ vars.AGENT_APP_ID }}
+      git-user-name: Nate Todd
+      git-user-email: nate@pixelauthority.com
+    secrets:
+      AGENT_APP_PRIVATE_KEY: ${{ secrets.AGENT_APP_PRIVATE_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      AGENT_ATTACH_TOKEN: ${{ secrets.AGENT_ATTACH_TOKEN }}
