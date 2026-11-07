@@ -1,0 +1,90 @@
+name: Flake hunt
+
+# Runs each app's suite 100 times a night, with random seeds, and opens
+# an issue for every test that fails some runs and passes the rest. See
+# https://github.com/ntodd/github-actions/tree/main/flake-hunt.
+#
+# A pull request that changes this file gets a short dry run: 4 runs per
+# app, with what it would file in the job summary.
+#
+# Unlike CI (§23), this runs on Crew. It gates nothing, so a broken Crew
+# costs a night's hunt and nothing else.
+#
+# With a CLAUDE_CODE_OAUTH_TOKEN secret (claude setup-token), each new
+# flake's issue also gets Claude's diagnosis.
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/flake-hunt.yml]
+
+concurrency:
+  group: flake-hunt-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  protocol:
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@9bd21b90ece57c3a6a8bdc36bc1605efc29c29dd # feature/flake-hunt
+    permissions:
+      contents: read
+      issues: write
+    with:
+      working-directory: apps/crew_protocol
+      shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
+      runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  control-plane:
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@9bd21b90ece57c3a6a8bdc36bc1605efc29c29dd # feature/flake-hunt
+    permissions:
+      contents: read
+      issues: write
+    with:
+      working-directory: apps/crew
+      shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
+      runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  agent:
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@9bd21b90ece57c3a6a8bdc36bc1605efc29c29dd # feature/flake-hunt
+    permissions:
+      contents: read
+      issues: write
+    with:
+      working-directory: apps/crew_agent
+      shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
+      runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  guest:
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@9bd21b90ece57c3a6a8bdc36bc1605efc29c29dd # feature/flake-hunt
+    permissions:
+      contents: read
+      issues: write
+    with:
+      working-directory: apps/crew_guest
+      shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
+      runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+  cache:
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@9bd21b90ece57c3a6a8bdc36bc1605efc29c29dd # feature/flake-hunt
+    permissions:
+      contents: read
+      issues: write
+    with:
+      working-directory: apps/crew_cache
+      shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
+      runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
+      # For the CA chain and TLS client checks; without Go they are excluded.
+      go-version: "1.26.10"
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
