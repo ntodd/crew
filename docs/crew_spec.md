@@ -854,6 +854,15 @@ Its calls are **essential** (§6.6).
   check interval.
 - **Busy VMs:** each `busy` VM whose job has had no event for 15 minutes,
   the same way.
+- **Stale jobs:** any job that isn't `completed`, whatever its
+  classification, with no event for an hour, the same way (repos the App
+  lost are skipped). A job Crew doesn't run has no VM to notice its
+  `completed` webhook went missing. A check counts for every job of the
+  run attempt, so a matrix costs one call per 5 minutes.
+- **Open run attempts:** a run attempt that isn't `completed` though all
+  its jobs are, with no job event for 15 minutes, is fetched, then every
+  5 minutes until GitHub says it's done: its `workflow_run` `completed`
+  may have gone missing too.
 - **Missed jobs:** every 5 minutes, for each enabled repo with Crew jobs in
   the last 7 days, list the queued and in-progress runs and their jobs, and
   upsert any job Crew doesn't know.

@@ -22,6 +22,7 @@ defmodule Crew.Jobs.RunAttempt do
     field :conclusion, :string
     field :gh_created_at, :utc_datetime_usec
     field :gh_updated_at, :utc_datetime_usec
+    field :checked_at, :utc_datetime_usec
     has_many :jobs, Crew.Jobs.Job
     timestamps()
   end

@@ -10,6 +10,12 @@ defmodule Crew.Reconciler do
     within its check interval.
   - **Busy VMs** whose job has had no event for 15 minutes are checked
     the same way, then every 5 minutes.
+  - **Stale jobs:** any unfinished job, whatever its classification,
+    with no event for an hour is checked the same way, then every 5
+    minutes. A check counts for every job of the attempt.
+  - **Open run attempts** whose jobs are all done, with no job event
+    for 15 minutes, are fetched, then every 5 minutes until GitHub says
+    they're done: their `completed` webhook may be lost too.
   - **Missed jobs:** every 5 minutes, each enabled repo with Crew jobs in
     the last 7 days has its queued and in-progress runs listed, and any
     job Crew doesn't know is added.
@@ -31,11 +37,12 @@ defmodule Crew.Reconciler do
 
   alias Crew.{Jobs, Repo, Repos}
   alias Crew.GitHub.Client
-  alias Crew.Jobs.Job
+  alias Crew.Jobs.{Job, RunAttempt}
   alias Crew.Repos.Repo, as: GitRepo
 
   @first_check_s 90
   @busy_quiet_s 900
+  @stale_s 3600
   @recheck_s 300
   @webhook_quiet_s 300
   @sweep_s 300
@@ -45,6 +52,7 @@ defmodule Crew.Reconciler do
   @impl true
   def perform(_job) do
     check_queued()
+    check_attempts()
     if sweep_due?(), do: sweep_missed()
     :ok
   end
@@ -66,13 +74,13 @@ defmodule Crew.Reconciler do
           preload: [repo: {r, :installation}]
       )
 
-    (candidates ++ quiet_busy_jobs(now))
+    (candidates ++ quiet_busy_jobs(now) ++ stale_jobs(now))
     |> Enum.filter(&due?(&1, now))
     |> Enum.reject(&skip?(&1, now))
     |> Enum.uniq_by(& &1.id)
     |> Enum.group_by(&{&1.repo_id, &1.github_run_id, &1.run_attempt})
     |> Enum.each(fn {{_, run_id, attempt}, jobs} ->
-      recheck(hd(jobs).repo, run_id, attempt, jobs, now)
+      recheck(hd(jobs).repo, run_id, attempt, now)
     end)
 
     :ok
@@ -93,6 +101,20 @@ defmodule Crew.Reconciler do
     )
   end
 
+  # Unfinished jobs of any classification with no event for an hour
+  # (§8.8): a job Crew doesn't run has no VM to notice its `completed`
+  # went missing. Repos the App lost would only answer 404.
+  defp stale_jobs(now) do
+    cutoff = DateTime.add(now, -@stale_s)
+
+    Repo.all(
+      from j in Job,
+        join: r in assoc(j, :repo),
+        where: j.gh_state != "completed" and j.last_event_at <= ^cutoff and is_nil(r.archived_at),
+        preload: [repo: {r, :installation}]
+    )
+  end
+
   defp due?(%Job{checked_at: nil}, _now), do: true
   defp due?(%Job{checked_at: at}, now), do: DateTime.diff(now, at) >= @recheck_s
 
@@ -105,7 +127,7 @@ defmodule Crew.Reconciler do
   defp recent?(nil, _now, _s), do: false
   defp recent?(at, now, s), do: DateTime.diff(now, at) < s
 
-  defp recheck(repo, run_id, attempt, jobs, now) do
+  defp recheck(repo, run_id, attempt, now) do
     case Client.list_attempt_jobs(repo.installation.github_id, repo.full_name, run_id, attempt) do
       {:ok, listed} ->
         Enum.each(listed, &Jobs.upsert_job(repo, &1, source: "api", kind: "reconcile"))
@@ -115,9 +137,62 @@ defmodule Crew.Reconciler do
     end
 
     # Checked either way: a failing GitHub is tried again in 5 minutes,
-    # not every pass.
-    ids = Enum.map(jobs, & &1.id)
-    Repo.update_all(from(j in Job, where: j.id in ^ids), set: [checked_at: now])
+    # not every pass. The listing covered every job of the attempt, so a
+    # matrix whose jobs go quiet at different times costs one call.
+    Repo.update_all(
+      from(j in Job,
+        where: j.repo_id == ^repo.id and j.github_run_id == ^run_id and j.run_attempt == ^attempt
+      ),
+      set: [checked_at: now]
+    )
+  end
+
+  # -- open run attempts -------------------------------------------------------
+
+  @doc """
+  Fetches the open run attempts whose jobs are all done and quiet for
+  15 minutes, at most every 5 minutes each.
+  """
+  def check_attempts do
+    now = DateTime.utc_now()
+    quiet = DateTime.add(now, -@busy_quiet_s)
+    recheck = DateTime.add(now, -@recheck_s)
+
+    Repo.all(
+      from a in RunAttempt,
+        as: :attempt,
+        join: r in assoc(a, :repo),
+        where:
+          a.status != "completed" and is_nil(r.archived_at) and
+            (is_nil(a.checked_at) or a.checked_at <= ^recheck) and
+            exists(from j in Job, where: j.run_attempt_id == parent_as(:attempt).id) and
+            not exists(
+              from j in Job,
+                where:
+                  j.run_attempt_id == parent_as(:attempt).id and
+                    (j.gh_state != "completed" or j.last_event_at > ^quiet)
+            ),
+        preload: [repo: {r, :installation}]
+    )
+    |> Enum.each(&recheck_attempt(&1, now))
+
+    :ok
+  end
+
+  defp recheck_attempt(%RunAttempt{repo: repo} = attempt, now) do
+    %{github_run_id: run_id, run_attempt: n} = attempt
+
+    case Client.get_run_attempt(repo.installation.github_id, repo.full_name, run_id, n) do
+      {:ok, run} ->
+        {:ok, _} = Jobs.upsert_run_attempt(repo, run)
+
+      error ->
+        Logger.warning("reconciling #{repo.full_name} run #{run_id}: #{inspect(error)}")
+    end
+
+    # Either way: one GitHub hasn't finished yet is asked again in 5
+    # minutes.
+    Repo.update_all(from(a in RunAttempt, where: a.id == ^attempt.id), set: [checked_at: now])
   end
 
   # -- missed jobs ---------------------------------------------------------------
