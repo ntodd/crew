@@ -94,8 +94,15 @@ defmodule CrewAgent.Identity do
 
   def save(agent_dir, %__MODULE__{} = identity) do
     remember(identity.private_key)
-    File.mkdir_p!(agent_dir)
-    File.chmod!(agent_dir, 0o700)
+
+    # identity.json is 0600 either way. An agent/ that's there is the
+    # installer's, with its mode: on a Mac it's 0750 so crew-vzd
+    # (group crewvm) can run agent/current/bin/crew-vz, and taking that
+    # away stops the box ever verifying its firewall.
+    unless File.dir?(agent_dir) do
+      File.mkdir_p!(agent_dir)
+      File.chmod!(agent_dir, 0o700)
+    end
 
     json =
       JSON.encode!(%{
