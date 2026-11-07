@@ -1818,6 +1818,10 @@ group, as on GitHub's runners.
 - `/home/runner/actions-runner`
 - `.env` contains `ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/crew/hooks/job-started`
   (§19.5) and the variables in §13.5.
+- **The tool cache** is `/opt/hostedtoolcache`, owned by `runner`, with
+  `RUNNER_TOOL_CACHE` and `AGENT_TOOLSDIRECTORY` in `.env` pointing at it,
+  as on GitHub's runners. `setup-ruby` and `setup-python` only install
+  their prebuilt builds there.
 
 **crew-guest:** the release at `/opt/crew-guest`, plus
 `crew-guest.service`.

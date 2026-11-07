@@ -29,7 +29,11 @@ visudo -cqf /etc/sudoers.d/runner
 # crew-guest adds the cache CA's variables to .env at boot (§13.5).
 install -m 0644 "$files/home/runner/actions-runner/.env" /home/runner/actions-runner/.env
 install -m 0644 "$files/home/runner/actions-runner/.path" /home/runner/actions-runner/.path
-chown -R runner:runner /home/runner /ms-playwright
+# The tool cache where GitHub's runners keep it, the runner's: setup-ruby
+# and setup-python only install their prebuilt builds there, and fail if
+# they can't create it. .env points the runner at it.
+mkdir -p /opt/hostedtoolcache
+chown -R runner:runner /home/runner /ms-playwright /opt/hostedtoolcache
 # Login shells (sudo -i, su -) find the browsers too.
 echo 'PLAYWRIGHT_BROWSERS_PATH=/ms-playwright' >> /etc/environment
 
@@ -118,6 +122,11 @@ echo '{"checks":["sizing"]}' > /tmp/conformance.json
 rm -f /tmp/conformance.json
 grep -qx 'ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/crew/hooks/job-started.sh' /home/runner/actions-runner/.env ||
   fail "the runner's .env lacks the hook"
+for v in RUNNER_TOOL_CACHE AGENT_TOOLSDIRECTORY; do
+  grep -qx "$v=/opt/hostedtoolcache" /home/runner/actions-runner/.env ||
+    fail "the runner's .env doesn't set $v to /opt/hostedtoolcache"
+done
+[ "$(stat -c %U /opt/hostedtoolcache)" = runner ] || fail "the runner doesn't own /opt/hostedtoolcache"
 for cmd in setpriv resize2fs update-ca-certificates jq curl inotifywait docker; do
   command -v "$cmd" >/dev/null || fail "no $cmd"
 done
