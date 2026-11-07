@@ -7,6 +7,9 @@ name: agent-ready
 #
 # An effort:<level> label (low, medium, high, xhigh, max) or an
 # "/effort <level>" comment changes the effort from medium.
+#
+# Unlike CI (§23), this runs on Crew. It gates nothing: it opens draft
+# PRs that CI then checks on GitHub's runners.
 
 on:
   issues:
