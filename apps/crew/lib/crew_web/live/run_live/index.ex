@@ -162,29 +162,17 @@ defmodule CrewWeb.RunLive.Index do
           class="flex flex-wrap items-center gap-2"
         >
           <input :if={@filters["view"]} type="hidden" name="view" value={@filters["view"]} />
-          <div class="relative w-full sm:w-72 xl:w-80">
-            <.icon
-              name="hero-magnifying-glass-micro"
-              class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-3"
-            />
-            <input
-              type="search"
-              id="run-search"
-              name="q"
-              value={@filters["q"]}
-              placeholder="Search branch, PR or actor"
-              aria-label="Search by branch, PR or actor"
-              title="Part of a branch or actor, or a PR number. branch:, pr: and actor: match exactly."
-              aria-describedby="run-search-help"
-              autocomplete="off"
-              spellcheck="false"
-              phx-debounce="300"
-              class="input pl-8"
-            />
-            <span id="run-search-help" class="sr-only">
-              Matches part of a branch or actor, or a PR number. branch:, pr: and actor: match exactly.
-            </span>
-          </div>
+          <.toolbar_search
+            id="run-search"
+            value={@filters["q"]}
+            placeholder="Search branch, PR or actor"
+            label="Search by branch, PR or actor"
+            title="Part of a branch or actor, or a PR number. branch:, pr: and actor: match exactly."
+            aria-describedby="run-search-help"
+          />
+          <span id="run-search-help" class="sr-only">
+            Matches part of a branch or actor, or a PR number. branch:, pr: and actor: match exactly.
+          </span>
           <.toolbar_select
             name="repo"
             label="Repo"
@@ -260,46 +248,6 @@ defmodule CrewWeb.RunLive.Index do
         </.panel>
       </div>
     </Layouts.app>
-    """
-  end
-
-  attr :name, :string, required: true
-  attr :label, :string, required: true
-  attr :value, :any, default: nil
-  attr :options, :list, required: true
-  attr :class, :any, default: nil
-
-  defp toolbar_select(assigns) do
-    ~H"""
-    <div class={["relative", @class]}>
-      <select id={"filter-#{@name}"} name={@name} aria-label={@label} class="input">
-        {Phoenix.HTML.Form.options_for_select(@options, @value)}
-      </select>
-      <.icon
-        name="hero-chevron-up-down-micro"
-        class="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-3"
-      />
-    </div>
-    """
-  end
-
-  attr :name, :string, required: true
-  attr :label, :string, required: true
-  attr :checked, :boolean, default: false
-
-  defp toolbar_check(assigns) do
-    ~H"""
-    <label class="inline-flex h-9 cursor-pointer select-none items-center gap-2 px-1.5 text-sm text-ink-2 transition-colors hover:text-ink has-checked:text-ink">
-      <input
-        type="checkbox"
-        id={"filter-#{@name}"}
-        name={@name}
-        value="true"
-        checked={@checked}
-        class="checkbox"
-      />
-      {@label}
-    </label>
     """
   end
 

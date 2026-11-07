@@ -254,6 +254,84 @@ defmodule CrewWeb.CrewComponents do
     """
   end
 
+  @doc """
+  A list's search box, for a filter toolbar: an input with a magnifier,
+  sent 300 ms after the last keystroke.
+  """
+  attr :id, :string, required: true
+  attr :name, :string, default: "q"
+  attr :value, :any, default: nil
+  attr :label, :string, required: true
+  attr :placeholder, :string, default: nil
+  attr :class, :any, default: "w-full sm:w-72 xl:w-80"
+  attr :rest, :global
+
+  def toolbar_search(assigns) do
+    ~H"""
+    <div class={["relative", @class]}>
+      <.icon
+        name="hero-magnifying-glass-micro"
+        class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-3"
+      />
+      <input
+        type="search"
+        id={@id}
+        name={@name}
+        value={@value}
+        placeholder={@placeholder}
+        aria-label={@label}
+        autocomplete="off"
+        spellcheck="false"
+        phx-debounce="300"
+        class="input pl-8"
+        {@rest}
+      />
+    </div>
+    """
+  end
+
+  @doc "A select for a filter toolbar, labelled for screen readers only."
+  attr :name, :string, required: true
+  attr :label, :string, required: true
+  attr :value, :any, default: nil
+  attr :options, :list, required: true
+  attr :class, :any, default: nil
+
+  def toolbar_select(assigns) do
+    ~H"""
+    <div class={["relative", @class]}>
+      <select id={"filter-#{@name}"} name={@name} aria-label={@label} class="input">
+        {Phoenix.HTML.Form.options_for_select(@options, @value)}
+      </select>
+      <.icon
+        name="hero-chevron-up-down-micro"
+        class="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-ink-3"
+      />
+    </div>
+    """
+  end
+
+  @doc "An on/off filter for a toolbar, sending `true` when checked."
+  attr :name, :string, required: true
+  attr :label, :string, required: true
+  attr :checked, :boolean, default: false
+
+  def toolbar_check(assigns) do
+    ~H"""
+    <label class="inline-flex h-9 cursor-pointer select-none items-center gap-2 px-1.5 text-sm text-ink-2 transition-colors hover:text-ink has-checked:text-ink">
+      <input
+        type="checkbox"
+        id={"filter-#{@name}"}
+        name={@name}
+        value="true"
+        checked={@checked}
+        class="checkbox"
+      />
+      {@label}
+    </label>
+    """
+  end
+
   @doc "A notice strip: info, warning or danger."
   attr :kind, :string, default: "info", values: ~w(info warning danger)
   attr :icon, :string, default: nil
