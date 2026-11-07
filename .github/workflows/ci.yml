@@ -195,10 +195,13 @@ jobs:
           "$RUNNER_TEMP/actionlint" -version
           "$RUNNER_TEMP/actionlint" -color \
             -shellcheck "$RUNNER_TEMP/shellcheck-$SHELLCHECK_VERSION/shellcheck"
+      # ntodd/github-actions' own reusable workflows may track main, so
+      # updates to agent-ready apply without a repin. Everything else is
+      # pinned by SHA.
       - name: Every action pinned by commit SHA
         run: |
           unpinned=$(grep -nE '^[[:space:]]*(-[[:space:]]+)?uses:' .github/workflows/*.yml |
-            grep -vE 'uses:[[:space:]]+(\./[^[:space:]]+|[^[:space:]@]+@[0-9a-f]{40})([[:space:]]|$)' || true)
+            grep -vE 'uses:[[:space:]]+(\./[^[:space:]]+|[^[:space:]@]+@[0-9a-f]{40}|ntodd/github-actions/\.github/workflows/[^[:space:]@]+@main)([[:space:]]|$)' || true)
           if [ -n "$unpinned" ]; then
             echo "::error::actions not pinned by a full commit SHA:"
             echo "$unpinned"
