@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ntodd/crew/native/crew-vmctl/etc"
 	"github.com/ntodd/crew/native/crew-vmctl/ruleset"
 )
 
@@ -277,5 +278,58 @@ func TestLoadedSite4(t *testing.T) {
 	}
 	if _, err := loadedSite4([]byte(`{"nftables":[]}`)); err == nil {
 		t.Error("no set: want an error")
+	}
+}
+
+// The mangle table is shared (Tailscale 1.104 keeps connmarks there):
+// crew-net's load leaves other rules alone, and nft-verify passes them.
+func TestMangleIsShared(t *testing.T) {
+	shared := string(mustRead(t, "../ruleset/testdata/iptables-1.8.13-mangle-tailscale.save"))
+	withTailscale := func() *testBox {
+		b := newBox(t)
+		inner := b.answer
+		b.answer = func(argv []string) (string, error) {
+			if strings.Join(argv, " ") == "iptables-nft-save -t mangle" {
+				return shared, nil
+			}
+			return inner(argv)
+		}
+		return b
+	}
+
+	b := withTailscale()
+	if r := handle(t, server(t, b.fakeSys, time.Now()), `{"verb":"nft-verify"}`); !r.OK {
+		t.Fatalf("nft-verify: %+v", r)
+	}
+
+	b = withTailscale()
+	b.root[UplinkFile] = []byte("eth0\n")
+	if err := server(t, b.fakeSys, time.Now()).NetUp(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	want, err := ruleset.MangleScript(etc.ConnlimitRules, shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.stdinOf("iptables-nft-restore", "--noflush"); got != want {
+		t.Fatalf("crew-net loaded:\n%s\nwant:\n%s\n(ran %q)", got, want, b.cmds)
+	}
+	if b.ranExactly("iptables-nft-restore") {
+		t.Fatal("a restore without --noflush replaces the whole table")
+	}
+}
+
+// nft-reference loads etc/ the way crew-net does, in its empty namespace.
+func TestNftReferenceLoadsLikeCrewNet(t *testing.T) {
+	sys := newFake()
+	if _, err := NftReference(t.Context(), sys, "eth0"); err != nil {
+		t.Fatal(err)
+	}
+	want, err := ruleset.MangleScript(etc.ConnlimitRules, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sys.stdinOf("iptables-nft-restore", "--noflush"); got != want {
+		t.Fatalf("loaded:\n%s\nwant:\n%s\n(ran %q)", got, want, sys.cmds)
 	}
 }

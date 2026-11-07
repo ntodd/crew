@@ -220,12 +220,21 @@ The other spikes are recorded here as they run.
     refuses overlapping intervals, so the spec's set doesn't load);
   - the 2048-connection cap is in iptables-nft's mangle table
     (`etc/connlimit.rules`, `xt_connlimit`) because Flatcar's kernel has
-    no `nft_connlimit` for `ct count`. Both use `nf_conncount`.
+    no `nft_connlimit` for `ct count`. Both use `nf_conncount`. That
+    table is shared: Tailscale 1.104 keeps two connmark rules in it. So
+    Crew owns its `CREW-CONNLIMIT` chain and the first rules of mangle's
+    `INPUT` and `FORWARD` (the jumps into it, ahead of anything that
+    could accept a VM's packet first), and nothing else. crew-net loads
+    them with `iptables-nft-restore --noflush`, deleting its old jumps
+    and inserting them first in the same transaction
+    (`ruleset.MangleScript`).
 - **`nft-verify`** compares the box's listings with the same files loaded
   into a fresh network namespace by the same binaries, not with a stored
   hash: nft 1.0.6 and 1.1.6 print the same table in different orders,
   so a hash would break on a Flatcar update. crew-vmctl embeds the files,
-  so what crew-net loads and what's verified are one copy.
+  so what crew-net loads and what's verified are one copy. In mangle it
+  holds only Crew's part to the reference: `CREW-*` chains exactly, the
+  jumps first in their chains, and the built-in chains' policies.
 - **crew-net is crew-vmctl:** `net-up` at boot (crew0, the filter loaded
   once, pairs for taps that exist, site4), `site4` every 10 minutes. The
   egress address reaches it as `agent/egress4`, which `CrewAgent.Site`

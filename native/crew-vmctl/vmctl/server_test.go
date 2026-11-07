@@ -682,3 +682,22 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// stdinOf is what the first command with exactly this argv was given.
+func (f *fakeSys) stdinOf(argv ...string) string {
+	for i, c := range f.cmds {
+		if reflect.DeepEqual(c, argv) {
+			return f.stdins[i]
+		}
+	}
+	return ""
+}
+
+func (f *fakeSys) ranExactly(argv ...string) bool {
+	for _, c := range f.cmds {
+		if reflect.DeepEqual(c, argv) {
+			return true
+		}
+	}
+	return false
+}

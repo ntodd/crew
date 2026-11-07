@@ -17,8 +17,8 @@ type ReferenceOutput struct {
 }
 
 // NftReference is `crew-vmctl nft-reference`, which nft-verify runs in a
-// new network namespace: it loads etc/ there and lists it, as the box's
-// own nft and iptables-nft print it. It refuses to run anywhere that
+// new network namespace: it loads etc/ there as crew-net does and lists
+// it, as the box's own nft and iptables-nft print it. It refuses to run anywhere that
 // already has tables, so it can never replace the box's own.
 func NftReference(ctx context.Context, sys Sys, uplink string) (ReferenceOutput, error) {
 	tables, err := sys.Run(ctx, nil, "nft", "list", "tables")
@@ -35,7 +35,7 @@ func NftReference(ctx context.Context, sys Sys, uplink string) (ReferenceOutput,
 	if _, err := sys.Run(ctx, []byte(script), "nft", "-f", "-"); err != nil {
 		return ReferenceOutput{}, err
 	}
-	if _, err := sys.Run(ctx, []byte(etc.ConnlimitRules), "iptables-nft-restore"); err != nil {
+	if err := loadMangle(ctx, sys); err != nil {
 		return ReferenceOutput{}, err
 	}
 	nft, err := sys.Run(ctx, nil, "nft", "-j", "list", "table", "inet", "crew")

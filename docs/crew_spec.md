@@ -1112,7 +1112,7 @@ Root actions go through **`crew-vmctl`**, a small Go binary:
 | `list` | none | `crew-vm-*` units |
 | `tap-add` / `tap-del` | `lease_index` | Creates or removes `crewt<n>` with its gateway address, owned by the VM's uid; `disable_ipv6=1`, `rp_filter=1` |
 | `pair-add` / `pair-del` | `lease_index` | Adds or removes `crewt<n> . <guest ip>` in `@vm_pairs` |
-| `nft-verify` | none | Compares the loaded `inet crew` table with the shipped ruleset's hash |
+| `nft-verify` | none | Compares the loaded `inet crew` table, and Crew's chains and jumps in the mangle table, with the shipped ruleset |
 | `reboot` | `boot_id`, `force` | Checks `boot_id` against `/proc/sys/kernel/random/boot_id`. Without `force`, refuses while any `crew-vm-*` unit is active. Then runs `systemd-run --on-active=5 systemctl reboot` |
 | `cleanup` | `vm_id` | Removes the jail directory, the unit and the tap, idempotently |
 
@@ -2112,7 +2112,11 @@ table inet crew {
 - **The connection cap** of 2048 tracked connections per VM applies to
   traffic both to the host VM and through it. With
   `nf_conntrack_max=262144`, one VM can't exhaust the table for the
-  others.
+  others. On Flatcar it's `xt_connlimit` in iptables-nft's mangle table,
+  which Crew shares (Tailscale keeps connmarks there): Crew owns its
+  `CREW-*` chains and the first rules of mangle's `INPUT` and `FORWARD`,
+  and `nft-verify` checks those and nothing else in that table
+  (`docs/architecture.md`).
 - **IPv6 from VMs** is dropped at prerouting, which covers Router
   Advertisements and Neighbour Discovery too. Taps have `disable_ipv6=1`
   and the host has `accept_ra=0`.
