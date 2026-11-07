@@ -50,7 +50,8 @@ defmodule CrewAgent.Application do
         if(config.driver == "firecracker", do: CrewAgent.Driver.Firecracker.Monitor),
         CrewAgent.VMs,
         CrewAgent.Ops,
-        if(config.cache_mgmt_url, do: CrewAgent.Cache.Stats),
+        # A Mac's cache is its cache VM's, without CREW_CACHE_MGMT_URL.
+        if(CrewAgent.Cache.present?(config), do: CrewAgent.Cache.Stats),
         # crew-vzd onto the release an update installed, once idle (§20.2).
         if(config.driver == "vz", do: CrewAgent.Driver.VZ.Upgrade),
         # Adoption, then cleanups left pending or never recorded (§10.7).
