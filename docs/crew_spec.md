@@ -2603,8 +2603,18 @@ The sidebar has:
     "require approval for all outside collaborators" (§19.5).
 
 **Boxes (`/boxes`)** (copy Foreman's box pages)
-- **The list:** a half-hour CPU and memory trend, allocated vs allocatable,
-  VM counts, agent version, driver, arch, and badges.
+- **The list,** over 30 minutes, 1 hour, 6 hours or 24 hours (in the
+  URL), live:
+  - **the fleet:** boxes online, the cores and memory the online boxes
+    offer job VMs, and VMs by state; then vCPUs and memory provisioned
+    against what's allocatable, each as a meter and a chart stacked by
+    box (from the VMs' rows, so a revoked box's past stays);
+  - **a callout** naming each box that can't take jobs for a problem
+    (offline, not reported, firewall not verified, needs approval,
+    quarantined) and why;
+  - **a card per box:** CPU and memory trends, allocated vs allocatable,
+    VMs by state and size, agent version, driver, arch, badges (an
+    unverified firewall among them), and what keeps jobs off it.
 - **A box page:**
   - **Charts,** 15 minutes to 7 days (Foreman's ranges): CPU and memory as
     the box total with each VM's share stacked beneath, then disk, load

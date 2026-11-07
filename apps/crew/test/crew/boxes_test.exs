@@ -217,4 +217,61 @@ defmodule Crew.BoxesTest do
     assert_received %Phoenix.Socket.Broadcast{event: "disconnect"}
     assert Enum.any?(Crew.Audit.recent(), &(&1.action == "box.revoke"))
   end
+
+  describe "issues/3" do
+    @now ~U[2026-11-06 12:00:00.000000Z]
+
+    test "a healthy online box has none" do
+      assert Boxes.issues(box_fixture(), true, @now) == []
+    end
+
+    test "what keeps a box from taking jobs comes first, the rest after" do
+      box =
+        box_fixture(
+          firewall_ok: false,
+          needs_approval: true,
+          draining: true,
+          quarantined_until: DateTime.add(@now, 600)
+        )
+        |> Ecto.Changeset.change(reboot_required: true, sleep_disabled: false)
+        |> Repo.update!()
+
+      assert Boxes.issues(box, false, @now) ==
+               [
+                 :offline,
+                 :firewall,
+                 :needs_approval,
+                 :quarantined,
+                 :draining,
+                 :sleep_on,
+                 :reboot_required
+               ]
+    end
+
+    test "a quarantine that's over isn't one" do
+      box = box_fixture(quarantined_until: DateTime.add(@now, -1))
+      assert Boxes.issues(box, true, @now) == []
+    end
+
+    test "a box whose agent hasn't reported yet says so, not that its firewall is off" do
+      box = box_fixture(firewall_ok: false, pinned_capabilities: nil)
+      assert Boxes.issues(box, true, @now) == [:not_reported]
+    end
+
+    test "blocking?/1 is whether placement skips the box for it (§8.3)" do
+      assert Enum.filter(
+               [
+                 :offline,
+                 :not_reported,
+                 :firewall,
+                 :needs_approval,
+                 :quarantined,
+                 :draining,
+                 :sleep_on,
+                 :reboot_required
+               ],
+               &Boxes.blocking?/1
+             ) == [:offline, :not_reported, :firewall, :needs_approval, :quarantined, :draining]
+    end
+  end
 end

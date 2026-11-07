@@ -49,8 +49,8 @@ defmodule CrewWeb.BoxCard do
 
   def box_card(assigns) do
     ~H"""
-    <div class="flex items-start justify-between gap-2">
-      <span class="truncate font-medium text-ink">{@card.box.name}</span>
+    <div class="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+      <span class="min-w-0 truncate font-medium text-ink">{@card.box.name}</span>
       <.box_status box={@card.box} online={@card.online} />
     </div>
     <div class="mt-3 grid grid-cols-2 gap-3">

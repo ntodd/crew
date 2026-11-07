@@ -319,6 +319,18 @@ defmodule CrewWeb.BoxLive.Show do
       </.header>
 
       <.callout
+        :if={@online and @box.pinned_capabilities != nil and not @box.firewall_ok}
+        id="firewall-unverified"
+        kind="danger"
+        icon="hero-shield-exclamation-mini"
+      >
+        <p class="font-medium">
+          The agent hasn't verified the VM firewall, so Crew places no jobs on this box.
+        </p>
+        <p class="mt-0.5">{firewall_hint(@box)}</p>
+      </.callout>
+
+      <.callout
         :if={@box.needs_approval}
         id="needs-approval"
         kind="warning"
