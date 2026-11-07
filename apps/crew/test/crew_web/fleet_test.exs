@@ -125,6 +125,16 @@ defmodule CrewWeb.FleetTest do
     assert cards["bravo"] == "series-1"
   end
 
+  test "when a box comes online, a refresh gives it its band at once" do
+    late = box_fixture(name: "delta")
+    fleet = Fleet.load("30m", @now)
+    refute Enum.any?(fleet.provisioned.vcpus, &(&1.label == "delta"))
+
+    online(late)
+    fleet = Fleet.refresh(fleet)
+    assert Enum.any?(fleet.provisioned.vcpus, &(&1.label == "delta"))
+  end
+
   test "a revoked box's VMs stay in the charts' history" do
     old = box_fixture(name: "zulu", revoked_at: DateTime.utc_now())
 

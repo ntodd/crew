@@ -32,25 +32,27 @@ defmodule CrewWeb.Fleet do
 
     %{range: range, since: since, until: now, step: step}
     |> Map.put(:sizes, Map.new(Sizes.list(), &{&1.id, &1.name}))
-    |> refresh()
+    |> read(Boxes.list(), MapSet.new(Agents.online_ids()))
     |> charts()
   end
 
   @doc """
   Re-reads the boxes and their VMs, keeping the charts; or, when a box
-  came or went, everything, so the cards' colours and the bands' match.
+  came, went, joined or left, everything: the charts have a band per
+  online box, and the cards' colours and the bands' must match.
   """
   def refresh(fleet) do
     boxes = Boxes.list()
+    online = MapSet.new(Agents.online_ids())
+    before = MapSet.new(fleet.boxes, &{&1.box.id, &1.online})
+    now = MapSet.new(boxes, &{&1.id, MapSet.member?(online, &1.id)})
 
-    if Map.has_key?(fleet, :boxes) and
-         MapSet.new(boxes, & &1.id) != MapSet.new(fleet.boxes, & &1.box.id),
-       do: load(fleet.range, fleet.until),
-       else: read(fleet, boxes)
+    if before == now,
+      do: read(fleet, boxes, online),
+      else: load(fleet.range, fleet.until)
   end
 
-  defp read(fleet, boxes) do
-    online = MapSet.new(Agents.online_ids())
+  defp read(fleet, boxes, online) do
     vms = Enum.group_by(VMs.list_live(), & &1.box_id)
     colors = colors(boxes)
 
