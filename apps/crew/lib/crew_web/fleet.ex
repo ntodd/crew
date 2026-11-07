@@ -153,6 +153,7 @@ defmodule CrewWeb.Fleet do
       online: Enum.count(entries, & &1.online),
       draining: Enum.count(entries, &(:draining in &1.issues and not attention?(&1))),
       cores: caps.("vcpus"),
+      cores_by_arch: cores_by_arch(capacity),
       memory_mib: caps.("memory_mib"),
       allocatable_vcpus: Enum.sum_by(capacity, &((&1.capacity && &1.capacity.vcpus) || 0)),
       allocatable_memory_mib:
@@ -161,6 +162,17 @@ defmodule CrewWeb.Fleet do
       provisioned_memory_mib: held.memory_mib,
       vms: vms |> Map.values() |> List.flatten() |> vm_states()
     }
+  end
+
+  # The cores job VMs of each arch can have, most first.
+  defp cores_by_arch(entries) do
+    entries
+    |> Enum.group_by(
+      &(&1.box.guest_arch || &1.box.pinned_capabilities["guest_arch"] || "unknown"),
+      &(&1.box.pinned_capabilities["vcpus"] || 0)
+    )
+    |> Enum.map(fn {arch, cores} -> {arch, Enum.sum(cores)} end)
+    |> Enum.sort_by(fn {arch, n} -> {-n, arch} end)
   end
 
   # VMs by where they are in their life (§8.6): booting, idle (waiting

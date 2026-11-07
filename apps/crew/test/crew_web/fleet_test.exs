@@ -42,6 +42,13 @@ defmodule CrewWeb.FleetTest do
     assert t.vms == %{total: 4, busy: 2, idle: 1, booting: 1, ending: 0}
   end
 
+  test "cores by guest arch, most first, online boxes only" do
+    online(box_fixture(name: "delta", capabilities: capabilities(vcpus: 12, guest_arch: "x64")))
+    box_fixture(name: "echo", capabilities: capabilities(vcpus: 64, guest_arch: "x64"))
+
+    assert Fleet.load("30m", @now).totals.cores_by_arch == [{"arm64", 28}, {"x64", 12}]
+  end
+
   test "each box has its colour, state, VMs and what they hold", %{a: a, gone: gone} do
     fleet = Fleet.load("30m", @now)
     [alpha, bravo, charlie] = fleet.boxes

@@ -179,6 +179,11 @@ defmodule CrewWeb.BoxLive.Index do
       </.stat>
       <.stat id="fleet-cores" label="Cores">
         {@totals.cores}
+        <:detail :if={@totals.cores_by_arch != []}>
+          <span :for={{arch, n} <- @totals.cores_by_arch} id={"fleet-cores-#{arch}"}>
+            <span class="font-medium tabular-nums text-ink">{n}</span> {arch}
+          </span>
+        </:detail>
         <:note>For job VMs, on the online boxes</:note>
       </.stat>
       <.stat id="fleet-memory" label="Memory">
@@ -196,6 +201,7 @@ defmodule CrewWeb.BoxLive.Index do
   attr :id, :string, required: true
   attr :label, :string, required: true
   slot :inner_block, required: true
+  slot :detail, doc: "a breakdown of the value, under it"
   slot :note
 
   defp stat(assigns) do
@@ -204,6 +210,9 @@ defmodule CrewWeb.BoxLive.Index do
       <p class="text-xs font-medium text-ink-2">{@label}</p>
       <p class="mt-1.5 text-2xl font-semibold leading-none tabular-nums text-ink">
         {render_slot(@inner_block)}
+      </p>
+      <p :if={@detail != []} class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-2">
+        {render_slot(@detail)}
       </p>
       <p :if={@note != []} class="mt-2 text-xs text-ink-3">{render_slot(@note)}</p>
     </div>

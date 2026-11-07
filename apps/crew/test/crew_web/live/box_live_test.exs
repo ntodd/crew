@@ -35,6 +35,7 @@ defmodule CrewWeb.BoxLiveTest do
 
       assert has_element?(view, "#fleet-boxes", "2 of 2")
       assert has_element?(view, "#fleet-cores", "28")
+      assert has_element?(view, "#fleet-cores-arm64", "28 arm64")
       assert has_element?(view, "#fleet-memory", "140 GiB")
       assert has_element?(view, "#fleet-vms", "2")
       assert has_element?(view, "#fleet-vms", "1 running a job")
