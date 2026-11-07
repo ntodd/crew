@@ -33,6 +33,9 @@ defmodule CrewWeb.Charts do
   attr :ref, :map, default: nil, doc: "a reference line, %{value, label}"
   attr :legend, :list, default: [], doc: "extra legend rows, %{label, color, value}"
   attr :empty, :string, default: "No samples in this range yet."
+  attr :class, :any, default: nil
+  attr :plot_class, :any, default: "h-44", doc: "the plot's height"
+  slot :summary, doc: "under the headline, over the legend: a meter, say"
 
   def timeseries(assigns) do
     dom = %{since: assigns.since, until: assigns.until, ymax: assigns.ymax, gap: assigns.gap}
@@ -46,7 +49,7 @@ defmodule CrewWeb.Charts do
       |> assign(:payload, payload(assigns.series, assigns.format))
 
     ~H"""
-    <figure id={@id} class="chart rounded-xl border border-line bg-raised shadow-xs">
+    <figure id={@id} class={["chart rounded-xl border border-line bg-raised shadow-xs", @class]}>
       <figcaption class="flex items-start justify-between gap-4 px-5 pt-4">
         <div class="min-w-0">
           <h3 class="text-sm font-semibold text-ink">{@title}</h3>
@@ -56,6 +59,8 @@ defmodule CrewWeb.Charts do
           {@value}
         </p>
       </figcaption>
+
+      <div :if={@summary != []} class="mt-3 px-5">{render_slot(@summary)}</div>
 
       <ul
         :if={length(@series) + length(@legend) > 1}
@@ -74,7 +79,7 @@ defmodule CrewWeb.Charts do
 
       <div
         id={"#{@id}-plot"}
-        class="chart-plot relative mx-5 mt-7 h-44"
+        class={["chart-plot relative mx-5 mt-7", @plot_class]}
         phx-hook=".Chart"
         data-chart={@payload}
         data-since={@since}
@@ -285,15 +290,31 @@ defmodule CrewWeb.Charts do
         span > 86400 ? {weekday: "short", hour: "numeric", minute: "2-digit"}
                      : {hour: "numeric", minute: "2-digit"}).format(new Date(at * 1000))
 
+      // On a narrow chart, only every k-th label shows, the smallest k
+      // that keeps them apart; a resize thins them again.
       export default {
-        mounted() { this.place() },
+        mounted() {
+          this.place()
+          this.resize = new ResizeObserver(() => this.thin())
+          this.resize.observe(this.el)
+        },
         updated() { this.place() },
+        destroyed() { this.resize?.disconnect() },
         place() {
           const span = Number(this.el.dataset.span)
           for (const tick of this.el.querySelectorAll("[data-tick]")) {
             tick.textContent = time(Number(tick.dataset.tick), span)
             tick.style.left = tick.dataset.left + "%"
           }
+          this.thin()
+        },
+        thin() {
+          const ticks = [...this.el.querySelectorAll("[data-tick]")]
+          const boxes = ticks.map(t => t.getBoundingClientRect())
+          const apart = k => boxes.every((b, i) => i < k || i % k || b.left - boxes[i - k].right >= 8)
+          let k = 1
+          while (k < ticks.length && !apart(k)) k++
+          ticks.forEach((t, i) => (t.style.visibility = i % k ? "hidden" : ""))
         }
       }
     </script>

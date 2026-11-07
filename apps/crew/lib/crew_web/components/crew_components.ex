@@ -6,8 +6,9 @@ defmodule CrewWeb.CrewComponents do
   import CrewWeb.CoreComponents
 
   @doc """
-  A box's status (§17.3): online, draining, quarantined, needs approval,
-  revoked or offline, as a badge with text.
+  A box's status (§17.3): online, an unverified firewall, needs
+  approval, draining, quarantined, reboot needed, revoked or offline, as
+  badges with text.
   """
   attr :box, :map, required: true
   attr :online, :boolean, required: true
@@ -29,6 +30,9 @@ defmodule CrewWeb.CrewComponents do
 
     [
       if(online, do: {"emerald", "Online"}, else: {"zinc", "Offline"}),
+      # Placement skips it (§8.3): online alone would read as healthy.
+      (online and box.pinned_capabilities != nil and not box.firewall_ok) &&
+        {"rose", "Firewall unverified"},
       box.needs_approval && {"amber", "Needs approval"},
       box.draining && {"sky", "Draining"},
       box.quarantined_until && DateTime.compare(box.quarantined_until, now) == :gt &&
@@ -37,6 +41,46 @@ defmodule CrewWeb.CrewComponents do
     ]
     |> Enum.filter(& &1)
   end
+
+  @doc """
+  An issue from `Crew.Boxes.issues/3` in words: `{title, what it means}`.
+  """
+  def box_issue(:offline, _box),
+    do: {"Offline", "The agent isn't connected, so no jobs go here."}
+
+  def box_issue(:not_reported, _box),
+    do: {"Not reported yet", "The agent hasn't sent its capabilities, so no jobs go here."}
+
+  def box_issue(:firewall, box),
+    do:
+      {"Firewall not verified",
+       "Crew places no jobs here until the agent verifies the VM firewall. " <>
+         firewall_hint(box)}
+
+  def box_issue(:needs_approval, _box),
+    do: {"Needs approval", "Its capabilities changed: no jobs until an admin accepts them."}
+
+  def box_issue(:quarantined, box),
+    do:
+      {"Quarantined",
+       "Its VMs kept failing: no jobs until #{Calendar.strftime(box.quarantined_until, "%H:%M")} UTC, or an admin clears it."}
+
+  def box_issue(:draining, box),
+    do: {"Draining", box.drain_reason || "It takes no new VMs, and its idle ones are stopped."}
+
+  def box_issue(:sleep_on, _box), do: {"Sleep is on", "Jobs pause when the Mac sleeps."}
+
+  def box_issue(:reboot_required, _box),
+    do: {"Reboot needed", "Updates are applied and wait for a reboot."}
+
+  @doc "What the agent's firewall check is, so a reader knows where to look."
+  def firewall_hint(%{driver: "firecracker"}),
+    do: "It checks with crew-vmctl nft-verify: see the agent's log on the box."
+
+  def firewall_hint(%{driver: "vz"}),
+    do: "On a Mac that's crew-vzd answering and the cache VM being ready: see the agent's log."
+
+  def firewall_hint(_box), do: "See the agent's log on the box."
 
   @doc """
   A small line chart of a series against its ceiling (a VM's CPU or

@@ -17,6 +17,91 @@ defmodule CrewWeb.BoxLiveTest do
     assert has_element?(view, "#box-#{box.id}", "arm64")
   end
 
+  describe "the list's fleet overview" do
+    defp online(box), do: {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+
+    setup do
+      a = box_fixture(name: "alpha")
+      b = box_fixture(name: "bravo", capabilities: capabilities(vcpus: 10, memory_mib: 32_768))
+      online(a)
+      online(b)
+      vm_fixture(a, requested_at: DateTime.add(DateTime.utc_now(), -120))
+      vm_fixture(b, vcpus: 2, memory_mib: 4000, state: "starting")
+      %{a: a, b: b}
+    end
+
+    test "totals what the boxes offer and what's provisioned of it", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes")
+
+      assert has_element?(view, "#fleet-boxes", "2 of 2")
+      assert has_element?(view, "#fleet-cores", "28")
+      assert has_element?(view, "#fleet-memory", "140 GiB")
+      assert has_element?(view, "#fleet-vms", "2")
+      assert has_element?(view, "#fleet-vms", "1 running a job")
+      assert has_element?(view, "#provisioned-vcpus", "6 / 39")
+      assert has_element?(view, "#provisioned-memory", "12.2 / 129 GiB")
+      assert has_element?(view, "#provisioned-vcpus-plot")
+    end
+
+    test "each box shows its usage, and what its VMs hold of what it offers", %{conn: conn, a: a} do
+      box_metric_fixture(a, System.os_time(:second) - 5, cpu_pct: 37.0, mem_used_mib: 20_480)
+      {:ok, view, _} = live(conn, ~p"/boxes")
+
+      assert has_element?(view, "#box-#{a.id}-cpu", "37%")
+      assert has_element?(view, "#box-#{a.id}-memory", "20.0 of 128 GiB")
+      assert has_element?(view, "#box-#{a.id}-vcpus", "4 / 25")
+      assert has_element?(view, "#box-#{a.id}-mem-provisioned", "8.1 / 101 GiB")
+      assert has_element?(view, "#box-#{a.id}-vms", "1 running a job")
+      assert has_element?(view, "#box-#{a.id}-vms", "1 × m")
+    end
+
+    test "provisioning updates live as VMs come and go", %{conn: conn, a: a} do
+      {:ok, view, _} = live(conn, ~p"/boxes")
+      assert has_element?(view, "#box-#{a.id}-vcpus", "4 / 25")
+
+      vm = vm_fixture(a, vcpus: 8, memory_mib: 16_384, state: "requested")
+      Phoenix.PubSub.broadcast(Crew.PubSub, "vms", {:vm_changed, vm.id})
+
+      assert has_element?(view, "#box-#{a.id}-vcpus", "12 / 25")
+      assert has_element?(view, "#provisioned-vcpus", "14 / 39")
+    end
+
+    test "the range is in the URL", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes")
+      assert has_element?(view, ~s(#range-30m[aria-current="true"]))
+
+      view |> element("#range-24h") |> render_click()
+      assert_patch(view, ~p"/boxes?range=24h")
+      assert has_element?(view, ~s(#range-24h[aria-current="true"]))
+    end
+
+    test "a box that can't take jobs says why, on its card and at the top", %{conn: conn} do
+      bad = box_fixture(name: "truenas", firewall_ok: false)
+      online(bad)
+      {:ok, view, _} = live(conn, ~p"/boxes")
+
+      assert has_element?(view, "#box-#{bad.id}", "Firewall unverified")
+      assert has_element?(view, "#box-#{bad.id}-issues", "Firewall not verified")
+      assert has_element?(view, "#boxes-attention", "1 box can't take jobs")
+      assert has_element?(view, "#boxes-attention a[href='/boxes/#{bad.id}']", "truenas")
+    end
+
+    test "with every box healthy there's no alert", %{conn: conn, a: a} do
+      {:ok, view, _} = live(conn, ~p"/boxes")
+      refute has_element?(view, "#boxes-attention")
+      refute has_element?(view, "#box-#{a.id}-issues")
+    end
+  end
+
+  test "the box page warns when the firewall isn't verified", %{conn: conn} do
+    box = box_fixture(name: "truenas", firewall_ok: false)
+    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+
+    assert has_element?(view, "#firewall-unverified", "Crew places no jobs on this box")
+    assert has_element?(view, "#box-status", "Firewall unverified")
+  end
+
   test "an empty fleet says how to start", %{conn: conn} do
     {:ok, view, _} = live(conn, ~p"/boxes")
     assert has_element?(view, "#boxes-empty", "Add your first box")

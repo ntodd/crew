@@ -30,6 +30,35 @@ defmodule Crew.Boxes do
   def get(id), do: Repo.get(Box, id)
   def get_by_name(name), do: Repo.get_by(Box, name: name)
 
+  @blocking ~w(offline not_reported firewall needs_approval quarantined draining)a
+
+  @doc """
+  What's wrong with a box, or worth knowing, most serious first. The
+  first six keep placement off it (§8.3, `blocking?/1`): `:offline`,
+  `:not_reported` (no capabilities yet), `:firewall` (not verified),
+  `:needs_approval`, `:quarantined` and `:draining`. Then `:sleep_on`
+  (a Mac whose jobs pause when it sleeps) and `:reboot_required`.
+  """
+  def issues(box, online?, now \\ DateTime.utc_now()) do
+    reported? = box.pinned_capabilities != nil
+
+    [
+      not online? && :offline,
+      not reported? && :not_reported,
+      (reported? and not box.firewall_ok) && :firewall,
+      box.needs_approval && :needs_approval,
+      (box.quarantined_until != nil and DateTime.compare(box.quarantined_until, now) == :gt) &&
+        :quarantined,
+      box.draining && :draining,
+      box.sleep_disabled == false && :sleep_on,
+      box.reboot_required && :reboot_required
+    ]
+    |> Enum.filter(& &1)
+  end
+
+  @doc "Whether placement skips a box with this issue (§8.3)."
+  def blocking?(issue), do: issue in @blocking
+
   def subscribe, do: Phoenix.PubSub.subscribe(Crew.PubSub, "boxes")
   def subscribe(box_id), do: Phoenix.PubSub.subscribe(Crew.PubSub, "box:#{box_id}")
 

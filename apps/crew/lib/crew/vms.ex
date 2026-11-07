@@ -357,6 +357,70 @@ defmodule Crew.VMs do
   @doc "What a box's VMs hold of it: every VM that isn't destroyed counts (§8.6)."
   def allocation(box_id), do: box_id |> for_box() |> allocation_of()
 
+  @doc """
+  What each box's VMs held over `since..until` (Unix seconds), counted as
+  `allocation_of/1` counts it: `%{box_id => [{t, vcpus, memory_mib}]}`,
+  one point per `step`-second bucket starting at `t`, time-weighted over
+  it (so a short VM between two samples still shows), and a last one of
+  what's held at `until`. A VM holds its share from `requested_at` until
+  `destroyed_at`, whatever its state (§8.3). Boxes with no VM in the
+  range are left out.
+  """
+  def provisioned_series(since, until, step) do
+    spans =
+      for vm <- overlapping(since, until) do
+        {vm.box_id, DateTime.to_unix(vm.requested_at),
+         vm.destroyed_at && DateTime.to_unix(vm.destroyed_at), vm.vcpus,
+         vm.memory_mib + vm.vmm_overhead_mib}
+      end
+
+    spans
+    |> Enum.group_by(&elem(&1, 0))
+    |> Map.new(fn {box_id, spans} ->
+      buckets =
+        for from <- series_starts(since, until, step) do
+          to = min(from + step, until)
+
+          {vcpus, memory} =
+            Enum.reduce(spans, {0.0, 0.0}, fn {_, a, b, vcpus, memory}, {v, m} ->
+              share = max(0, min(b || to, to) - max(a, from)) / (to - from)
+              {v + vcpus * share, m + memory * share}
+            end)
+
+          {from, vcpus, memory}
+        end
+
+      held = Enum.filter(spans, fn {_, a, b, _, _} -> a <= until and (is_nil(b) or b > until) end)
+      now = {until, Enum.sum_by(held, &elem(&1, 3)), Enum.sum_by(held, &elem(&1, 4))}
+
+      {box_id, buckets ++ [now]}
+    end)
+  end
+
+  @doc "The times `provisioned_series/3` gives points at: each bucket's start, then `until`."
+  def series_ticks(since, until, step), do: series_starts(since, until, step) ++ [until]
+
+  defp series_starts(since, until, step), do: Enum.to_list(since..(until - 1)//step)
+
+  # The VMs alive at some point in the range: the live ones, and any
+  # requested in the day before it (the requested_at index) that weren't
+  # gone before it began. A VM requested over a day before the range and
+  # destroyed in it is missed; job VMs don't live that long.
+  defp overlapping(since, until) do
+    from_t = DateTime.from_unix!(since)
+    until_t = DateTime.from_unix!(until)
+
+    recent =
+      from v in VM,
+        where:
+          v.requested_at > ^DateTime.add(from_t, -86_400) and v.requested_at <= ^until_t and
+            (is_nil(v.destroyed_at) or v.destroyed_at > ^from_t)
+
+    live = from v in VM, where: v.state in @live and v.requested_at <= ^until_t
+
+    (Repo.all(recent) ++ Repo.all(live)) |> Enum.uniq_by(& &1.id)
+  end
+
   @doc "What these VMs (a box's, from `for_box/1`) hold of it."
   def allocation_of(vms) do
     %{

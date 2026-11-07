@@ -42,6 +42,30 @@ defmodule Crew.Metrics do
     Repo.all(from m in BoxMetric, where: m.box_id == ^box_id and m.t >= ^since, order_by: m.t)
   end
 
+  @doc """
+  A box's samples since `since`, averaged over `step`-second buckets,
+  oldest first: CPU, memory used (and the total), and load. A point's `t`
+  is its bucket's start, or `since` for the first.
+  """
+  def box_series(box_id, since, step) do
+    from(m in BoxMetric,
+      where: m.box_id == ^box_id and m.t >= ^since,
+      group_by: fragment("bucket"),
+      order_by: fragment("bucket"),
+      select: %{
+        t: fragment("? - (? % ?) AS bucket", m.t, m.t, ^step),
+        cpu_pct: type(avg(m.cpu_pct), :float),
+        mem_used_mib: type(avg(m.mem_used_mib), :float),
+        mem_total_mib: max(m.mem_total_mib),
+        load1: type(avg(m.load1), :float)
+      }
+    )
+    |> Repo.all()
+    |> Enum.map(fn p ->
+      %{p | t: max(p.t, since), mem_used_mib: round(p.mem_used_mib)}
+    end)
+  end
+
   @doc "Stores a `vm.metrics` sample for `vm` (its `t` is Unix milliseconds)."
   def record_vm(vm, m) do
     Repo.insert_all(VMMetric, [

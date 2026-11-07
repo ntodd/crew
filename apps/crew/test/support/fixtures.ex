@@ -163,6 +163,59 @@ defmodule Crew.Fixtures do
     box
   end
 
+  @doc """
+  A VM row on `box`, with no server behind it: what it holds of the box,
+  its state and its times. A busy size-m VM by default.
+  """
+  def vm_fixture(box, attrs \\ []) do
+    repo = Repo.one(Ecto.Query.first(Crew.Repos.Repo)) || repo_fixture()
+
+    Repo.insert!(
+      struct!(
+        %Crew.VMs.VM{
+          id: CrewProtocol.uuid7(),
+          box_id: box.id,
+          repo_id: repo.id,
+          size_id: Repo.get_by!(Crew.Sizes.Size, name: "m").id,
+          name: "vm-#{unique()}",
+          class_key: ["crew-m"],
+          class_hash: Crew.VMs.VM.class_hash(["crew-m"]),
+          vcpus: 4,
+          memory_mib: 8192,
+          disk_gib: 60,
+          vmm_overhead_mib: 128,
+          state: "busy",
+          deadline: DateTime.add(DateTime.utc_now(), 3600),
+          requested_at: DateTime.utc_now()
+        },
+        attrs
+      )
+    )
+  end
+
+  @doc "A `box.metrics` sample for `box` at `t` (Unix seconds)."
+  def box_metric_fixture(box, t, attrs \\ []) do
+    Repo.insert!(
+      struct!(
+        %Crew.Metrics.BoxMetric{
+          box_id: box.id,
+          t: t,
+          cpu_pct: 10.0,
+          mem_used_mib: 4096,
+          mem_total_mib: 131_072,
+          swap_used_mib: 0,
+          load1: 1.0,
+          disk_used_mib: 100_000,
+          disk_total_mib: 1_000_000,
+          vm_area_free_mib: 300_000,
+          cache_used_mib: 0,
+          vms_running: 0
+        },
+        attrs
+      )
+    )
+  end
+
   @doc "The private key `box_fixture/1` enrolled for the box, for signing its agent's connects."
   def private_key(box_id), do: :persistent_term.get({__MODULE__, :private_key, box_id})
 
