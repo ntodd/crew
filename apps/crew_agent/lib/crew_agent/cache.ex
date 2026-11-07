@@ -13,6 +13,11 @@ defmodule CrewAgent.Cache do
 
   @no_cache {:error, "no_cache", "this box has no registry cache configured"}
 
+  @doc "Whether this box has a cache: `CREW_CACHE_MGMT_URL`, or a cache VM on a Mac."
+  @spec present?(Config.t()) :: boolean()
+  def present?(%Config{cache_mgmt_url: url}) when is_binary(url) and url != "", do: true
+  def present?(%Config{} = config), do: CacheVM.configured?(config)
+
   @doc "The cache's root certificate, or `{:error, reason}` when there's no cache."
   def ca_pem(%Config{cache_mgmt_url: nil} = config) do
     if url = CacheVM.mgmt_url(config),

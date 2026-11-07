@@ -138,6 +138,18 @@ defmodule CrewAgent.CacheVMTest do
       assert {:ok, "PEM"} = Cache.ca_pem(config)
       assert_received {:mgmt, "GET", "/ca.pem", ["Bearer tok"]}
     end
+
+    # The agent reports the cache's stats and pushes it site4 only for a
+    # box that has one: a Mac's comes from its cache VM, not from
+    # CREW_CACHE_MGMT_URL.
+    test "a box with a cache VM has a cache", %{config: config} do
+      assert Cache.present?(config)
+      refute Cache.present?(cache(config, mac: nil))
+      assert Cache.present?(%{cache(config, mac: nil) | cache_mgmt_url: "http://10.1.2.3:9"})
+
+      refute Cache.present?(%Config{driver: "firecracker"})
+      assert Cache.present?(%Config{driver: "firecracker", cache_mgmt_url: "http://10.1.2.3:9"})
+    end
   end
 
   describe "its reboot state" do
