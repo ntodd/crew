@@ -56,7 +56,7 @@ defmodule CrewWeb.BoxLive.Index do
       <:breadcrumb>Boxes</:breadcrumb>
       <.header>
         Boxes
-        <:subtitle>The machines that run job VMs, and how much of them the VMs hold.</:subtitle>
+        <:subtitle>The machines that run job VMs.</:subtitle>
         <:actions>
           <span
             :if={@fleet.boxes != []}
