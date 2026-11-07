@@ -178,6 +178,9 @@ defmodule CrewGuest.FakeAPI do
     def init(api), do: api
 
     def call(conn, api) do
+      # Stamped before the body is read, so a slow upload doesn't make the
+      # request look like it started late.
+      at = System.monotonic_time(:millisecond)
       {:ok, raw, conn} = read_body(conn, length: 64_000_000)
 
       req = %{
@@ -188,7 +191,7 @@ defmodule CrewGuest.FakeAPI do
         raw: raw,
         bytes: byte_size(raw),
         json: decode(raw),
-        at: System.monotonic_time(:millisecond)
+        at: at
       }
 
       reply(conn, api, GenServer.call(api, {:request, req, self()}))
