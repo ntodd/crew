@@ -36,23 +36,33 @@ defmodule CrewWeb.Fleet do
     |> charts()
   end
 
-  @doc "Re-reads the boxes and their VMs, keeping the charts."
+  @doc """
+  Re-reads the boxes and their VMs, keeping the charts; or, when a box
+  came or went, everything, so the cards' colours and the bands' match.
+  """
   def refresh(fleet) do
     boxes = Boxes.list()
+
+    if Map.has_key?(fleet, :boxes) and
+         MapSet.new(boxes, & &1.id) != MapSet.new(fleet.boxes, & &1.box.id),
+       do: load(fleet.range, fleet.until),
+       else: read(fleet, boxes)
+  end
+
+  defp read(fleet, boxes) do
     online = MapSet.new(Agents.online_ids())
     vms = Enum.group_by(VMs.list_live(), & &1.box_id)
+    colors = colors(boxes)
 
     entries =
-      boxes
-      |> Enum.with_index()
-      |> Enum.map(fn {box, i} ->
+      Enum.map(boxes, fn box ->
         box_vms = Map.get(vms, box.id, [])
         online? = MapSet.member?(online, box.id)
 
         %{
           box: box,
           online: online?,
-          color: color(i),
+          color: colors[box.id],
           issues: Boxes.issues(box, online?),
           latest: fresh(Metrics.latest_box(box.id), fleet.until),
           series: get_in(fleet, [:boxes_series, box.id]) || [],
@@ -76,8 +86,19 @@ defmodule CrewWeb.Fleet do
 
     held = VMs.provisioned_series(fleet.since, fleet.until, fleet.step)
 
-    # Every online box gets a band, and any box that held VMs in the range.
-    shown = Enum.filter(fleet.boxes, &(&1.online or Map.has_key?(held, &1.box.id)))
+    # Every online box gets a band, and any box that held VMs in the
+    # range, revoked ones too: revoking a box doesn't rewrite the past.
+    current = MapSet.new(fleet.boxes, & &1.box.id)
+
+    revoked =
+      for id <- Map.keys(held), not MapSet.member?(current, id), box = Boxes.get(id) do
+        %{box: box, color: Charts.other_color()}
+      end
+
+    shown =
+      Enum.filter(fleet.boxes, &(&1.online or Map.has_key?(held, &1.box.id))) ++
+        Enum.sort_by(revoked, & &1.box.name)
+
     zeros = Enum.map(VMs.series_ticks(fleet.since, fleet.until, fleet.step), &{&1, 0, 0})
 
     stack = fn pick ->
@@ -106,6 +127,17 @@ defmodule CrewWeb.Fleet do
   defp fresh(%{t: t} = sample, now) when t >= now - 60, do: sample
   defp fresh(_sample, _now), do: nil
 
+  # A box's colour follows it, not its rank: boxes take colours in the
+  # order they were added, so a new box takes the next one whatever its
+  # name. Past eight, they share "other".
+  defp colors(boxes) do
+    boxes
+    |> Enum.sort_by(& &1.id)
+    |> Enum.sort_by(& &1.inserted_at, DateTime)
+    |> Enum.with_index()
+    |> Map.new(fn {box, i} -> {box.id, color(i)} end)
+  end
+
   defp color(i) when i < 8, do: Charts.series_color(i)
   defp color(_), do: Charts.other_color()
 
@@ -117,6 +149,7 @@ defmodule CrewWeb.Fleet do
     %{
       boxes: length(entries),
       online: Enum.count(entries, & &1.online),
+      draining: Enum.count(entries, &(:draining in &1.issues and not attention?(&1))),
       cores: caps.("vcpus"),
       memory_mib: caps.("memory_mib"),
       allocatable_vcpus: Enum.sum_by(capacity, &((&1.capacity && &1.capacity.vcpus) || 0)),

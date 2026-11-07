@@ -91,6 +91,15 @@ defmodule CrewWeb.BoxLiveTest do
       refute has_element?(view, "#boxes-attention")
       refute has_element?(view, "#box-#{a.id}-issues")
     end
+
+    test "a drained box isn't an alert, but isn't taking jobs either", %{conn: conn, a: a} do
+      a |> Ecto.Changeset.change(draining: true) |> Crew.Repo.update!()
+      {:ok, view, _} = live(conn, ~p"/boxes")
+
+      refute has_element?(view, "#boxes-attention")
+      assert has_element?(view, "#fleet-boxes", "1 draining")
+      refute has_element?(view, "#fleet-boxes", "All taking jobs")
+    end
   end
 
   test "the box page warns when the firewall isn't verified", %{conn: conn} do
@@ -100,6 +109,24 @@ defmodule CrewWeb.BoxLiveTest do
 
     assert has_element?(view, "#firewall-unverified", "Crew places no jobs on this box")
     assert has_element?(view, "#box-status", "Firewall unverified")
+  end
+
+  test "a box that's enrolled but hasn't joined yet shows, live", %{conn: conn} do
+    {:ok, view, _} = live(conn, ~p"/boxes")
+    assert has_element?(view, "#boxes-empty")
+
+    {:ok, token} =
+      Boxes.create_join_token(Crew.Scope.for_user(user_fixture(role: "admin")), %{
+        "box_name" => "fresh",
+        "box_type" => "mac-vz"
+      })
+
+    {public, _} = CrewProtocol.Auth.generate_keypair()
+    {:ok, box} = Boxes.enroll(token, %{"public_key" => Base.encode64(public)})
+
+    assert has_element?(view, "#box-#{box.id}", "fresh")
+    assert has_element?(view, "#box-#{box.id}", "No capacity until the agent reports")
+    assert has_element?(view, "#boxes-attention", "fresh")
   end
 
   test "an empty fleet says how to start", %{conn: conn} do

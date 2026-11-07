@@ -166,7 +166,11 @@ defmodule CrewWeb.BoxLive.Index do
             <.icon name="hero-exclamation-triangle-micro" class="size-3.5" />
             {@attention} can't take jobs
           </span>
-          <span :if={@attention == 0} class="inline-flex items-center gap-1 text-success">
+          <span :if={@attention == 0 and @totals.draining > 0}>{@totals.draining} draining</span>
+          <span
+            :if={@attention == 0 and @totals.draining == 0}
+            class="inline-flex items-center gap-1 text-success"
+          >
             <.icon name="hero-check-circle-micro" class="size-3.5" /> All taking jobs
           </span>
         </:note>

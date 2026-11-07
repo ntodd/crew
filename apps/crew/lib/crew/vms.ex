@@ -402,23 +402,19 @@ defmodule Crew.VMs do
 
   defp series_starts(since, until, step), do: Enum.to_list(since..(until - 1)//step)
 
-  # The VMs alive at some point in the range: the live ones, and any
-  # requested in the day before it (the requested_at index) that weren't
-  # gone before it began. A VM requested over a day before the range and
-  # destroyed in it is missed; job VMs don't live that long.
+  # The VMs that held something at some point in the range: requested
+  # by its end, and not destroyed before its start. Two reads, each on an
+  # index: the ones still held, and the ones destroyed since the start.
   defp overlapping(since, until) do
     from_t = DateTime.from_unix!(since)
     until_t = DateTime.from_unix!(until)
+    requested = from v in VM, where: v.requested_at <= ^until_t
 
-    recent =
-      from v in VM,
-        where:
-          v.requested_at > ^DateTime.add(from_t, -86_400) and v.requested_at <= ^until_t and
-            (is_nil(v.destroyed_at) or v.destroyed_at > ^from_t)
-
-    live = from v in VM, where: v.state in @live and v.requested_at <= ^until_t
-
-    (Repo.all(recent) ++ Repo.all(live)) |> Enum.uniq_by(& &1.id)
+    # Held first, then gone: a VM destroyed between the reads is in both,
+    # and its destroyed row wins. (The other order could miss it.)
+    held = Repo.all(where(requested, [v], is_nil(v.destroyed_at)))
+    gone = Repo.all(where(requested, [v], v.destroyed_at > ^from_t))
+    Enum.uniq_by(gone ++ held, & &1.id)
   end
 
   @doc "What these VMs (a box's, from `for_box/1`) hold of it."

@@ -70,6 +70,24 @@ defmodule Crew.VMsReadsTest do
              ]
     end
 
+    test "a VM from long before the range that's destroyed in it still counts" do
+      box = box_fixture()
+      since = 1_800_000_000
+
+      vm!(box,
+        requested_at: at(since - 3 * 86_400),
+        destroyed_at: at(since + 30),
+        state: "destroyed"
+      )
+
+      assert VMs.provisioned_series(since, since + 60, 20)[box.id] == [
+               {since, 4.0, 8320.0},
+               {since + 20, 2.0, 4160.0},
+               {since + 40, 0.0, 0.0},
+               {since + 60, 0, 0}
+             ]
+    end
+
     test "a step cut short by the range's end is weighted over what's left of it" do
       box = box_fixture()
       since = 1_800_000_000

@@ -99,6 +99,51 @@ defmodule CrewWeb.FleetTest do
     refute Enum.any?(fleet.attention, &(&1.box.id == a.id))
   end
 
+  test "a box keeps its colour when a box is added, whatever its name" do
+    online(box_fixture(name: "aardvark"))
+    colors = Map.new(Fleet.load("30m", @now).boxes, &{&1.box.name, &1.color})
+
+    assert colors == %{
+             "aardvark" => "series-4",
+             "alpha" => "series-1",
+             "bravo" => "series-2",
+             "charlie" => "series-3"
+           }
+  end
+
+  test "when a box goes, a refresh redraws the charts so colours still match", %{a: a} do
+    fleet = Fleet.load("30m", @now)
+    a |> Ecto.Changeset.change(revoked_at: DateTime.utc_now()) |> Repo.update!()
+
+    fleet = Fleet.refresh(fleet)
+    cards = Map.new(fleet.boxes, &{&1.box.name, &1.color})
+
+    for band <- fleet.provisioned.vcpus, Map.has_key?(cards, band.label) do
+      assert band.color == cards[band.label]
+    end
+
+    assert cards["bravo"] == "series-1"
+  end
+
+  test "a revoked box's VMs stay in the charts' history" do
+    old = box_fixture(name: "zulu", revoked_at: DateTime.utc_now())
+
+    vm_fixture(old,
+      vcpus: 8,
+      requested_at: at(@now - 600),
+      destroyed_at: at(@now - 300),
+      state: "destroyed"
+    )
+
+    fleet = Fleet.load("30m", @now)
+    refute Enum.any?(fleet.boxes, &(&1.box.id == old.id))
+
+    assert %{label: "zulu", color: "series-other", points: points} =
+             List.last(fleet.provisioned.vcpus)
+
+    assert Enum.any?(points, fn {_, lo, hi} -> hi - lo == 8 end)
+  end
+
   test "ranges: a known one sets the window and step, anything else is half an hour" do
     assert %{range: "24h", since: since, step: 360} = Fleet.load("24h", @now)
     assert since == @now - 86_400
