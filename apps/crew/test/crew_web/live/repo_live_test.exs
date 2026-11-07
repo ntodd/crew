@@ -11,6 +11,113 @@ defmodule CrewWeb.RepoLiveTest do
     assert has_element?(view, "#repo-#{repo.id}", repo.full_name)
   end
 
+  defp shown(view) do
+    view
+    |> render()
+    |> LazyHTML.from_document()
+    |> LazyHTML.query("#repos-panel li[id^=repo-]")
+    |> LazyHTML.attribute("id")
+  end
+
+  defp ids(repos), do: Enum.map(repos, &"repo-#{&1.id}")
+
+  describe "filtering the list" do
+    setup do
+      %{
+        site: repo_fixture(name: "Site", private: false),
+        legacy: repo_fixture(name: "legacy-app", enabled: false),
+        urgent: repo_fixture(name: "urgent", priority: 5),
+        slow: repo_fixture(name: "slow", priority: -1)
+      }
+    end
+
+    test "the search matches part of the name, in any case, and lives in the URL", %{
+      conn: conn,
+      repo: repo,
+      legacy: legacy
+    } do
+      {:ok, view, _} = live(conn, ~p"/repos?q=APP")
+      assert shown(view) == ids([repo, legacy])
+      assert has_element?(view, "#repo-search[value=APP]")
+
+      view |> form("#repo-filters", %{"q" => " site "}) |> render_change()
+      assert_patch(view, ~p"/repos?q=site")
+      assert has_element?(view, "#repos-panel li", "acme/Site")
+      assert length(shown(view)) == 1
+    end
+
+    test "the state, visibility and priority toggles", %{conn: conn} = ctx do
+      {:ok, view, _} = live(conn, ~p"/repos?state=disabled")
+      assert shown(view) == ids([ctx.legacy])
+
+      {:ok, view, _} = live(conn, ~p"/repos?state=enabled")
+      refute "repo-#{ctx.legacy.id}" in shown(view)
+
+      {:ok, view, _} = live(conn, ~p"/repos?visibility=public")
+      assert shown(view) == ids([ctx.site])
+
+      {:ok, view, _} = live(conn, ~p"/repos?visibility=private")
+      refute "repo-#{ctx.site.id}" in shown(view)
+
+      {:ok, view, _} = live(conn, ~p"/repos?priority=true")
+      assert shown(view) == ids([ctx.slow, ctx.urgent])
+
+      view
+      |> form("#repo-filters", %{"priority" => "true", "visibility" => "public"})
+      |> render_change()
+
+      assert_patch(view, ~p"/repos?#{%{priority: "true", visibility: "public"}}")
+      assert shown(view) == []
+    end
+
+    test "the search covers the owner too", %{conn: conn, legacy: legacy} do
+      {:ok, view, _} = live(conn, ~p"/repos?q=acme/le")
+      assert shown(view) == ids([legacy])
+    end
+
+    test "values the filters don't know are ignored", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/repos?state=archived&visibility=x&priority=yes&q=")
+      assert length(shown(view)) == 5
+      refute has_element?(view, "#repos-no-match")
+
+      {:ok, view, _} =
+        live(conn, "/repos?q[]=app&state[]=disabled&visibility[x]=public&priority[]=true&sort=x")
+
+      assert length(shown(view)) == 5
+    end
+
+    test "how many repos the filters leave is announced", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/repos")
+      assert has_element?(view, "#repo-count[role=status]", "5 repos")
+
+      {:ok, view, _} = live(conn, ~p"/repos?state=disabled")
+      assert has_element?(view, "#repo-count", "1 of 5 repos")
+
+      {:ok, view, _} = live(conn, ~p"/repos?q=nope")
+      assert has_element?(view, "#repo-count", "0 of 5 repos")
+    end
+
+    test "nothing matching has its own empty state, with a way out", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/repos?q=nope")
+      assert shown(view) == []
+      assert has_element?(view, "#repos-no-match", "No repos match")
+      refute has_element?(view, "#repos-empty")
+
+      view |> element("#repos-no-match a", "Clear filters") |> render_click()
+      assert_patch(view, ~p"/repos")
+      assert length(shown(view)) == 5
+    end
+  end
+
+  test "with no repos at all, the install hint shows and the filters don't", %{conn: conn} do
+    Crew.Repo.delete_all(Crew.Repos.Repo)
+    {:ok, view, _} = live(conn, ~p"/repos?q=app")
+    assert has_element?(view, "#repos-empty", "Install the App")
+    refute has_element?(view, "#repos-no-match")
+    refute has_element?(view, "#repo-filters")
+    refute has_element?(view, "#repo-count")
+  end
+
   test "the repo page shows a runs-on snippet per allowed size", %{conn: conn, repo: repo} do
     {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
 
@@ -71,6 +178,10 @@ defmodule CrewWeb.RepoLiveTest do
     {:ok, view, _} = live(conn, ~p"/repos")
     assert has_element?(view, "#repo-#{other.id}")
     refute has_element?(view, "#repo-#{repo.id}")
+
+    {:ok, view, _} = live(conn, ~p"/repos?q=app")
+    refute has_element?(view, "#repo-#{repo.id}")
+    assert has_element?(view, "#repos-no-match")
 
     {:ok, view, _} = live(conn, ~p"/repos/#{other.id}")
     refute has_element?(view, "#repo-settings")

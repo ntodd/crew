@@ -2580,6 +2580,8 @@ The sidebar has:
 **Repos (`/repos`)**
 - **The repo list:** enabled, jobs over 7 days, success rate, p50 wait and
   run, the most-used size, the last run.
+- **Filters**, kept in the URL: a search on the name, enabled or disabled,
+  public or private, and "has a priority".
 - **A repo page:**
   - settings (§7.4) and `runs-on` snippets;
   - recent runs;
