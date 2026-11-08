@@ -402,10 +402,13 @@ defmodule Crew.VMs do
 
   defp series_starts(since, until, step), do: Enum.to_list(since..(until - 1)//step)
 
-  # The VMs that held something at some point in the range: requested
-  # by its end, and not destroyed before its start. Two reads, each on an
-  # index: the ones still held, and the ones destroyed since the start.
-  defp overlapping(since, until) do
+  @doc """
+  The VMs that held something at some point in `since..until` (Unix
+  seconds): requested by its end, and not destroyed before its start.
+  Two reads, each on an index: the ones still held, and the ones
+  destroyed since the start.
+  """
+  def overlapping(since, until) do
     from_t = DateTime.from_unix!(since)
     until_t = DateTime.from_unix!(until)
     requested = from v in VM, where: v.requested_at <= ^until_t

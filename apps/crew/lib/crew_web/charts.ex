@@ -35,6 +35,7 @@ defmodule CrewWeb.Charts do
   attr :empty, :string, default: "No samples in this range yet."
   attr :class, :any, default: nil
   attr :plot_class, :any, default: "h-44", doc: "the plot's height"
+  attr :days, :boolean, default: false, doc: "one point per UTC day: times show as UTC dates"
   slot :summary, doc: "under the headline, over the legend: a meter, say"
 
   def timeseries(assigns) do
@@ -44,7 +45,7 @@ defmodule CrewWeb.Charts do
       assigns
       |> assign(:dom, dom)
       |> assign(:y_ticks, y_ticks(assigns.ymax, assigns.format))
-      |> assign(:x_ticks, x_ticks(dom))
+      |> assign(:x_ticks, x_ticks(dom, assigns.days))
       |> assign(:empty?, Enum.all?(assigns.series, &(&1.points == [])))
       |> assign(:payload, payload(assigns.series, assigns.format))
 
@@ -85,6 +86,7 @@ defmodule CrewWeb.Charts do
         data-since={@since}
         data-until={@until}
         data-gap={@gap}
+        data-days={@days && "true"}
         tabindex={if(@empty?, do: nil, else: "0")}
         role="img"
         aria-label={"#{@title} over time"}
@@ -157,6 +159,7 @@ defmodule CrewWeb.Charts do
         id={"#{@id}-ticks"}
         phx-hook=".ChartTicks"
         data-span={@until - @since}
+        data-days={@days && "true"}
         class="relative mx-5 mb-3 mt-1.5 h-4 text-[11px] tabular-nums text-ink-3"
         aria-hidden="true"
       >
@@ -166,7 +169,7 @@ defmodule CrewWeb.Charts do
           data-left={Geometry.x(at, @dom) / 10}
           class="absolute -translate-x-1/2 whitespace-nowrap"
         >
-          {DateTime.from_unix!(at) |> Calendar.strftime("%H:%M")}
+          {DateTime.from_unix!(at) |> Calendar.strftime(if(@days, do: "%b %-d", else: "%H:%M"))}
         </time>
       </div>
     </figure>
@@ -174,9 +177,11 @@ defmodule CrewWeb.Charts do
       // Crosshair and tooltip for a server-drawn chart. The chart's data
       // rides along in data-chart, already formatted, so this only finds
       // the nearest time and shows every series' value there.
-      const time = (at, span) => new Intl.DateTimeFormat(undefined,
-        span > 86400 ? {weekday: "short", hour: "numeric", minute: "2-digit"}
-                     : {hour: "numeric", minute: "2-digit"}).format(new Date(at * 1000))
+      // A chart of UTC days shows each point as its date, in UTC.
+      const time = (at, span, days) => new Intl.DateTimeFormat(undefined,
+        days ? {month: "short", day: "numeric", timeZone: "UTC"}
+        : span > 86400 ? {weekday: "short", hour: "numeric", minute: "2-digit"}
+                       : {hour: "numeric", minute: "2-digit"}).format(new Date(at * 1000))
 
       export default {
         mounted() {
@@ -242,7 +247,7 @@ defmodule CrewWeb.Charts do
           tip.replaceChildren()
           const head = document.createElement("p")
           head.className = "mb-1.5 text-ink-3"
-          head.textContent = time(at, this.until - this.since)
+          head.textContent = time(at, this.until - this.since, this.el.dataset.days === "true")
           tip.append(head)
 
           this.data.forEach(s => {
@@ -286,9 +291,11 @@ defmodule CrewWeb.Charts do
       // zone. They get a hook of their own because LiveView only calls
       // updated() when the hooked element differs from the new render, and
       // every live sample resets the labels' text and position.
-      const time = (at, span) => new Intl.DateTimeFormat(undefined,
-        span > 86400 ? {weekday: "short", hour: "numeric", minute: "2-digit"}
-                     : {hour: "numeric", minute: "2-digit"}).format(new Date(at * 1000))
+      // A chart of UTC days shows each point as its date, in UTC.
+      const time = (at, span, days) => new Intl.DateTimeFormat(undefined,
+        days ? {month: "short", day: "numeric", timeZone: "UTC"}
+        : span > 86400 ? {weekday: "short", hour: "numeric", minute: "2-digit"}
+                       : {hour: "numeric", minute: "2-digit"}).format(new Date(at * 1000))
 
       // On a narrow chart, only every k-th label shows, the smallest k
       // that keeps them apart; a resize thins them again.
@@ -303,7 +310,7 @@ defmodule CrewWeb.Charts do
         place() {
           const span = Number(this.el.dataset.span)
           for (const tick of this.el.querySelectorAll("[data-tick]")) {
-            tick.textContent = time(Number(tick.dataset.tick), span)
+            tick.textContent = time(Number(tick.dataset.tick), span, this.el.dataset.days === "true")
             tick.style.left = tick.dataset.left + "%"
           }
           this.thin()
@@ -353,9 +360,11 @@ defmodule CrewWeb.Charts do
   end
 
   # Ticks whose centred label would run past either edge are dropped.
-  defp x_ticks(dom) do
-    dom.since
-    |> Geometry.time_ticks(dom.until)
+  defp x_ticks(dom, days?) do
+    if(days?,
+      do: Geometry.day_ticks(dom.since, dom.until),
+      else: Geometry.time_ticks(dom.since, dom.until)
+    )
     |> Enum.filter(&(Geometry.x(&1, dom) >= 50 and Geometry.x(&1, dom) <= 950))
   end
 

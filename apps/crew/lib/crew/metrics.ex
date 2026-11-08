@@ -218,7 +218,12 @@ defmodule Crew.Metrics do
 
   def cpu_excess(_samples, _vcpus), do: []
 
-  defp weights(samples) do
+  @doc """
+  Each sample (oldest first, with `t` in Unix seconds) with the seconds
+  it stands for: 5 s for the first, then the gap since the one before,
+  at most 15 s.
+  """
+  def weights(samples) do
     samples
     |> Enum.map_reduce(nil, fn s, prev ->
       dt = if prev, do: min(max(s.t - prev, 0), @longest_s), else: @first_s

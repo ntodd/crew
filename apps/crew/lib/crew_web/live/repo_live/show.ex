@@ -1,14 +1,16 @@
 defmodule CrewWeb.RepoLive.Show do
   @moduledoc """
   A repo (§17.3): its settings (§7.4, admins), the `runs-on` snippets for
-  its allowed sizes and its jobs' right-sizing hints (§7.5), and the
-  permissions its installation is missing. Changing settings re-parses
-  its queued jobs.
+  its allowed sizes and its jobs' right-sizing hints (§7.5), its usage
+  over 30 days (§16.6), and the permissions its installation is missing.
+  Changing settings re-parses its queued jobs.
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Jobs, Repos, Scope, Sizes, Sizing}
-  alias CrewWeb.SizingComponents
+  alias Crew.{Jobs, Repos, Scope, Sizes, Sizing, Usage}
+  alias CrewWeb.{SizingComponents, UsageComponents}
+
+  @usage_days 30
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -22,7 +24,20 @@ defmodule CrewWeb.RepoLive.Show do
      socket
      |> assign(:page_title, repo.full_name)
      |> assign(:sizes, Sizes.list())
-     |> assign_repo(repo)}
+     |> assign_repo(repo)
+     |> assign_usage(repo)}
+  end
+
+  defp assign_usage(socket, repo) do
+    scope = socket.assigns.current_scope
+    today = Date.utc_today()
+
+    socket
+    |> assign(
+      :usage,
+      Usage.summary(scope, Date.add(today, 1 - @usage_days), today, repo_id: repo.id)
+    )
+    |> assign(:top_jobs, Usage.top_jobs(scope, repo, @usage_days))
   end
 
   defp assign_repo(socket, repo) do
@@ -174,6 +189,8 @@ defmodule CrewWeb.RepoLive.Show do
           </li>
         </ul>
       </.panel>
+
+      <UsageComponents.repo_panel summary={@usage} top_jobs={@top_jobs} />
     </Layouts.app>
     """
   end

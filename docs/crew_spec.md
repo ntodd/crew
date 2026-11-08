@@ -941,6 +941,7 @@ migrations, Unix-second timestamps for metrics. `RELEASE_DISTRIBUTION=none`.
 | `Crew.Caches` | Cache config, tokens, stats |
 | `Crew.Logs` | Log files, segments, gap handling, final-log fetch |
 | `Crew.Metrics` | Box, VM and job metrics; pruning; bucketed reads (copy Foreman's) |
+| `Crew.Usage` | Job and VM minutes per box, repo and shape by UTC day; the daily rollup (§16.6) |
 | `Crew.Activity`, `Crew.Audit`, `Crew.Updates`, `Crew.Settings` | Copy Foreman's |
 
 ### 9.3 Processes
@@ -959,7 +960,7 @@ migrations, Unix-second timestamps for metrics. `RELEASE_DISTRIBUTION=none`.
 | `hooks` | 10 | webhook processing |
 | `github` | 5 | final job fetch, log fetch, runner GC, enrichment |
 | `reconcile` | 1 | reconciler, redelivery |
-| `maintenance` | 1 | pruning |
+| `maintenance` | 1 | pruning; the usage rollup (`Crew.Usage.Rollup`, hourly at :53, §16.6) |
 | `default` | 5 | everything else |
 
 **PubSub topics:**
@@ -978,6 +979,7 @@ what it may show (§18.3).
 | Jobs, run attempts, VM rows, job and VM events | 90 days (`CREW_JOB_RETENTION_DAYS`). Each job keeps at most 500 guest-sourced `job_events`. |
 | Logs | 30 days (`CREW_LOG_RETENTION_DAYS`), and at most `CREW_LOG_MAX_GIB` in total, oldest deleted first |
 | `box_metrics`, `vm_metrics`, `cache_stats` | 7 days (copy Foreman's `PruneMetrics`) |
+| `usage_days`, `usage_box_days`, `usage_rollups` | Forever: tens of rows a day, and they outlive the job and VM rows they add up (§16.6) |
 | Webhook deliveries | 7 days |
 | Audit log | Forever |
 
@@ -2556,6 +2558,104 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 - **Right-sizing hints** come from the last 10 completed runs of the same
   `(repo, workflow, job name)` (§7.5).
 
+### 16.6 Usage
+
+Minutes for jobs, for each box and for the fleet: how much went to
+running jobs, how much to boot and idle overhead, and how full each box
+was over a day. Display only: nothing here changes placement, labels,
+sizes, the agent, the guest or the protocol.
+
+Days are UTC days, `[00:00, 24:00)`, and the UI says UTC wherever it
+shows one. Every timestamp is floored to whole Unix seconds before any
+arithmetic, so the sums are exact integers.
+
+**VM time** is time held. A VM is held from `requested_at` until
+`destroyed_at`, or until the end of the window while it isn't destroyed
+(the span `Crew.VMs.provisioned_series/3` uses). Within it the VM is in
+one of four phases, each running from its mark to the next later mark
+that's present, the last to the end of the held span:
+
+| Phase | Starts at |
+|---|---|
+| boot | `requested_at` |
+| idle | `idle_at` |
+| busy | `busy_at` |
+| teardown | the earlier of `finished_at` and `failed_at` |
+
+- A missing mark is skipped: a VM that failed while booting is boot,
+  then teardown; one reaped while idle has no busy phase.
+- A mark earlier than the one before it, or outside the held span, is
+  ignored, so clock skew can't make a phase negative. A VM that isn't
+  destroyed yet has no end to its span for this check, so where a
+  window stops doesn't change which marks count.
+- Only the part of each phase inside the day counts for it: a VM held
+  across midnight splits across both days. The four phases add up to
+  the VM's held seconds inside the window, exactly.
+- `vcpu_s` is vCPUs × held seconds; `mem_mib_s` is (`memory_mib` +
+  `vmm_overhead_mib`) × held seconds, the memory `allocation_of/1`
+  counts.
+- `vm_count` counts VMs on the day of their `requested_at`;
+  `unused_count` the ones among them destroyed without a `busy_at`. A VM
+  with no `requested_at` is skipped.
+
+**Job time** counts finished work: jobs with `classification == "ours"`,
+`gh_state == "completed"`, and both `started_at` and `completed_at`.
+
+- `job_s` is `completed_at - started_at`. A negative duration counts
+  nothing; zero counts as a job of 0 s.
+- `job_billable_min` is `ceil(job_s / 60)` per job, summed: GitHub
+  rounds each job up to a whole minute when it bills hosted runners, so
+  this is the number to compare against GitHub.
+- A job counts whole on the UTC day of its `completed_at`, never split
+  across midnight.
+- `job_count`, `success_count` (conclusion `success`) and
+  `failure_count` (conclusion `failure`).
+- The box and shape come from the job's VM (`jobs.vm_id`). A job with no
+  VM counts under no box, with its own `vcpus` and `memory_mib` if set
+  and its size's otherwise.
+
+**Box time**, per box and day:
+
+- `online_s` comes from the day's `box_metrics` samples, weighted as job
+  coverage weighs VM samples (§16.5): 5 s for the first, then the gap
+  since the one before, at most 15 s. Samples are pruned after 7 days,
+  so `online_s` is nil for older days rolled up the first time.
+- `allocatable_vcpus` and `allocatable_memory_mib` are
+  `Crew.Scheduler.capacity(box)` when the day is rolled up, or nil.
+- Memory use is Σ `mem_mib_s` / (`allocatable_memory_mib` × `online_s`),
+  shown capped at 100%; vCPU use is the same with `vcpu_s`. A dash when
+  an input is nil or zero.
+
+**Storage** (§22): `usage_days` has one row per (day, box, repo, vCPUs,
+memory) with any activity. It keeps the shape, not the size, so editing
+or deleting a size leaves history alone; the UI names a shape after the
+size that matches it. `usage_box_days` has a box's online time and
+capacity, and `usage_rollups` marks a day done, even one with no rows.
+All three are kept forever (§9.4).
+
+**`Crew.Usage.compute(day)`** reads one day from the raw rows, on the
+indexes that exist: VMs overlapping the day (`Crew.VMs.overlapping/2`),
+jobs on `(classification, gh_state, completed_at)`, samples on
+`(box_id, t)`.
+
+**`Crew.Usage.Rollup`** (Oban, `:maintenance`, hourly at :53, unique for
+30 minutes):
+
+- Each day is written in one transaction: its rows deleted from all
+  three tables, the computed ones inserted, `usage_rollups` upserted.
+  Running it twice gives the same rows.
+- Every run recomputes the last 2 closed days: a job that finished at
+  23:59 on GitHub's clock can arrive after midnight.
+- Then it fills in the oldest days with no `usage_rollups` row, from the
+  first VM requested or job completed: at most 31 a run, so a fresh
+  deploy's history fills in over a few hours rather than in one long
+  job on a queue the prunes share.
+- It never rolls up today.
+- A closed day older than the last 2 isn't computed again: a job whose
+  webhook comes more than 2 days late, or a VM destroyed more than 2
+  days after the day it was requested on, leaves that day as it was
+  stored.
+
 ## 17. UI
 
 ### 17.1 Foundations
@@ -2594,6 +2694,8 @@ The sidebar has:
 - **Queue**
 - **Repos**
 - **Boxes**
+- **Right-sizing**
+- **Usage**
 - **Admin** (admins only): Images, Sizes & labels, Caches, People, Audit,
   Deployment, Oban
 
@@ -2608,7 +2710,8 @@ The sidebar has:
     offline, plus a "reboot needed" badge;
   - firewall and virtualisation badges.
 - **Counters:** running, waiting and booting jobs, each linking to a
-  filtered Runs page.
+  filtered Runs page, and job minutes today (UTC, §16.6) with
+  yesterday's in its note, linking to Usage.
 - **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3).
 - **Recent:** the last 20 completed jobs.
 - **Charts (24 hours):** jobs started per 5 minutes, stacked by conclusion;
@@ -2646,6 +2749,26 @@ The sidebar has:
 - **A 6-hour chart** of queue depth and booting VMs.
 - **Admins can change a repo's priority** from here (audit-logged).
 
+**Usage (`/usage`)** (§16.6)
+- **The range:** the last 7, 30 or 90 UTC days (`?days=`, 30 by
+  default); the subtitle says the days are UTC.
+- **Tiles:** job minutes, with the rounded-up minutes GitHub would bill;
+  VM minutes; overhead (boot, idle and teardown as a share of VM time,
+  with each one's minutes); and what was reserved, in GiB-hours and
+  vCPU-hours.
+- **A chart** of VM minutes per day stacked by phase, with job minutes
+  as a line.
+- **By box:** VM minutes, busy share, job minutes, memory and vCPU use,
+  reserved GiB-hours. Every box, for members too; a revoked one says so.
+- **By repo:** jobs, job minutes, rounded-up minutes, VM minutes and
+  overhead. Members see the repos they can read, and the rest as one
+  "Other repos" row with no name or link.
+- **By size:** each shape, named after the size that matches it, with
+  jobs, job minutes and VM minutes.
+- Closed days come from the rollup; today is counted live. Older days
+  it hasn't stored yet are named as not counted. On a phone the tables
+  drop their secondary columns.
+
 **Repos (`/repos`)**
 - **The repo list:** enabled, jobs over 7 days, success rate, p50 wait and
   run, the most-used size, the last run.
@@ -2658,6 +2781,9 @@ The sidebar has:
   - flaky jobs (failed, then passed on a re-run of the same SHA within 7
     days);
   - right-sizing hints;
+  - **Usage** over 30 days (§16.6): jobs, job minutes and the rounded-up
+    minutes, VM minutes and overhead, a chart per day, and the jobs with
+    the most minutes, linking to Usage;
   - permissions the installation is missing;
   - for public repos: a warning when fork-PR approval isn't set to
     "require approval for all outside collaborators" (§19.5).
@@ -2681,6 +2807,10 @@ The sidebar has:
     against cores, and cache hit rate.
   - **Running VMs:** job, repo, size, uptime, live CPU and memory. Admins
     can kill one (audit-logged).
+  - **Usage** over 30 days (§16.6): VM minutes by phase, job minutes,
+    memory and vCPU use, a chart per day, and the box's repos by VM
+    minutes, each repo a member can't read named "a private repo" as the
+    running VMs' are; linking to Usage.
   - **Capacity overrides** (§8.3), drain and undrain, and clearing a
     quarantine.
   - **Reboot** (copy Foreman's banner for a box waiting on a Flatcar
@@ -3274,6 +3404,14 @@ vm_metrics(vm_id, box_id, job_id null, t, cpu_pct, mem_used_mib, mem_total_mib,
            disk_used_mib, net_rx_bps, net_tx_bps, host_cpu_pct, host_rss_mib)
 cache_stats(box_id, t, host, hits, misses, bytes_served, bytes_stored, mismatches)
 
+usage_days(day date, box_id null, repo_id, vcpus, memory_mib, vm_count, unused_count,
+           boot_s, idle_s, busy_s, teardown_s, vcpu_s, mem_mib_s,
+           job_count, success_count, failure_count, job_s, job_billable_min)
+                                                      -- seconds and MiB-seconds are bigint
+usage_box_days(day date, box_id, online_s null, allocatable_vcpus null,
+               allocatable_memory_mib null)           unique(box_id, day)
+usage_rollups(day date pk, computed_at)
+
 webhook_deliveries(github_delivery_id unique, event, action, received_at,
                    processed_at null, error null)              -- no payload column
 cache_config(singleton: enabled_hosts [string], allowlist [string], parent_enabled bool)
@@ -3289,6 +3427,7 @@ cache_tokens(id, box_id, kind enum(parent, mgmt), token_hash, expires_at)
 - `vm_metrics(vm_id, t)`
 - `box_metrics(box_id, t)`
 - `job_events(job_id, at)`
+- `usage_days(day)`, `usage_days(repo_id, day)`, `usage_days(box_id, day)`
 
 ## 23. Testing
 

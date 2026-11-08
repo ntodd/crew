@@ -11,6 +11,7 @@ defmodule CrewWeb.Charts.Geometry do
 
   @width 1000
   @height 100
+  @day_intervals [1, 2, 7, 14, 28]
   @tick_intervals [300, 600, 900, 1_800, 3_600, 7_200, 10_800, 21_600, 43_200, 86_400]
 
   def x(at, %{since: since, until: until}) when until > since,
@@ -118,5 +119,15 @@ defmodule CrewWeb.Charts.Geometry do
     interval = Enum.find(@tick_intervals, List.last(@tick_intervals), &(span / &1 <= 7))
     first = since + interval - rem(since, interval)
     Enum.to_list(first..until//interval)
+  end
+
+  @doc """
+  Ticks for a chart of UTC days (points at each day's start): every 1,
+  2, 7, 14 or 28 days, at most seven, counted back from `until`.
+  """
+  def day_ticks(since, until) do
+    days = div(until - since, 86_400) + 1
+    step = Enum.find(@day_intervals, List.last(@day_intervals), &(ceil(days / &1) <= 7)) * 86_400
+    until |> Stream.iterate(&(&1 - step)) |> Enum.take_while(&(&1 >= since)) |> Enum.reverse()
   end
 end
