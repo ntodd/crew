@@ -1032,7 +1032,7 @@ both ends. The vocabulary is fixed: there's no generic exec.
 | `vm.log` | `vm_id`, `epoch`, `seq`, `lines` [{n, t, step_ref, text, truncated}] | Every 250 ms or 64 KiB (§16.2) |
 | `vm.log.gone` | `vm_id`, `epoch`, `up_to_seq` | The lines asked for are no longer held |
 | `vm.steps` | `vm_id`, `steps` [{ref, name, number, status, started_at, completed_at, conclusion}] (≤ 1000) | At most once a second |
-| `vm.metrics` | `vm_id`, `t`, `cpu_pct`, `mem_used_mib`, `mem_total_mib`, `disk_used_mib`, `net_rx_bps`, `net_tx_bps`, `host_cpu_pct`, `host_rss_mib` | Every 5 s per VM |
+| `vm.metrics` | `vm_id`, `t`, `cpu_pct`, `mem_used_mib`, `mem_total_mib`, `disk_used_mib`, `net_rx_bps`, `net_tx_bps`, `host_cpu_pct`, `host_rss_mib`; from newer guests, `mem_peak_mib`, `oom_kills`, `cpu_pressure_pct`, `mem_pressure_pct`, `mem_full_pressure_pct` | Every 5 s per VM |
 | `box.metrics` | Host CPU, memory, swap, load, disk, `vm_area_free_mib`, `cache_used_mib`, `vms_running`, `t` | Every 5 s (Foreman's pattern) |
 | `box.capabilities` | §11.1 | On join and on change |
 | `box.inventory` | VMs [{vm_id, alive, since, exited: {reason, exit_status, at} or null}], images [{id, state}] | On join and on request |
@@ -1938,7 +1938,7 @@ header timeout.
 | `POST /v1/state` | `{state, at, detail}` | 204, or `{"stop": true}` once a stop is requested | Each state once, forward only, at most 20 per VM. `job_refused` is allowed after `job_started`. |
 | `POST /v1/steps` | `{steps: [...]}` (≤ 1000, ≤ 256 KiB) | 204 or `{"stop": true}` | At most 2 a second. The agent forwards at most 1 `vm.steps` a second, coalesced. |
 | `POST /v1/log` | NDJSON lines `{t, step_ref, text}` | 204, 413 or `{"stop": true}` | ≤ 1 MiB per request, ≤ 8 requests a second. The VM's total is capped at `log_limit_bytes` (default 100 MiB). Past it: 413, and the agent appends a single truncation marker. |
-| `POST /v1/metrics` | `{t, cpu_pct, mem_used_mib, mem_total_mib, disk_used_mib, net_rx_bytes, net_tx_bytes}` | 204 or `{"stop": true}` | At most 1 every 2 s |
+| `POST /v1/metrics` | `{t, cpu_pct, mem_used_mib, mem_total_mib, disk_used_mib, net_rx_bytes, net_tx_bytes}`, and optionally `{mem_peak_mib, oom_kills, cpu_some_us, mem_some_us, mem_full_us}` | 204 or `{"stop": true}` | At most 1 every 2 s |
 | `GET /v1/control` | none | Long poll (≤ 30 s): `{"stop": true}` or 204 | 1 open at a time |
 
 **Validation** is `CrewProtocol.Guest`:
@@ -1997,8 +1997,13 @@ header timeout.
 9. **Report** (§16.2): `runner_listening` when the runner prints
    `Listening for Jobs`, `job_started` when the worker starts, then steps
    and log lines.
-10. **Metrics:** every 5 s from `/proc/stat`, `/proc/meminfo`, `statfs /`
-    and `/proc/net/dev`.
+10. **Metrics:** every 5 s from `/proc/stat`, `/proc/meminfo`, `statfs /`,
+    `/proc/net/dev`, `/proc/vmstat` (the OOM kill count) and
+    `/proc/pressure` (stall totals). Memory is also read every second, and
+    each post carries the most used since the last (`mem_peak_mib`). Posts
+    go from their own process, one at a time, so a slow one doesn't hold
+    up the reads. A reading that fails is left out; none can crash the
+    metrics process.
 11. **Control:** keep a `GET /v1/control` long poll open. On
     `{"stop": true}`, from there or from any response: send `SIGTERM` to the
     runner, flush logs for up to 10 s, then `systemctl poweroff`.
@@ -2492,7 +2497,10 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 ### 16.5 Resources per job
 
 - **Samples:** `vm_metrics` keeps 5 s samples (the guest's view plus the
-  host's CPU and RSS) for 7 days.
+  host's CPU and RSS) for 7 days. From newer guests a sample also has the
+  highest memory used since the last one, the OOM kill count, and the
+  share of the interval tasks stalled on CPU or memory (PSI). The agent
+  turns the guest's byte and stall totals into rates.
 - **Job summary**, written at completion (or when the VM is linked after
   that): peak memory, peak and average CPU, peak disk, network bytes, and
   `oom`. It counts the samples from the job's start to its finish, plus

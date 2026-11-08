@@ -34,6 +34,53 @@ defmodule Crew.MetricsTest do
     end
   end
 
+  describe "record_vm/2" do
+    setup do
+      %{vm: vm_fixture(box_fixture())}
+    end
+
+    @base %{
+      t: 1_800_000_000_000,
+      cpu_pct: 12.5,
+      mem_used_mib: 900,
+      mem_total_mib: 8192,
+      disk_used_mib: 2048,
+      net_rx_bps: 1000,
+      net_tx_bps: 200,
+      host_cpu_pct: 50.0,
+      host_rss_mib: 1200
+    }
+
+    test "stores a newer guest's high-water mark, OOM kills and pressure", %{vm: vm} do
+      readings = %{
+        mem_peak_mib: 3000,
+        oom_kills: 1,
+        cpu_pressure_pct: 25.0,
+        mem_pressure_pct: 5.0,
+        mem_full_pressure_pct: 1.0
+      }
+
+      :ok = Metrics.record_vm(vm, Map.merge(@base, readings))
+
+      assert [%{t: 1_800_000_000, mem_used_mib: 900} = m] = Metrics.vm_series(vm.id)
+
+      assert %{
+               mem_peak_mib: 3000,
+               oom_kills: 1,
+               cpu_pressure_pct: 25.0,
+               mem_pressure_pct: 5.0,
+               mem_full_pressure_pct: 1.0
+             } = m
+    end
+
+    test "an older agent's sample has none of them", %{vm: vm} do
+      :ok = Metrics.record_vm(vm, @base)
+
+      assert [%{mem_peak_mib: nil, oom_kills: nil, cpu_pressure_pct: nil}] =
+               Metrics.vm_series(vm.id)
+    end
+  end
+
   describe "job_summary/3" do
     setup do
       %{vm: vm_fixture(box_fixture())}

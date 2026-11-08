@@ -57,4 +57,59 @@ defmodule CrewAgent.GuestSampleTest do
       end
     end
   end
+
+  describe "pressure" do
+    defp stalls(t, cpu, mem, full),
+      do: %{t: t, cpu_some_us: cpu, mem_some_us: mem, mem_full_us: full}
+
+    test "stall totals become the share of the interval spent stalled" do
+      assert %{cpu_pressure_pct: 20.0, mem_pressure_pct: 2.0, mem_full_pressure_pct: 0.5} =
+               GuestSample.rates(
+                 stalls(10_000, 1_000_000, 0, 0),
+                 stalls(15_000, 2_000_000, 100_000, 25_000)
+               )
+    end
+
+    # PSI's clock and the guest's wall clock can disagree a little.
+    test "a share is at most 100%" do
+      assert %{cpu_pressure_pct: 100.0} =
+               GuestSample.rates(stalls(10_000, 0, 0, 0), stalls(15_000, 6_000_000, 0, 0))
+    end
+
+    test "is unknown (nil) without both totals, or when one went backwards" do
+      assert %{cpu_pressure_pct: nil, mem_pressure_pct: nil, mem_full_pressure_pct: nil} =
+               GuestSample.rates(nil, stalls(15_000, 1, 1, 1))
+
+      assert %{cpu_pressure_pct: nil} =
+               GuestSample.rates(%{t: 10_000}, stalls(15_000, 1, 1, 1))
+
+      assert %{cpu_pressure_pct: nil, mem_pressure_pct: 0.0} =
+               GuestSample.rates(stalls(10_000, 5, 0, 0), stalls(15_000, 1, 0, 0))
+
+      assert %{cpu_pressure_pct: nil} =
+               GuestSample.rates(stalls(15_000, 0, 0, 0), stalls(15_000, 1, 0, 0))
+    end
+
+    property "is nil or a share from 0 to 100" do
+      check all(
+              t0 <- integer(0..1_000_000),
+              dt <- integer(-10_000..60_000),
+              a <- one_of([constant(nil), integer(0..10_000_000_000)]),
+              b <- one_of([constant(nil), integer(0..10_000_000_000)])
+            ) do
+        %{cpu_pressure_pct: pct} =
+          GuestSample.rates(%{t: t0, cpu_some_us: a}, %{t: t0 + dt, cpu_some_us: b})
+
+        assert pct == nil or (is_float(pct) and pct >= 0 and pct <= 100)
+        if a == nil or b == nil or dt <= 0 or b < a, do: assert(pct == nil)
+      end
+    end
+  end
+
+  test "max_known/2 takes the larger reading, ignoring an unknown one" do
+    assert GuestSample.max_known(nil, nil) == nil
+    assert GuestSample.max_known(nil, 5) == 5
+    assert GuestSample.max_known(7, nil) == 7
+    assert GuestSample.max_known(7, 9) == 9
+  end
 end

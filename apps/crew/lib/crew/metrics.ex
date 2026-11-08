@@ -81,13 +81,21 @@ defmodule Crew.Metrics do
         net_rx_bps: m.net_rx_bps * 1.0,
         net_tx_bps: m.net_tx_bps * 1.0,
         host_cpu_pct: m.host_cpu_pct * 1.0,
-        host_rss_mib: m.host_rss_mib
+        host_rss_mib: m.host_rss_mib,
+        mem_peak_mib: m[:mem_peak_mib],
+        oom_kills: m[:oom_kills],
+        cpu_pressure_pct: float(m[:cpu_pressure_pct]),
+        mem_pressure_pct: float(m[:mem_pressure_pct]),
+        mem_full_pressure_pct: float(m[:mem_full_pressure_pct])
       }
     ])
 
     Phoenix.PubSub.broadcast(Crew.PubSub, Crew.Logs.topic(vm.id), {:vm_metrics, vm.id})
     :ok
   end
+
+  defp float(nil), do: nil
+  defp float(n), do: n * 1.0
 
   @doc "A VM's samples, oldest first."
   def vm_series(vm_id), do: Repo.all(from m in VMMetric, where: m.vm_id == ^vm_id, order_by: m.t)
