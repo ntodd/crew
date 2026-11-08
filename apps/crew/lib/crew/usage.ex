@@ -242,10 +242,25 @@ defmodule Crew.Usage do
   every box's whole allocation. In `repos`, someone who isn't an admin
   sees only the repos they can read; the rest add up into one row with
   `repo: nil`. Archived repos and revoked boxes count like any other.
+
+  Options:
+
+    * `box_id:` only that box's rows.
+    * `repo_id:` only that repo's rows, and nothing for a scope that
+      can't read it. Box use is left out: it's the whole box's.
+    * `others: :each` gives each repo the scope can't read a `repo: nil`
+      row of its own, as a box's page names each VM's.
+    * `sort: :vm_s` orders `repos` by VM time, not job time.
   """
-  def summary(%Scope{} = scope, %Date{} = from, %Date{} = to) do
+  def summary(%Scope{} = scope, %Date{} = from, %Date{} = to, opts \\ []) do
     {to, days} = days(from, to)
-    {rows, box_days, pending} = load(days, Date.utc_today())
+
+    days =
+      if opts[:repo_id] && not Repos.can_read?(scope, opts[:repo_id]), do: [], else: days
+
+    {rows, box_days, pending} =
+      load(days, Date.utc_today(), Keyword.take(opts, [:box_id, :repo_id]))
+
     sizes = Sizes.list()
 
     %{
@@ -255,7 +270,7 @@ defmodule Crew.Usage do
       totals: total(rows),
       series: series(days, rows),
       boxes: by_box(rows, box_days),
-      repos: by_repo(rows, Repos.readable_ids(scope)),
+      repos: by_repo(rows, Repos.readable_ids(scope), opts),
       shapes: by_shape(rows, sizes)
     }
   end
@@ -266,7 +281,7 @@ defmodule Crew.Usage do
   """
   def daily(%Date{} = from, %Date{} = to) do
     {_to, days} = days(from, to)
-    {rows, _box_days, _pending} = load(days, Date.utc_today())
+    {rows, _box_days, _pending} = load(days, Date.utc_today(), [])
     series(days, rows)
   end
 
@@ -282,9 +297,9 @@ defmodule Crew.Usage do
 
   # The days' rows and box days, stored or live, and the closed days
   # still waiting for the rollup.
-  defp load([], _today), do: {[], [], []}
+  defp load([], _today, _filter), do: {[], [], []}
 
-  defp load(days, today) do
+  defp load(days, today, filter) do
     {from, to} = {List.first(days), List.last(days)}
 
     stored =
@@ -313,17 +328,31 @@ defmodule Crew.Usage do
 
     rows =
       from(d in Day, where: d.day in ^stored_days)
+      |> where(^filter)
       |> Repo.all()
       |> Enum.map(&plain/1)
 
     box_days =
-      from(b in BoxDay, where: b.day in ^stored_days)
-      |> Repo.all()
-      |> Enum.map(&plain/1)
+      if filter[:repo_id] do
+        []
+      else
+        from(b in BoxDay, where: b.day in ^stored_days)
+        |> where(^filter)
+        |> Repo.all()
+        |> Enum.map(&plain/1)
+      end
 
-    {rows ++ Enum.flat_map(computed, & &1.rows), box_days ++ Enum.flat_map(computed, & &1.boxes),
-     pending}
+    live_rows = computed |> Enum.flat_map(& &1.rows) |> Enum.filter(&matches?(&1, filter))
+
+    live_box_days =
+      if filter[:repo_id],
+        do: [],
+        else: computed |> Enum.flat_map(& &1.boxes) |> Enum.filter(&matches?(&1, filter))
+
+    {rows ++ live_rows, box_days ++ live_box_days, pending}
   end
+
+  defp matches?(row, filter), do: Enum.all?(filter, fn {k, v} -> Map.get(row, k) == v end)
 
   defp cached(day) do
     ttl = Application.get_env(:crew, :chart_cache_ms, 30_000)
@@ -394,9 +423,10 @@ defmodule Crew.Usage do
     if den > 0, do: num / den
   end
 
-  defp by_repo(rows, readable) do
+  defp by_repo(rows, readable, opts) do
     repos = Map.new(Repos.list_all(), &{&1.id, &1})
     {mine, others} = Enum.split_with(rows, &(readable == :all or &1.repo_id in readable))
+    order = if opts[:sort] == :vm_s, do: &{-&1.vm_s, -&1.job_s}, else: &{-&1.job_s, -&1.vm_s}
 
     named =
       mine
@@ -407,9 +437,26 @@ defmodule Crew.Usage do
           repo -> [rows |> total() |> Map.put(:repo, repo)]
         end
       end)
-      |> Enum.sort_by(&{-&1.job_s, -&1.vm_s, &1.repo.full_name})
+      |> Enum.sort_by(&Tuple.insert_at(order.(&1), 2, &1.repo.full_name))
 
-    if others == [], do: named, else: named ++ [others |> total() |> Map.put(:repo, nil)]
+    hidden =
+      cond do
+        others == [] ->
+          []
+
+        opts[:others] == :each ->
+          others
+          |> Enum.group_by(& &1.repo_id)
+          |> Enum.map(fn {_id, rows} -> rows |> total() |> Map.put(:repo, nil) end)
+
+        true ->
+          [others |> total() |> Map.put(:repo, nil)]
+      end
+
+    # Named one by one, they all sort together.
+    if opts[:others] == :each,
+      do: Enum.sort_by(named ++ hidden, order),
+      else: named ++ hidden
   end
 
   defp by_shape(rows, sizes) do

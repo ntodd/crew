@@ -2781,6 +2781,9 @@ The sidebar has:
   - flaky jobs (failed, then passed on a re-run of the same SHA within 7
     days);
   - right-sizing hints;
+  - **Usage** over 30 days (§16.6): jobs, job minutes and the rounded-up
+    minutes, VM minutes and overhead, a chart per day, and the jobs with
+    the most minutes, linking to Usage;
   - permissions the installation is missing;
   - for public repos: a warning when fork-PR approval isn't set to
     "require approval for all outside collaborators" (§19.5).
@@ -2804,6 +2807,10 @@ The sidebar has:
     against cores, and cache hit rate.
   - **Running VMs:** job, repo, size, uptime, live CPU and memory. Admins
     can kill one (audit-logged).
+  - **Usage** over 30 days (§16.6): VM minutes by phase, job minutes,
+    memory and vCPU use, a chart per day, and the box's repos by VM
+    minutes, each repo a member can't read named "a private repo" as the
+    running VMs' are; linking to Usage.
   - **Capacity overrides** (§8.3), drain and undrain, and clearing a
     quarantine.
   - **Reboot** (copy Foreman's banner for a box waiting on a Flatcar

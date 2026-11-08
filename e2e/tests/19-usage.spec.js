@@ -1,5 +1,6 @@
-// Usage (§16.6): the usage page and the dashboard's counter, over two
-// weeks of seeded VMs and jobs on three boxes (e2e/seeds/usage.exs).
+// Usage (§16.6): the usage page, the dashboard's counter, and the box
+// and repo pages' panels, over two weeks of seeded VMs and jobs on three
+// boxes (e2e/seeds/usage.exs).
 // Runs only against a control plane started with that seed:
 //
 //   E2E_SEED=seeds/usage.exs npx playwright test tests/19-usage.spec.js
@@ -92,4 +93,60 @@ test("the dashboard counts today's job minutes", async ({page}) => {
   await shot(page, layer, "dashboard", {fullPage: false})
   await counter.click()
   await expect(page).toHaveURL(/\/usage$/)
+})
+
+test("a box's page: its last 30 days", async ({page}) => {
+  await signIn(page)
+  await page.goto("/usage")
+  await connected(page)
+  await page.locator("#usage-boxes").getByRole("link", {name: "rack-1"}).click()
+  await connected(page)
+
+  const panel = page.locator("#usage")
+  await expect(panel).toContainText("Last 30 days. Days are UTC.")
+  await expect(page.locator("#usage-vm-minutes")).not.toHaveText("0")
+  await expect(page.locator("#usage-mem-use")).toHaveText(/\d+%/)
+  await expect(page.locator("#usage-chart path.chart-area").first()).toBeVisible()
+  await expect(page.locator("#usage-repos li")).toHaveCount(3)
+  await expect(panel.getByRole("link", {name: "All usage"})).toHaveAttribute("href", "/usage")
+  await panel.scrollIntoViewIfNeeded()
+  await shot(page, layer, "box", {fullPage: false})
+  await setTheme(page, "dark")
+  await shot(page, layer, "box-dark", {fullPage: false})
+  await setTheme(page, "light")
+
+  await page.setViewportSize({width: 390, height: 844})
+  await page.reload()
+  await connected(page)
+  await page.locator("#usage").scrollIntoViewIfNeeded()
+  await shot(page, layer, "box-mobile", {fullPage: false})
+  await page.setViewportSize({width: 1440, height: 900})
+})
+
+test("a repo's page: its last 30 days and its top jobs", async ({page}) => {
+  await signIn(page)
+  await page.goto("/usage")
+  await connected(page)
+  await page.locator("#usage-repos").getByRole("link", {name: "mona/storefront"}).click()
+  await connected(page)
+
+  const panel = page.locator("#usage")
+  await expect(page.locator("#usage-jobs")).not.toHaveText("0")
+  await expect(panel).toContainText("rounded up")
+  await expect(page.locator("#usage-overhead")).toHaveText(/\d+%/)
+  await expect(page.locator("#usage-chart path.chart-area").first()).toBeVisible()
+  await expect(page.locator("#usage-top-jobs li")).toHaveCount(4)
+  await expect(page.locator("#usage-top-jobs")).toContainText("CI · e2e")
+  await panel.scrollIntoViewIfNeeded()
+  await shot(page, layer, "repo", {fullPage: false})
+  await setTheme(page, "dark")
+  await shot(page, layer, "repo-dark", {fullPage: false})
+  await setTheme(page, "light")
+
+  await page.setViewportSize({width: 390, height: 844})
+  await page.reload()
+  await connected(page)
+  await page.locator("#usage").scrollIntoViewIfNeeded()
+  await shot(page, layer, "repo-mobile", {fullPage: false})
+  await page.setViewportSize({width: 1440, height: 900})
 })

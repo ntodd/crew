@@ -164,6 +164,53 @@ defmodule Crew.UsageSummaryTest do
     end
   end
 
+  describe "summary/4, for one box or repo" do
+    test "a box's rows and its use only", %{repo: repo, other: other, box: box} do
+      yesterday = Date.add(today(), -1)
+      ran_fixture(box, repo, yesterday, 600)
+      ran_fixture(box_fixture(), other, yesterday, 300)
+      Usage.roll_up()
+
+      s = Usage.summary(admin(), yesterday, yesterday, box_id: box.id)
+      assert s.totals.job_s == 600
+      assert [%{box: %{id: id}}] = s.boxes
+      assert id == box.id
+    end
+
+    test "a box's repos, one row each, nil for the ones the viewer can't read", %{
+      repo: repo,
+      other: other,
+      box: box
+    } do
+      yesterday = Date.add(today(), -1)
+      ran_fixture(box, repo, yesterday, 600)
+      ran_fixture(box, other, yesterday, 300)
+      ran_fixture(box, repo_fixture(name: "web"), yesterday, 60)
+      Usage.roll_up()
+
+      s = Usage.summary(member([repo]), yesterday, yesterday, box_id: box.id, others: :each)
+
+      assert [%{repo: %{}, job_s: 600}, %{repo: nil, job_s: 300}, %{repo: nil, job_s: 60}] =
+               s.repos
+    end
+
+    test "a repo's rows, and nothing for a repo the viewer can't read", %{
+      repo: repo,
+      other: other,
+      box: box
+    } do
+      yesterday = Date.add(today(), -1)
+      ran_fixture(box, repo, yesterday, 600)
+      ran_fixture(box, other, yesterday, 300)
+      Usage.roll_up()
+
+      assert Usage.summary(admin(), yesterday, yesterday, repo_id: repo.id).totals.job_s == 600
+
+      assert Usage.summary(member([other]), yesterday, yesterday, repo_id: repo.id).totals.job_s ==
+               0
+    end
+  end
+
   describe "top_jobs/3" do
     test "the jobs with the most minutes in the last 30 days", %{repo: repo} do
       now = DateTime.utc_now() |> DateTime.truncate(:second) |> Map.put(:microsecond, {0, 6})
