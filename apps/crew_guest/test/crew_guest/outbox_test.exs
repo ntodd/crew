@@ -19,6 +19,29 @@ defmodule CrewGuest.OutboxTest do
 
   defp pad(text, size), do: String.pad_trailing(text, size, ".")
 
+  # Finch's request start fires in the request's own process, before a
+  # connection is checked out or opened.
+  defp watch_steps_starts(api) do
+    id = {__MODULE__, self()}
+    config = %{test: self(), port: FakeAPI.port(api)}
+    :telemetry.attach(id, [:finch, :request, :start], &__MODULE__.steps_started/4, config)
+    on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  @doc false
+  def steps_started(_event, _measurements, %{request: req}, %{test: test, port: port}) do
+    if req.port == port and req.path == "/v1/steps",
+      do: send(test, {:steps_started, System.monotonic_time(:millisecond)})
+  end
+
+  defp steps_starts do
+    receive do
+      {:steps_started, at} -> [at | steps_starts()]
+    after
+      0 -> []
+    end
+  end
+
   describe "states" do
     test "each state is sent once, in order, and never backwards", %{api: api} do
       o = start_outbox(api)
@@ -195,19 +218,30 @@ defmodule CrewGuest.OutboxTest do
     }
 
     test "only the latest snapshot goes, at most 2 a second", %{api: api} do
+      watch_steps_starts(api)
       o = start_outbox(api)
+      began = System.monotonic_time(:millisecond)
 
       for n <- 1..10 do
         Outbox.steps(o, [%{@step | number: n}])
         Process.sleep(20)
       end
 
+      # Each request after the first needs a snapshot that came in after the
+      # one before it started, so they fit in the time the snapshots took.
+      :sys.get_state(o)
+      sending = System.monotonic_time(:millisecond) - began
+
       eventually(fn -> match?([%{number: 10}], FakeAPI.last_steps(api)) end)
       reqs = FakeAPI.requests(api, "/v1/steps")
-      assert length(reqs) <= 3
-      # Requests start 500 ms apart; arrival at the server jitters a little.
-      gaps = reqs |> Enum.map(& &1.at) |> Enum.chunk_every(2, 1, :discard)
-      assert Enum.all?(gaps, fn [a, b] -> b - a >= 400 end)
+      assert length(reqs) <= div(sending, 500) + 2
+      starts = steps_starts()
+      # A retried attempt that never reached the server starts here too.
+      assert length(starts) >= length(reqs)
+      # Timed where the request starts, not where it arrives: under load the
+      # first connection can take over a second to reach the server.
+      gaps = Enum.chunk_every(starts, 2, 1, :discard)
+      assert Enum.all?(gaps, fn [a, b] -> b - a >= 450 end)
     end
 
     test "a body over 256 KiB is cut down to fit", %{api: api} do
