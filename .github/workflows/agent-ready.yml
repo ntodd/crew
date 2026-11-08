@@ -2,7 +2,7 @@ name: agent-ready
 
 # Label an issue you wrote agent-ready, and an agent works it into draft
 # pull requests on Crew, then keeps at them until CI is green and review
-# threads are answered. See
+# threads are answered. flake-hunt's issues start a run on their own. See
 # https://github.com/ntodd/github-actions/tree/main/agent-ready.
 #
 # An effort:<level> label (low, medium, high, xhigh, max) or an
@@ -14,17 +14,31 @@ name: agent-ready
 on:
   issues:
     types: [labeled]
+  # flake-hunt starts a run on each flaky test it files. A run can be
+  # started by hand too, on an open issue labeled agent-ready.
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: The issue to work. It has to be labeled agent-ready.
+        type: number
+        required: true
 
 permissions: {}
 
 jobs:
   agent:
+    # The reusable workflow's gate checks all this again, and checks the
+    # issue a dispatched run names.
     if: >-
-      github.event.label.name == 'agent-ready' &&
+      (github.event_name == 'workflow_dispatch' &&
+      (contains(fromJSON('["ntodd"]'), github.event.sender.login) ||
+      github.event.sender.login == 'github-actions[bot]')) ||
+      (github.event.label.name == 'agent-ready' &&
       contains(fromJSON('["ntodd"]'), github.event.sender.login) &&
-      contains(fromJSON('["ntodd"]'), github.event.issue.user.login)
+      (contains(fromJSON('["ntodd"]'), github.event.issue.user.login) ||
+      github.event.issue.user.login == 'github-actions[bot]'))
     concurrency:
-      group: agent-ready-${{ github.event.issue.number }}
+      group: agent-ready-${{ github.event.issue.number || inputs.issue }}
     uses: ntodd/github-actions/.github/workflows/agent-ready.yml@main
     permissions:
       contents: read

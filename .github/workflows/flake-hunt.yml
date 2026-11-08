@@ -12,6 +12,9 @@ name: Flake hunt
 #
 # With a CLAUDE_CODE_OAUTH_TOKEN secret (claude setup-token), each new
 # flake's issue also gets Claude's diagnosis.
+#
+# Each new or reopened flake also starts agent-ready on its issue, which
+# opens a PR with the fix.
 
 on:
   schedule:
@@ -28,11 +31,13 @@ permissions: {}
 
 jobs:
   protocol:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@4c73d0aa52ef582de3d1f17464fb33462fc10046 # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
+      agent-workflow: agent-ready.yml
       working-directory: apps/crew_protocol
       shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
@@ -40,11 +45,13 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   control-plane:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@4c73d0aa52ef582de3d1f17464fb33462fc10046 # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
+      agent-workflow: agent-ready.yml
       working-directory: apps/crew
       shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
@@ -52,11 +59,13 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   agent:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@4c73d0aa52ef582de3d1f17464fb33462fc10046 # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
+      agent-workflow: agent-ready.yml
       working-directory: apps/crew_agent
       shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
@@ -64,11 +73,13 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   guest:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@4c73d0aa52ef582de3d1f17464fb33462fc10046 # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
+      agent-workflow: agent-ready.yml
       working-directory: apps/crew_guest
       shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
@@ -76,11 +87,13 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
   cache:
-    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@4c73d0aa52ef582de3d1f17464fb33462fc10046 # flake-hunt/v1
+    uses: ntodd/github-actions/.github/workflows/flake-hunt.yml@main
     permissions:
       contents: read
       issues: write
+      actions: write
     with:
+      agent-workflow: agent-ready.yml
       working-directory: apps/crew_cache
       shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
