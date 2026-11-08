@@ -16,7 +16,7 @@ defmodule CrewAgent.VM do
 
   require Logger
 
-  alias CrewAgent.{Config, Driver, Net, Outbox, SafeFS}
+  alias CrewAgent.{Config, Driver, GuestSample, Net, Outbox, SafeFS}
   alias CrewAgent.VMs.Cleanup
   alias CrewProtocol.{Event, Guest, Text}
 
@@ -400,6 +400,9 @@ defmodule CrewAgent.VM do
       steps: nil,
       steps_timer: nil,
       guest_metrics: nil,
+      # The highest memory peak from the guest since the last vm.metrics:
+      # two samples can arrive between sends.
+      peak_pending: nil,
       refetch_reported: false,
       # The agent is stopping: new log lines are the next agent's.
       draining: false,
@@ -526,7 +529,9 @@ defmodule CrewAgent.VM do
   def handle_call({:metrics, body}, _from, state) do
     with {:ok, state} <- rate(state, :metrics),
          {:ok, m} <- Guest.cast_metrics(body, life(state)) do
-      {:reply, {:ok, stop_flag(state)}, %{state | guest_metrics: m}}
+      m = Map.merge(m, GuestSample.rates(state.guest_metrics, m))
+      peak = GuestSample.max_known(state.peak_pending, m.mem_peak_mib)
+      {:reply, {:ok, stop_flag(state)}, %{state | guest_metrics: m, peak_pending: peak}}
     else
       {:error, reason, state} -> {:reply, {:error, reason}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -660,7 +665,7 @@ defmodule CrewAgent.VM do
   def handle_info(:metrics, state) do
     send_metrics(state)
     Process.send_after(self(), :metrics, @metrics_ms)
-    {:noreply, state}
+    {:noreply, %{state | peak_pending: nil}}
   end
 
   def handle_info(:control_timeout, %{control_waiter: {from, _}} = state) do
@@ -958,10 +963,16 @@ defmodule CrewAgent.VM do
         mem_used_mib: Map.get(g, :mem_used_mib, 0),
         mem_total_mib: Map.get(g, :mem_total_mib, 0),
         disk_used_mib: Map.get(g, :disk_used_mib, 0),
-        net_rx_bps: 0,
-        net_tx_bps: 0,
+        net_rx_bps: Map.get(g, :net_rx_bps, 0.0),
+        net_tx_bps: Map.get(g, :net_tx_bps, 0.0),
         host_cpu_pct: min(host.cpu_pct * 1.0, 100_000.0),
-        host_rss_mib: host.rss_mib
+        host_rss_mib: host.rss_mib,
+        # nil (left out) from an older guest.
+        mem_peak_mib: GuestSample.max_known(state.peak_pending, Map.get(g, :mem_peak_mib)),
+        oom_kills: Map.get(g, :oom_kills),
+        cpu_pressure_pct: Map.get(g, :cpu_pressure_pct),
+        mem_pressure_pct: Map.get(g, :mem_pressure_pct),
+        mem_full_pressure_pct: Map.get(g, :mem_full_pressure_pct)
       })
     )
   end

@@ -216,6 +216,90 @@ defmodule Crew.Fixtures do
     )
   end
 
+  @doc """
+  A finished Crew job with a final resource summary (§16.5): a successful
+  10-minute run on m that needed little, unless `attrs` say otherwise.
+  `started_at` sets when it ran; `name`, `workflow_name`, `conclusion`
+  and `run_id` go to its webhook, the rest to its summary.
+  """
+  def summarized_job_fixture(repo, attrs \\ []) do
+    attrs = Map.new(attrs)
+    # Recent, since repo pages look at the last 30 days.
+    started = Map.get_lazy(attrs, :started_at, fn -> ago(86_400) end)
+    hook = [:name, :workflow_name, :conclusion, :run_id, :id, :labels]
+
+    {:ok, job} =
+      Crew.Jobs.handle_workflow_job(
+        workflow_job_payload(
+          repo,
+          Keyword.merge(
+            [
+              id: unique(),
+              status: "completed",
+              conclusion: "success",
+              started_at: DateTime.to_iso8601(started),
+              completed_at: DateTime.to_iso8601(DateTime.add(started, 600))
+            ],
+            attrs |> Map.take(hook) |> Map.to_list()
+          )
+        )
+      )
+
+    summary =
+      Map.merge(
+        %{
+          vcpus: 4,
+          memory_mib: 8192,
+          peak_mem_mib: 1000,
+          peak_disk_mib: 3000,
+          cpu_excess: [0.0, 0.0, 0.0],
+          cpu_pressure_pct: 0.0,
+          mem_pressure_pct: 0.0,
+          mem_full_pressure_pct: 0.0,
+          oom: false,
+          coverage: 1.0
+        },
+        Map.drop(attrs, [:started_at | hook])
+      )
+
+    import Ecto.Query, only: [from: 2]
+    Repo.update_all(from(j in Crew.Jobs.Job, where: j.id == ^job.id), set: Map.to_list(summary))
+
+    Repo.get!(Crew.Jobs.Job, job.id)
+  end
+
+  @doc "`n` of `summarized_job_fixture/2`, an hour apart, the newest last, all before its default."
+  def summarized_jobs_fixture(repo, n, attrs \\ []) do
+    for i <- 1..n,
+        do:
+          summarized_job_fixture(
+            repo,
+            Keyword.merge([started_at: ago(2 * 86_400 - i * 3600)], attrs)
+          )
+  end
+
+  defp ago(seconds),
+    do: DateTime.utc_now() |> DateTime.add(-seconds) |> DateTime.truncate(:second)
+
+  @doc "A `vm.metrics` sample for `vm` at `t` (Unix seconds)."
+  def vm_metric_fixture(vm, t, attrs \\ []) do
+    Repo.insert!(
+      struct!(
+        %Crew.Metrics.VMMetric{
+          vm_id: vm.id,
+          box_id: vm.box_id,
+          job_id: vm.job_id,
+          t: t,
+          cpu_pct: 10.0,
+          mem_used_mib: 1024,
+          mem_total_mib: vm.memory_mib,
+          disk_used_mib: 2048
+        },
+        attrs
+      )
+    )
+  end
+
   @doc "The private key `box_fixture/1` enrolled for the box, for signing its agent's connects."
   def private_key(box_id), do: :persistent_term.get({__MODULE__, :private_key, box_id})
 

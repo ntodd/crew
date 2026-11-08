@@ -14,8 +14,8 @@ defmodule CrewWeb.JobLive.Show do
 
   require Logger
 
-  alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Sizes, VMs}
-  alias CrewWeb.JobStatus
+  alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Scope, Sizes, Sizing, VMs}
+  alias CrewWeb.{JobStatus, SizingComponents}
 
   @flush_ms 250
   @steps_poll_ms 10_000
@@ -73,6 +73,8 @@ defmodule CrewWeb.JobLive.Show do
       steps: steps(source, job, vm),
       usual: usual_durations(job),
       metrics: if(vm, do: Metrics.vm_series(vm.id), else: []),
+      sizing: Sizing.for_job(job),
+      durations: Sizing.durations(job),
       status: JobStatus.of(job, DateTime.utc_now())
     )
   end
@@ -581,6 +583,32 @@ defmodule CrewWeb.JobLive.Show do
               <dt class="text-ink-3">Peak disk</dt>
               <dd class="text-ink tabular-nums">{gib(@job.peak_disk_mib || 0)} GiB</dd>
             </dl>
+          </.panel>
+
+          <.panel :if={@sizing || @durations != []} id="sizing" title="Right-sizing">
+            <:subtitle :if={@sizing}>{SizingComponents.basis(@sizing)}</:subtitle>
+            <SizingComponents.hint_details
+              :if={@sizing}
+              hint={@sizing}
+              job={@job}
+              admin={Scope.admin?(@current_scope)}
+            />
+            <div
+              :if={@durations != []}
+              id="sizing-durations"
+              class={[@sizing && "mt-4 border-t border-line pt-4"]}
+            >
+              <p class="text-xs font-medium text-ink-2">Median time on each size</p>
+              <ul class="mt-1.5 space-y-1 text-xs">
+                <li :for={d <- @durations} class="flex items-baseline justify-between gap-3">
+                  <span class="min-w-0 text-ink-2">{SizingComponents.shape(d.shape)}</span>
+                  <span class="shrink-0 tabular-nums text-ink">
+                    {JobStatus.format(d.median_s)}
+                    <span class="text-ink-3">· {d.runs} {if d.runs == 1, do: "run", else: "runs"}</span>
+                  </span>
+                </li>
+              </ul>
+            </div>
           </.panel>
         </aside>
       </div>

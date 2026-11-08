@@ -431,6 +431,8 @@ defmodule Crew.VMs.Server do
 
   defp after_state(%{vm: %VM{state: "destroyed"} = vm} = state) do
     Scheduler.poke()
+    # Every sample is in: the job's resource summary is final (§16.5).
+    if vm.job_id, do: Jobs.summarize_final(vm.job_id)
     # A reboot waiting for the box's last VM (§12.1).
     Crew.Boxes.Reboots.advance(vm.box_id)
     send(self(), :stop_self)

@@ -93,6 +93,52 @@ defmodule CrewProtocol.EventTest do
     end
   end
 
+  describe "vm.metrics' newer readings" do
+    test "are optional, so an older agent's sample is still valid" do
+      assert {:ok, %Event{payload: p}} = Event.new("vm.metrics", Examples.event("vm.metrics"))
+      refute Map.has_key?(p, :mem_peak_mib)
+      refute Map.has_key?(p, :cpu_pressure_pct)
+    end
+
+    test "carry the high-water mark, OOM kills and pressure" do
+      payload =
+        Map.merge(Examples.event("vm.metrics"), %{
+          "mem_peak_mib" => 3000,
+          "oom_kills" => 1,
+          "cpu_pressure_pct" => 12.5,
+          "mem_pressure_pct" => 3.0,
+          "mem_full_pressure_pct" => 0.5
+        })
+
+      assert {:ok, %Event{payload: p}} = Event.new("vm.metrics", payload)
+
+      assert %{
+               mem_peak_mib: 3000,
+               oom_kills: 1,
+               cpu_pressure_pct: 12.5,
+               mem_pressure_pct: 3.0,
+               mem_full_pressure_pct: 0.5
+             } = p
+    end
+
+    test "refuse a pressure outside 0 to 100, or a negative count" do
+      base = Examples.event("vm.metrics")
+
+      for {field, bad} <- [
+            {"cpu_pressure_pct", 100.5},
+            {"mem_pressure_pct", -1},
+            {"mem_full_pressure_pct", 101},
+            {"oom_kills", -1},
+            {"mem_peak_mib", -1}
+          ] do
+        assert {:error, [{^field, msg}]} = Event.new("vm.metrics", Map.put(base, field, bad)),
+               field
+
+        refute msg == "is not allowed", field
+      end
+    end
+  end
+
   test "string list items are held to the string maximum" do
     reboot = Examples.event("box.reboot")
 

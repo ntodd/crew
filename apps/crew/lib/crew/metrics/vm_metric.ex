@@ -17,5 +17,11 @@ defmodule Crew.Metrics.VMMetric do
     field :net_tx_bps, :float, default: 0.0
     field :host_cpu_pct, :float, default: 0.0
     field :host_rss_mib, :integer, default: 0
+    # From newer guests only; nil otherwise.
+    field :mem_peak_mib, :integer
+    field :oom_kills, :integer
+    field :cpu_pressure_pct, :float
+    field :mem_pressure_pct, :float
+    field :mem_full_pressure_pct, :float
   end
 end

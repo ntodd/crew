@@ -478,12 +478,14 @@ route("POST", /^\/app\/hook\/deliveries\/(\d+)\/attempts$/, async (req, res, url
 // -- control ------------------------------------------------------------------------
 
 // Adds repos to the (first) installation, and sends installation_repositories.
+// A name may be {name, id}, to bring back a repo a seed made by its id.
 route("POST", /^\/__fake\/repos$/, async (req, res) => {
   const { names = [], private: priv = true } = await readBody(req)
   const installation = state.installations[0]
   if (!installation) return send(res, 400, { message: "no installation" })
-  const added = names.map(name => {
-    const repo = { id: id(), full_name: `${installation.account.login}/${name}`, private: priv, default_branch: "main", installation_id: installation.id }
+  const added = names.map(entry => {
+    const { name, id: given } = typeof entry === "string" ? { name: entry } : entry
+    const repo = { id: given ?? id(), full_name: `${installation.account.login}/${name}`, private: priv, default_branch: "main", installation_id: installation.id }
     state.repos.push(repo)
     return repo
   })

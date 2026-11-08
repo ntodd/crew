@@ -192,6 +192,161 @@ defmodule Crew.JobsTest do
     end
   end
 
+  describe "the resource summary (§16.5)" do
+    # The job ran from 10:00:05 to 10:01:05; its VM booted at 10:00:00.
+    defp sampled_vm do
+      vm = vm_fixture(box_fixture())
+      t0 = DateTime.to_unix(~U[2026-11-03 10:00:05Z])
+      vm_metric_fixture(vm, t0 - 5, cpu_pct: 2.0, mem_used_mib: 200)
+      vm_metric_fixture(vm, t0 + 5, cpu_pct: 80.0, mem_used_mib: 2500)
+      vm_metric_fixture(vm, t0 + 30, cpu_pct: 40.0, mem_used_mib: 1500)
+      vm
+    end
+
+    defp complete(repo, id, attrs \\ []) do
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(
+            repo,
+            [
+              id: id,
+              status: "completed",
+              conclusion: "success",
+              completed_at: "2026-11-03T10:01:05Z"
+            ] ++ attrs
+          )
+        )
+
+      job
+    end
+
+    test "a completed job's summary comes from its VM's samples while it ran", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 40, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+
+      complete(repo, 40)
+
+      assert %Job{peak_mem_mib: 2500, peak_cpu_pct: 80.0, avg_cpu_pct: 60.0} = job!(40)
+    end
+
+    test "the summary keeps what right-sizing needs", %{repo: repo} do
+      vm = vm_fixture(box_fixture(), vcpus: 4, memory_mib: 8192)
+      t0 = DateTime.to_unix(~U[2026-11-03 10:00:05Z])
+      vm_metric_fixture(vm, t0 + 5, cpu_pct: 100.0, mem_peak_mib: 6000, cpu_pressure_pct: 40.0)
+      vm_metric_fixture(vm, t0 + 10, cpu_pct: 25.0, oom_kills: 1, cpu_pressure_pct: 0.0)
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 44, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+      complete(repo, 44)
+
+      assert %Job{
+               vcpus: 4,
+               memory_mib: 8192,
+               peak_mem_mib: 6000,
+               oom: true,
+               cpu_pressure_pct: 20.0,
+               cpu_excess: [15.0, 10.0, 5.0]
+             } = job!(44)
+    end
+
+    test "a job linked to its VM after its completed webhook still gets a summary",
+         %{repo: repo} do
+      vm = sampled_vm()
+      job = complete(repo, 41)
+      assert job.peak_mem_mib == nil
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+
+      assert %Job{peak_mem_mib: 2500, avg_cpu_pct: 60.0} = job!(41)
+    end
+
+    test "linking a job that's still running doesn't summarize it", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 42, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+
+      assert job!(42).peak_mem_mib == nil
+    end
+
+    test "the summary at completion is provisional, with no coverage", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 45, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+      complete(repo, 45)
+
+      assert %Job{peak_mem_mib: 2500, coverage: nil} = job!(45)
+    end
+
+    # The last readings can arrive after the completed webhook: once the VM
+    # is gone, every sample is in, and the summary is final.
+    test "the final summary, once the VM is gone, takes the late readings", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 46, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+      complete(repo, 46)
+
+      t0 = DateTime.to_unix(~U[2026-11-03 10:00:05Z])
+      vm_metric_fixture(vm, t0 + 64, mem_peak_mib: 7000, oom_kills: 1)
+      Repo.update!(Ecto.Changeset.change(vm, state: "destroyed"))
+      :ok = Jobs.summarize_final(job.id)
+
+      assert %Job{peak_mem_mib: 7000, oom: true, coverage: coverage} = job!(46)
+      assert is_float(coverage)
+    end
+
+    test "a job completed after its VM is gone gets its final summary at once", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 48, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+      Repo.update!(Ecto.Changeset.change(vm, state: "destroyed"))
+      complete(repo, 48)
+
+      assert %Job{peak_mem_mib: 2500, coverage: coverage} = job!(48)
+      assert is_float(coverage)
+    end
+
+    test "a final summary for a job with no VM, or no job, does nothing", %{repo: repo} do
+      job = complete(repo, 47)
+      assert :ok = Jobs.summarize_final(job.id)
+      assert :ok = Jobs.summarize_final(CrewProtocol.uuid7())
+      assert %Job{peak_mem_mib: nil} = job!(47)
+    end
+
+    test "a summary that can't be read doesn't fail the webhook", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 43, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+      Repo.query!("DROP TABLE vm_metrics")
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert %Job{gh_state: "completed", peak_mem_mib: nil} = complete(repo, 43)
+      end)
+
+      assert job!(43).conclusion == "success"
+    end
+  end
+
   describe "run attempts and the fork check (§19.5)" do
     test "a Crew job whose run attempt isn't known is blocked, checking fork status", %{
       repo: repo

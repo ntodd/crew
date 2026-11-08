@@ -113,6 +113,9 @@ defmodule CrewProtocol.Guest do
     {:ok, Enum.reverse(lines), skipped}
   end
 
+  # A stall total can't pass a year of microseconds per CPU, at most 4096.
+  @max_stall_us 4096 * 366 * 86_400 * 1_000_000
+
   @spec cast_metrics(term(), life()) :: {:ok, map()} | {:error, atom()}
   def cast_metrics(%{} = m, life) do
     {:ok,
@@ -123,7 +126,15 @@ defmodule CrewProtocol.Guest do
        mem_total_mib: non_neg_int(m["mem_total_mib"], 16_777_216),
        disk_used_mib: non_neg_int(m["disk_used_mib"], 1_073_741_824),
        net_rx_bytes: non_neg_int(m["net_rx_bytes"], 1_000_000_000_000_000),
-       net_tx_bytes: non_neg_int(m["net_tx_bytes"], 1_000_000_000_000_000)
+       net_tx_bytes: non_neg_int(m["net_tx_bytes"], 1_000_000_000_000_000),
+       # Newer guests only, so nil (unknown) rather than 0 when missing:
+       # the highest used memory since the last sample, the kernel's OOM
+       # kill count, and PSI's stall totals in microseconds (§16.5).
+       mem_peak_mib: reading(m["mem_peak_mib"], 16_777_216),
+       oom_kills: reading(m["oom_kills"], 1_000_000_000),
+       cpu_some_us: reading(m["cpu_some_us"], @max_stall_us),
+       mem_some_us: reading(m["mem_some_us"], @max_stall_us),
+       mem_full_us: reading(m["mem_full_us"], @max_stall_us)
      }}
   end
 
@@ -269,6 +280,9 @@ defmodule CrewProtocol.Guest do
   defp non_neg_int(v, max) when is_integer(v), do: v |> max(0) |> min(max)
   defp non_neg_int(v, max) when is_float(v), do: non_neg_int(trunc(v), max)
   defp non_neg_int(_v, _max), do: 0
+
+  defp reading(v, max) when is_integer(v) and v >= 0 and v <= max, do: v
+  defp reading(_v, _max), do: nil
 
   defp pct(v) when is_number(v), do: v |> max(0) |> min(100) |> Kernel.*(1.0)
   defp pct(_v), do: 0.0

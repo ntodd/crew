@@ -88,7 +88,15 @@ defmodule CrewProtocol.Event do
       net_rx_bps: {:number, default: 0},
       net_tx_bps: {:number, default: 0},
       host_cpu_pct: {:number, default: 0, max: 100_000.0},
-      host_rss_mib: {:integer, default: 0}
+      host_rss_mib: {:integer, default: 0},
+      # From newer guests only (§16.5): the highest used memory since the
+      # last sample, the kernel's OOM kill count since boot, and the share
+      # of the interval some task (or, for full, every task) stalled.
+      mem_peak_mib: {:integer, min: 0},
+      oom_kills: {:integer, min: 0},
+      cpu_pressure_pct: {:number, min: 0, max: 100.0},
+      mem_pressure_pct: {:number, min: 0, max: 100.0},
+      mem_full_pressure_pct: {:number, min: 0, max: 100.0}
     ],
     "box.metrics" => [
       t: {:integer, required: true},

@@ -198,6 +198,38 @@ defmodule CrewProtocol.GuestTest do
       assert m.mem_used_mib == 0
       assert m.cpu_pct == 0.0
     end
+
+    test "the high-water mark, OOM kills and pressure totals pass through" do
+      body = %{
+        "mem_peak_mib" => 3000,
+        "oom_kills" => 2,
+        "cpu_some_us" => 1_500_000,
+        "mem_some_us" => 20_000,
+        "mem_full_us" => 5_000
+      }
+
+      assert {:ok, m} = Guest.cast_metrics(body, @life)
+
+      assert %{
+               mem_peak_mib: 3000,
+               oom_kills: 2,
+               cpu_some_us: 1_500_000,
+               mem_some_us: 20_000,
+               mem_full_us: 5_000
+             } = m
+    end
+
+    # An older guest doesn't send them, and a garbled one isn't a reading:
+    # unknown is nil, never 0, so "no OOM kills" isn't claimed for it.
+    test "missing or garbled newer readings are nil, not 0" do
+      assert {:ok, m} = Guest.cast_metrics(%{"cpu_pct" => 5}, @life)
+      assert %{mem_peak_mib: nil, oom_kills: nil, cpu_some_us: nil} = m
+      assert %{mem_some_us: nil, mem_full_us: nil} = m
+
+      garbled = %{"mem_peak_mib" => -1, "oom_kills" => "two", "cpu_some_us" => 1.5e300}
+      assert {:ok, m} = Guest.cast_metrics(garbled, @life)
+      assert %{mem_peak_mib: nil, oom_kills: nil, cpu_some_us: nil} = m
+    end
   end
 
   describe "payload" do

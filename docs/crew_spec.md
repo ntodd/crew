@@ -534,10 +534,43 @@ the repo's jobs that GitHub still has queued or waiting.
 
 - **Snippets:** the repo page shows a copy-ready `runs-on:` line for each
   allowed size.
-- **Hints:** the job page suggests:
-  - a smaller size when the last 10 runs of the same `(repo, workflow,
-    job name)` all peaked under 40% of both memory and vCPU;
-  - a larger one when any of them hit an OOM kill (§16.5).
+- **Hints** (`Crew.Sizing`, display only): the job page shows one once
+  the job finishes, and the repo page lists its jobs' hints. They come
+  from the last 10 finished runs of the same `(repo, workflow, job name)`
+  on the shape the newest one ran on (none if it has no shape), from
+  summaries a newer guest wrote (§16.5). Memory and CPU are sized separately, since memory is what
+  limits placement (§8.3):
+  - **larger** when any run had a process killed for memory, most stalled
+    on memory, or one peaked at 90% of its memory: never fewer vCPUs, and
+    the disk the runs used (adding vCPUs when it's also waiting on a CPU);
+  - **faster** when most runs (3 or more) had tasks waiting for a CPU a
+    quarter of the time, to the smallest size with more vCPUs that holds
+    its memory and disk (and no less memory if a run stalled on it);
+  - **smaller**, after 5 complete successful runs (a final summary
+    covering 80% of the run), to the allowed size with the least memory
+    that holds the highest peak plus 25% (at least 512 MiB), the highest
+    disk use plus 25% (at least 2 GiB), and enough vCPUs that no run would
+    be over 5% slower by estimate: on v vCPUs, `cpu_excess[v]` core-seconds
+    of waiting work done on v, over the run's duration. An incomplete
+    run's estimate counts against fewer vCPUs too: the work its samples
+    saw was done;
+  - **custom** when the best allowed size reserves at least twice the
+    memory the job needs and 4 GiB more: the hint names a shape (1 or an
+    even count of vCPUs, whole GiB) for an admin to add;
+  - **fits** otherwise.
+- **Time on each size:** when a job's recent successful runs (its last 30
+  within 90 days) used more than one shape, its page shows the median
+  duration on each. That's the
+  check that a smaller size didn't slow it down: Crew counts reclaimable
+  page cache as free, so a job that reads a lot can get slower on less
+  memory without ever running out.
+- **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
+  days, for the repos the viewer can read: the memory the runs reserved
+  and the most they used, in GiB-hours (a VM's memory times how long it
+  ran), what applying the hints would have changed (what they free, what
+  larger sizes take, and the net), each repo's share, and every hint,
+  the most memory freed in a week first. Archived repos' runs still count
+  toward the week; only live repos get hints.
 
 ## 8. Scheduling
 
@@ -1032,7 +1065,7 @@ both ends. The vocabulary is fixed: there's no generic exec.
 | `vm.log` | `vm_id`, `epoch`, `seq`, `lines` [{n, t, step_ref, text, truncated}] | Every 250 ms or 64 KiB (§16.2) |
 | `vm.log.gone` | `vm_id`, `epoch`, `up_to_seq` | The lines asked for are no longer held |
 | `vm.steps` | `vm_id`, `steps` [{ref, name, number, status, started_at, completed_at, conclusion}] (≤ 1000) | At most once a second |
-| `vm.metrics` | `vm_id`, `t`, `cpu_pct`, `mem_used_mib`, `mem_total_mib`, `disk_used_mib`, `net_rx_bps`, `net_tx_bps`, `host_cpu_pct`, `host_rss_mib` | Every 5 s per VM |
+| `vm.metrics` | `vm_id`, `t`, `cpu_pct`, `mem_used_mib`, `mem_total_mib`, `disk_used_mib`, `net_rx_bps`, `net_tx_bps`, `host_cpu_pct`, `host_rss_mib`; from newer guests, `mem_peak_mib`, `oom_kills`, `cpu_pressure_pct`, `mem_pressure_pct`, `mem_full_pressure_pct` | Every 5 s per VM |
 | `box.metrics` | Host CPU, memory, swap, load, disk, `vm_area_free_mib`, `cache_used_mib`, `vms_running`, `t` | Every 5 s (Foreman's pattern) |
 | `box.capabilities` | §11.1 | On join and on change |
 | `box.inventory` | VMs [{vm_id, alive, since, exited: {reason, exit_status, at} or null}], images [{id, state}] | On join and on request |
@@ -1938,7 +1971,7 @@ header timeout.
 | `POST /v1/state` | `{state, at, detail}` | 204, or `{"stop": true}` once a stop is requested | Each state once, forward only, at most 20 per VM. `job_refused` is allowed after `job_started`. |
 | `POST /v1/steps` | `{steps: [...]}` (≤ 1000, ≤ 256 KiB) | 204 or `{"stop": true}` | At most 2 a second. The agent forwards at most 1 `vm.steps` a second, coalesced. |
 | `POST /v1/log` | NDJSON lines `{t, step_ref, text}` | 204, 413 or `{"stop": true}` | ≤ 1 MiB per request, ≤ 8 requests a second. The VM's total is capped at `log_limit_bytes` (default 100 MiB). Past it: 413, and the agent appends a single truncation marker. |
-| `POST /v1/metrics` | `{t, cpu_pct, mem_used_mib, mem_total_mib, disk_used_mib, net_rx_bytes, net_tx_bytes}` | 204 or `{"stop": true}` | At most 1 every 2 s |
+| `POST /v1/metrics` | `{t, cpu_pct, mem_used_mib, mem_total_mib, disk_used_mib, net_rx_bytes, net_tx_bytes}`, and optionally `{mem_peak_mib, oom_kills, cpu_some_us, mem_some_us, mem_full_us}` | 204 or `{"stop": true}` | At most 1 every 2 s |
 | `GET /v1/control` | none | Long poll (≤ 30 s): `{"stop": true}` or 204 | 1 open at a time |
 
 **Validation** is `CrewProtocol.Guest`:
@@ -1997,8 +2030,13 @@ header timeout.
 9. **Report** (§16.2): `runner_listening` when the runner prints
    `Listening for Jobs`, `job_started` when the worker starts, then steps
    and log lines.
-10. **Metrics:** every 5 s from `/proc/stat`, `/proc/meminfo`, `statfs /`
-    and `/proc/net/dev`.
+10. **Metrics:** every 5 s from `/proc/stat`, `/proc/meminfo`, `statfs /`,
+    `/proc/net/dev`, `/proc/vmstat` (the OOM kill count) and
+    `/proc/pressure` (stall totals). Memory is also read every second, and
+    each post carries the most used since the last (`mem_peak_mib`). Posts
+    go from their own process, one at a time, so a slow one doesn't hold
+    up the reads. A reading that fails is left out; none can crash the
+    metrics process.
 11. **Control:** keep a `GET /v1/control` long poll open. On
     `{"stop": true}`, from there or from any response: send `SIGTERM` to the
     runner, flush logs for up to 10 s, then `systemctl poweroff`.
@@ -2492,11 +2530,29 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 ### 16.5 Resources per job
 
 - **Samples:** `vm_metrics` keeps 5 s samples (the guest's view plus the
-  host's CPU and RSS) for 7 days.
-- **Job summary**, written at completion: peak memory, peak and average
-  CPU, peak disk, network bytes, and `oom`. `oom` is set when the capped
-  console log shows the kernel's `Out of memory: Killed process`. That's
-  display-only.
+  host's CPU and RSS) for 7 days. From newer guests a sample also has the
+  highest memory used since the last one, the OOM kill count, and the
+  share of the interval tasks stalled on CPU or memory (PSI). The agent
+  turns the guest's byte and stall totals into rates.
+- **Job summary**, written at completion (or when the VM is linked after
+  that): peak memory, peak and average CPU, peak disk, network bytes, and
+  `oom`. It counts the samples from the job's start to its finish, plus
+  two intervals for the last reading to arrive, so the VM's boot and the
+  runner's wait for the job don't count; a job too short for a sample of
+  its own gets all of its VM's. A summary that can't be read is logged,
+  never failing the webhook. Peak memory counts the guest's high-water
+  marks between samples. `oom` is set when the guest's OOM kill count
+  rose while the job ran.
+- **For right-sizing,** the summary also keeps what hints need once the
+  samples are pruned: the VM's vCPUs and memory (a job taken cross-class
+  didn't run on the size it asked for), the average CPU and memory
+  pressure, and `cpu_excess`: for each vCPU count below the VM's, the
+  core-seconds of demand above it. A sample stands for the time since the
+  one before it (5 s for the first, at most 15 s), and `coverage` is the
+  share of the job its samples stand for: a gap while the agent was away
+  is unknown, not idle. The summary is written again once the VM is
+  destroyed, when every sample is in, and only that final summary keeps
+  its coverage.
 - **Right-sizing hints** come from the last 10 completed runs of the same
   `(repo, workflow, job name)` (§7.5).
 
