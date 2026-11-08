@@ -12,6 +12,8 @@ defmodule Crew.Jobs do
   """
   import Ecto.Query
 
+  require Logger
+
   alias Crew.{Audit, Repo, Repos, Sizes}
   alias Crew.Jobs.{CancelRun, Classify, FetchRunAttempt, Job, JobEvent, RunAttempt}
   alias Crew.Repos.Repo, as: GitRepo
@@ -49,6 +51,10 @@ defmodule Crew.Jobs do
         job
         |> Ecto.Changeset.change(vm_id: vm_id, taken_cross_class: cross, wait_reason: nil)
         |> Repo.update!()
+
+      # Linked after its `completed`: the summary couldn't be written then.
+      if job.gh_state == "completed" and is_nil(job.peak_mem_mib), do: summarize(job)
+      job = if job.gh_state == "completed", do: get_job(job.id), else: job
 
       broadcast_job(job)
       {:ok, job}
@@ -417,11 +423,25 @@ defmodule Crew.Jobs do
 
   defp after_upsert(_repo, _job, _attempt), do: :ok
 
-  # The resource summary (§16.5), from the VM's samples.
+  # The resource summary (§16.5), from the VM's samples while the job ran.
+  # It's written on the job's `completed`, or when the VM is linked after
+  # that. It's display and hints only, so failing to read it is logged and
+  # never fails the webhook; the savepoint keeps a failed query from
+  # spoiling a surrounding transaction.
   defp summarize(%Job{vm_id: vm_id} = job) when is_binary(vm_id) do
-    with %{} = summary <- Crew.Metrics.job_summary(vm_id) do
-      Repo.update_all(from(j in Job, where: j.id == ^job.id), set: Map.to_list(summary))
-    end
+    Repo.transact(fn ->
+      with %{} = summary <- Crew.Metrics.job_summary(vm_id, job.started_at, job.completed_at) do
+        Repo.update_all(from(j in Job, where: j.id == ^job.id), set: Map.to_list(summary))
+      end
+
+      {:ok, :done}
+    end)
+
+    :ok
+  rescue
+    e ->
+      Logger.error("couldn't summarize job #{job.id}'s resources: #{Exception.message(e)}")
+      :ok
   end
 
   defp summarize(_job), do: :ok

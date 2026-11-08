@@ -192,6 +192,86 @@ defmodule Crew.JobsTest do
     end
   end
 
+  describe "the resource summary (§16.5)" do
+    # The job ran from 10:00:05 to 10:01:05; its VM booted at 10:00:00.
+    defp sampled_vm do
+      vm = vm_fixture(box_fixture())
+      t0 = DateTime.to_unix(~U[2026-11-03 10:00:05Z])
+      vm_metric_fixture(vm, t0 - 5, cpu_pct: 2.0, mem_used_mib: 200)
+      vm_metric_fixture(vm, t0 + 5, cpu_pct: 80.0, mem_used_mib: 2500)
+      vm_metric_fixture(vm, t0 + 30, cpu_pct: 40.0, mem_used_mib: 1500)
+      vm
+    end
+
+    defp complete(repo, id, attrs \\ []) do
+      {:ok, job} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(
+            repo,
+            [
+              id: id,
+              status: "completed",
+              conclusion: "success",
+              completed_at: "2026-11-03T10:01:05Z"
+            ] ++ attrs
+          )
+        )
+
+      job
+    end
+
+    test "a completed job's summary comes from its VM's samples while it ran", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 40, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+
+      complete(repo, 40)
+
+      assert %Job{peak_mem_mib: 2500, peak_cpu_pct: 80.0, avg_cpu_pct: 60.0} = job!(40)
+    end
+
+    test "a job linked to its VM after its completed webhook still gets a summary",
+         %{repo: repo} do
+      vm = sampled_vm()
+      job = complete(repo, 41)
+      assert job.peak_mem_mib == nil
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+
+      assert %Job{peak_mem_mib: 2500, avg_cpu_pct: 60.0} = job!(41)
+    end
+
+    test "linking a job that's still running doesn't summarize it", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 42, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+
+      assert job!(42).peak_mem_mib == nil
+    end
+
+    test "a summary that can't be read doesn't fail the webhook", %{repo: repo} do
+      vm = sampled_vm()
+
+      {:ok, job} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, id: 43, status: "in_progress"))
+
+      {:ok, _} = Jobs.link_vm(job.id, vm)
+      Repo.query!("DROP TABLE vm_metrics")
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert %Job{gh_state: "completed", peak_mem_mib: nil} = complete(repo, 43)
+      end)
+
+      assert job!(43).conclusion == "success"
+    end
+  end
+
   describe "run attempts and the fork check (§19.5)" do
     test "a Crew job whose run attempt isn't known is blocked, checking fork status", %{
       repo: repo

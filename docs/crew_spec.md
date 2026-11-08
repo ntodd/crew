@@ -2493,8 +2493,13 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 
 - **Samples:** `vm_metrics` keeps 5 s samples (the guest's view plus the
   host's CPU and RSS) for 7 days.
-- **Job summary**, written at completion: peak memory, peak and average
-  CPU, peak disk, network bytes, and `oom`. `oom` is set when the capped
+- **Job summary**, written at completion (or when the VM is linked after
+  that): peak memory, peak and average CPU, peak disk, network bytes, and
+  `oom`. It counts the samples from the job's start to its finish, plus
+  two intervals for the last reading to arrive, so the VM's boot and the
+  runner's wait for the job don't count; a job too short for a sample of
+  its own gets all of its VM's. A summary that can't be read is logged,
+  never failing the webhook. `oom` is set when the capped
   console log shows the kernel's `Out of memory: Killed process`. That's
   display-only.
 - **Right-sizing hints** come from the last 10 completed runs of the same

@@ -92,30 +92,52 @@ defmodule Crew.Metrics do
   @doc "A VM's samples, oldest first."
   def vm_series(vm_id), do: Repo.all(from m in VMMetric, where: m.vm_id == ^vm_id, order_by: m.t)
 
+  # A sample's `t` is when the agent sent the guest's latest reading, up
+  # to one interval after the guest took it, and the reading covers the
+  # interval before that. So the window keeps samples up to two intervals
+  # past the finish: a trailing idle one only lowers average CPU, and a
+  # dropped one could hide the job's last peak.
+  @slack_s 10
+
   @doc """
-  A finished job's resource summary (§16.5) from its VM's samples: peak
-  memory, peak and average CPU, peak disk and network bytes.
+  A finished job's resource summary (§16.5): peak memory, peak and average
+  CPU, peak disk and network bytes, from its VM's samples while it ran,
+  from `started_at` to `completed_at`. The VM's boot and the runner's wait
+  for the job don't count. A job too short for a sample of its own, or
+  without both times, gets every sample of its VM.
   """
-  def job_summary(vm_id) do
-    case vm_series(vm_id) do
-      [] ->
-        nil
-
-      samples ->
-        net =
-          samples
-          |> Enum.chunk_every(2, 1, :discard)
-          |> Enum.map(fn [a, b] -> (a.net_rx_bps + a.net_tx_bps) / 8 * max(b.t - a.t, 0) end)
-          |> Enum.sum()
-
-        %{
-          peak_mem_mib: Enum.max_by(samples, & &1.mem_used_mib).mem_used_mib,
-          peak_cpu_pct: Enum.max_by(samples, & &1.cpu_pct).cpu_pct,
-          avg_cpu_pct: Float.round(Enum.sum_by(samples, & &1.cpu_pct) / length(samples), 1),
-          peak_disk_mib: Enum.max_by(samples, & &1.disk_used_mib).disk_used_mib,
-          net_bytes: round(net)
-        }
+  def job_summary(vm_id, started_at, completed_at) do
+    case vm_id |> vm_series() |> while_running(started_at, completed_at) do
+      [] -> nil
+      samples -> summarize(samples)
     end
+  end
+
+  defp while_running(samples, %DateTime{} = from, %DateTime{} = until) do
+    {a, b} = {DateTime.to_unix(from), DateTime.to_unix(until) + @slack_s}
+
+    case Enum.filter(samples, &(&1.t >= a and &1.t <= b)) do
+      [] -> samples
+      kept -> kept
+    end
+  end
+
+  defp while_running(samples, _from, _until), do: samples
+
+  defp summarize(samples) do
+    net =
+      samples
+      |> Enum.chunk_every(2, 1, :discard)
+      |> Enum.map(fn [a, b] -> (a.net_rx_bps + a.net_tx_bps) / 8 * max(b.t - a.t, 0) end)
+      |> Enum.sum()
+
+    %{
+      peak_mem_mib: Enum.max_by(samples, & &1.mem_used_mib).mem_used_mib,
+      peak_cpu_pct: Enum.max_by(samples, & &1.cpu_pct).cpu_pct,
+      avg_cpu_pct: Float.round(Enum.sum_by(samples, & &1.cpu_pct) / length(samples), 1),
+      peak_disk_mib: Enum.max_by(samples, & &1.disk_used_mib).disk_used_mib,
+      net_bytes: round(net)
+    }
   end
 
   @doc "Drops samples older than #{@keep_days} days."

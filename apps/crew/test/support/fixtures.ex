@@ -216,6 +216,25 @@ defmodule Crew.Fixtures do
     )
   end
 
+  @doc "A `vm.metrics` sample for `vm` at `t` (Unix seconds)."
+  def vm_metric_fixture(vm, t, attrs \\ []) do
+    Repo.insert!(
+      struct!(
+        %Crew.Metrics.VMMetric{
+          vm_id: vm.id,
+          box_id: vm.box_id,
+          job_id: vm.job_id,
+          t: t,
+          cpu_pct: 10.0,
+          mem_used_mib: 1024,
+          mem_total_mib: vm.memory_mib,
+          disk_used_mib: 2048
+        },
+        attrs
+      )
+    )
+  end
+
   @doc "The private key `box_fixture/1` enrolled for the box, for signing its agent's connects."
   def private_key(box_id), do: :persistent_term.get({__MODULE__, :private_key, box_id})
 
