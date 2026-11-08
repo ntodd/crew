@@ -43,8 +43,11 @@ defmodule CrewAgent.VMs do
     end
   end
 
+  # A VM that has exited is a duplicate even while its server is still
+  # registered: it holds unacked logs, or hasn't stopped yet after
+  # writing exited.json and emitting vm.exited.
   defp existing(vm_id) do
-    if VM.whereis(vm_id) || Driver.impl().alive?(vm_id),
+    if not exited?(vm_id) and (VM.whereis(vm_id) || Driver.impl().alive?(vm_id)),
       do: :ok,
       else: {:error, "duplicate", "VM #{vm_id} was started before"}
   end
