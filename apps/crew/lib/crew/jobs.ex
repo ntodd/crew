@@ -423,14 +423,30 @@ defmodule Crew.Jobs do
 
   defp after_upsert(_repo, _job, _attempt), do: :ok
 
+  @doc """
+  Writes a job's final resource summary (§16.5), once its VM is gone and
+  every sample is in: the one at completion can miss the last readings.
+  Only a final summary has a `coverage`, which right-sizing needs before
+  a run can argue for a smaller size.
+  """
+  def summarize_final(job_id) do
+    case get_job(job_id) do
+      %Job{} = job -> summarize(job)
+      nil -> :ok
+    end
+  end
+
   # The resource summary (§16.5), from the VM's samples while the job ran.
   # It's written on the job's `completed`, or when the VM is linked after
-  # that. It's display and hints only, so failing to read it is logged and
-  # never fails the webhook; the savepoint keeps a failed query from
-  # spoiling a surrounding transaction.
+  # that, and again once the VM is gone. Only then is every sample in, so
+  # only then does it keep its coverage. It's display and hints only, so
+  # failing to read it is logged and never fails the caller; the savepoint
+  # keeps a failed query from spoiling a surrounding transaction.
   defp summarize(%Job{vm_id: vm_id} = job) when is_binary(vm_id) do
     Repo.transact(fn ->
-      with %{} = summary <- Crew.Metrics.job_summary(vm_id, job.started_at, job.completed_at) do
+      with %{} = vm <- Crew.VMs.get(vm_id),
+           %{} = summary <- Crew.Metrics.job_summary(vm, job.started_at, job.completed_at) do
+        summary = if vm.state == "destroyed", do: summary, else: %{summary | coverage: nil}
         Repo.update_all(from(j in Job, where: j.id == ^job.id), set: Map.to_list(summary))
       end
 

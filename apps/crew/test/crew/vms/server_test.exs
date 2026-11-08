@@ -205,6 +205,53 @@ defmodule Crew.VMs.ServerTest do
       assert VMs.get!(id).state == "destroyed"
     end
 
+    test "the job's summary is final once its VM is destroyed, after its completed", %{
+      box: box,
+      repo: repo
+    } do
+      job = queued_job(repo, id: 506)
+      id = place(box, repo)
+      vm = to_idle(box, id)
+      started = workflow_job_payload(repo, id: 506, run_id: job.github_run_id)
+
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          put_in(started, ["workflow_job", "status"], "in_progress")
+          |> put_in(["workflow_job", "runner_name"], vm.name)
+        )
+
+      await_state(id, "busy")
+      t0 = DateTime.to_unix(~U[2026-11-03 10:00:05Z])
+      vm_metric_fixture(VMs.get!(id), t0 + 5, mem_used_mib: 1500)
+
+      {:ok, done} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: 506,
+            run_id: job.github_run_id,
+            status: "completed",
+            conclusion: "success",
+            completed_at: "2026-11-03T10:00:20Z",
+            runner_name: vm.name
+          )
+        )
+
+      assert %{peak_mem_mib: 1500, coverage: nil} = Repo.get!(Jobs.Job, done.id)
+
+      # The last reading lands before the VM goes.
+      vm_metric_fixture(VMs.get!(id), t0 + 20, mem_used_mib: 4000)
+      agent_event(box, "vm.exited", %{"vm_id" => id, "reason" => "poweroff", "cleanup" => "ok"})
+      await_state(id, "destroyed")
+
+      assert %{peak_mem_mib: 4000, coverage: coverage} =
+               eventually(fn ->
+                 j = Repo.get!(Jobs.Job, done.id)
+                 j.coverage && j
+               end)
+
+      assert is_float(coverage)
+    end
+
     test "a busy VM whose cleanup failed stays finished, holding its allocation", %{
       box: box,
       repo: repo

@@ -2507,9 +2507,19 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
   two intervals for the last reading to arrive, so the VM's boot and the
   runner's wait for the job don't count; a job too short for a sample of
   its own gets all of its VM's. A summary that can't be read is logged,
-  never failing the webhook. `oom` is set when the capped
-  console log shows the kernel's `Out of memory: Killed process`. That's
-  display-only.
+  never failing the webhook. Peak memory counts the guest's high-water
+  marks between samples. `oom` is set when the guest's OOM kill count
+  rose while the job ran.
+- **For right-sizing,** the summary also keeps what hints need once the
+  samples are pruned: the VM's vCPUs and memory (a job taken cross-class
+  didn't run on the size it asked for), the average CPU and memory
+  pressure, and `cpu_excess`: for each vCPU count below the VM's, the
+  core-seconds of demand above it. A sample stands for the time since the
+  one before it (5 s for the first, at most 15 s), and `coverage` is the
+  share of the job its samples stand for: a gap while the agent was away
+  is unknown, not idle. The summary is written again once the VM is
+  destroyed, when every sample is in, and only that final summary keeps
+  its coverage.
 - **Right-sizing hints** come from the last 10 completed runs of the same
   `(repo, workflow, job name)` (§7.5).
 

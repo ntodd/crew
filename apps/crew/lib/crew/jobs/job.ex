@@ -47,6 +47,16 @@ defmodule Crew.Jobs.Job do
     field :peak_disk_mib, :integer
     field :net_bytes, :integer
     field :oom, :boolean, default: false
+    # For right-sizing (§7.5): the VM's shape, the average stall pressure,
+    # the core-seconds of demand above each smaller vCPU count, and the
+    # share of the job the samples cover (nil until the summary is final).
+    field :vcpus, :integer
+    field :memory_mib, :integer
+    field :cpu_pressure_pct, :float
+    field :mem_pressure_pct, :float
+    field :mem_full_pressure_pct, :float
+    field :cpu_excess, {:array, :float}
+    field :coverage, :float
     timestamps()
   end
 
