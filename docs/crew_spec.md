@@ -558,6 +558,13 @@ the repo's jobs that GitHub still has queued or waiting.
     memory the job needs and 4 GiB more: the hint names a shape (1 or an
     even count of vCPUs, whole GiB) for an admin to add;
   - **fits** otherwise.
+- **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
+  days, for the repos the viewer can read: the memory the runs reserved
+  and the most they used, in GiB-hours (a VM's memory times how long it
+  ran), what applying the hints would have changed (what they free, what
+  larger sizes take, and the net), each repo's share, and every hint,
+  the most memory freed in a week first. Archived repos' runs still count
+  toward the week; only live repos get hints.
 
 ## 8. Scheduling
 

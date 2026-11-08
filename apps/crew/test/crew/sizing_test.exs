@@ -124,4 +124,98 @@ defmodule Crew.SizingTest do
       assert Sizing.for_repo(stranger, repo) == []
     end
   end
+
+  describe "fleet/1" do
+    defp admin, do: Scope.for_user(user_fixture(role: "admin"))
+
+    # A run on m (8 GiB) for 600 s reserves 8 * 600 / 3600 GiB-hours.
+    @run_gib_h 8 * 600 / 3600
+
+    test "totals over 7 days: memory reserved, peak used, and what the hints would free", %{
+      repo: repo
+    } do
+      finished_n(repo, 5)
+      fleet = Sizing.fleet(admin())
+
+      assert_in_delta fleet.reserved_gib_h, 5 * @run_gib_h, 0.001
+      assert_in_delta fleet.used_gib_h, 5 * (1000 / 1024) * 600 / 3600, 0.001
+      # xs instead of m: 6 of the 8 GiB, for every run.
+      assert_in_delta fleet.freed_gib_h, 5 * 6 * 600 / 3600, 0.001
+      assert fleet.needs_more == 0
+      assert fleet.days == 7
+    end
+
+    test "older runs count toward a job's hint, but not the week's totals", %{repo: repo} do
+      for i <- 1..4,
+          do: finished(repo, started_at: DateTime.add(DateTime.utc_now(), -(10 + i) * 86_400))
+
+      finished(repo)
+      fleet = Sizing.fleet(admin())
+
+      assert_in_delta fleet.reserved_gib_h, @run_gib_h, 0.001
+      assert [%{name: "test", hint: %{kind: :smaller}}] = fleet.hints
+      assert_in_delta fleet.freed_gib_h, 6 * 600 / 3600, 0.001
+    end
+
+    test "each repo's share, the most to free first, and each hint with its repo", %{repo: repo} do
+      other = repo_fixture(name: "other")
+      finished_n(repo, 5)
+      finished_n(other, 5, vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7))
+      fleet = Sizing.fleet(admin())
+
+      assert [%{repo: %{id: first}, runs: 5}, %{repo: %{id: second}, runs: 5}] = fleet.repos
+      assert {first, second} == {other.id, repo.id}
+      assert [%{repo: %{id: ^first}}, %{repo: %{id: ^second}}] = fleet.hints
+    end
+
+    test "what the hints free and what they take are kept apart, and netted", %{repo: repo} do
+      finished_n(repo, 5)
+      finished(repo, name: "e2e", oom: true, conclusion: "failure")
+      fleet = Sizing.fleet(admin())
+
+      assert fleet.needs_more == 1
+      assert_in_delta fleet.freed_gib_h, 5 * 6 * 600 / 3600, 0.001
+      # m to l: 8 GiB more for its one run.
+      assert_in_delta fleet.taken_gib_h, 8 * 600 / 3600, 0.001
+      assert_in_delta fleet.net_gib_h, (5 * 6 - 8) * 600 / 3600, 0.001
+      assert Enum.map(fleet.hints, & &1.name) == ["test", "e2e"]
+
+      assert [%{freed_gib_h: freed, taken_gib_h: taken}] = fleet.repos
+      assert_in_delta freed, 5 * 6 * 600 / 3600, 0.001
+      assert_in_delta taken, 8 * 600 / 3600, 0.001
+    end
+
+    test "an archived repo's runs still count toward the week, but it gets no hints", %{
+      repo: repo
+    } do
+      finished_n(repo, 5)
+      Repo.update!(Ecto.Changeset.change(repo, archived_at: DateTime.utc_now()))
+      fleet = Sizing.fleet(admin())
+
+      assert_in_delta fleet.reserved_gib_h, 5 * @run_gib_h, 0.001
+      assert [%{repo: %{id: id}, runs: 5}] = fleet.repos
+      assert id == repo.id
+      assert fleet.hints == []
+    end
+
+    test "only the repos the viewer can read", %{repo: repo} do
+      finished_n(repo, 5)
+      member = user_fixture()
+      fleet = Sizing.fleet(Scope.for_user(member))
+      assert %{repos: [], hints: [], reserved_gib_h: +0.0} = fleet
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      assert %{repos: [_], hints: [_]} = Sizing.fleet(Scope.for_user(member))
+    end
+
+    test "runs from before summaries kept the shape don't count", %{repo: repo} do
+      finished_n(repo, 3, vcpus: nil, memory_mib: nil)
+      assert %{repos: [], reserved_gib_h: +0.0} = Sizing.fleet(admin())
+    end
+  end
 end

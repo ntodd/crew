@@ -124,3 +124,32 @@ test("a run killed for memory asks for more", async ({page}) => {
   await expect(panel.locator("code")).toHaveText("runs-on: crew-xl")
   await shot(page, layer, "job-larger")
 })
+
+test("the right-sizing page: the week's memory, each repo's share, every hint", async ({page}) => {
+  await signIn(page)
+  await page.getByRole("link", {name: "Right-sizing"}).click()
+  await connected(page)
+
+  await expect(page.locator("#sizing-reserved")).not.toHaveText("0.0")
+  await expect(page.locator("#sizing-totals")).toContainText(/frees [0-9.]+, takes [0-9.]+ GiB-hours/)
+  await expect(page.locator("#sizing-needs-more")).toHaveText("1")
+  const hints = page.locator("#sizing-hints > li")
+  await expect(hints).toHaveCount(4)
+  await expect(hints.nth(0)).toContainText("mona/storefront")
+  await expect(page.locator("#sizing-repo-rows")).toContainText("mona/storefront")
+  expect(await rowOverflows(page)).toEqual([])
+  await shot(page, layer, "fleet")
+  await setTheme(page, "dark")
+  await shot(page, layer, "fleet-dark")
+  await setTheme(page, "light")
+
+  await page.setViewportSize({width: 390, height: 844})
+  await page.reload()
+  await connected(page)
+  expect(await rowOverflows(page)).toEqual([])
+  // The by-repo table fits without scrolling sideways.
+  const table = page.locator("#sizing-repos .overflow-x-auto")
+  expect(await table.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+  await shot(page, layer, "fleet-mobile")
+  await page.setViewportSize({width: 1440, height: 900})
+})

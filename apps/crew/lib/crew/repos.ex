@@ -39,6 +39,9 @@ defmodule Crew.Repos do
     Repo.all(from r in GitRepo, where: is_nil(r.archived_at), order_by: r.full_name)
   end
 
+  @doc "Every repo, archived ones too, by name: their runs are still history."
+  def list_all, do: Repo.all(from r in GitRepo, order_by: r.full_name)
+
   def get(id), do: Repo.get(GitRepo, id)
   def get!(id), do: Repo.get!(GitRepo, id)
   def get_by_full_name(name), do: Repo.get_by(GitRepo, full_name: name)
