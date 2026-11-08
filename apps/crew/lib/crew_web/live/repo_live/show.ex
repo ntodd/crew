@@ -1,12 +1,14 @@
 defmodule CrewWeb.RepoLive.Show do
   @moduledoc """
   A repo (§17.3): its settings (§7.4, admins), the `runs-on` snippets for
-  its allowed sizes (§7.5), and the permissions its installation is
-  missing. Changing settings re-parses its queued jobs.
+  its allowed sizes and its jobs' right-sizing hints (§7.5), and the
+  permissions its installation is missing. Changing settings re-parses
+  its queued jobs.
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Jobs, Repos, Scope, Sizes}
+  alias Crew.{Jobs, Repos, Scope, Sizes, Sizing}
+  alias CrewWeb.SizingComponents
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -28,6 +30,7 @@ defmodule CrewWeb.RepoLive.Show do
 
     socket
     |> assign(:repo, repo)
+    |> assign(:hints, Sizing.for_repo(socket.assigns.current_scope, repo))
     |> assign(:missing, Repos.missing_permissions(repo.installation))
     |> assign(:form, to_form(Repos.change_settings(repo), as: :repo))
   end
@@ -136,6 +139,41 @@ defmodule CrewWeb.RepoLive.Show do
           </.form>
         </.panel>
       </div>
+
+      <.panel id="sizing" title="Right-sizing" class="mt-4">
+        <:subtitle>
+          From each job's last runs over 30 days. Memory is what limits how many jobs a box takes at once.
+        </:subtitle>
+        <p :if={@hints == []} id="sizing-empty" class="text-sm text-ink-3">
+          Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
+        </p>
+        <ul :if={@hints != []} id="sizing-hints" class="-my-3 divide-y divide-line">
+          <li
+            :for={h <- @hints}
+            id={"sizing-#{h.job.id}"}
+            class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto] sm:items-start"
+          >
+            <div class="min-w-0">
+              <.link
+                navigate={
+                  ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
+                }
+                class="text-sm font-medium text-ink underline-offset-2 hover:underline"
+              >
+                {h.workflow_name} · {h.name}
+              </.link>
+              <p class="mt-0.5 text-xs text-ink-3">{SizingComponents.shape(h.hint.from)}</p>
+            </div>
+            <div class="min-w-0">
+              <.badge color={SizingComponents.color(h.hint)}>{SizingComponents.title(h.hint)}</.badge>
+              <p class="mt-1 text-xs text-ink-2">{List.first(h.hint.reasons)}</p>
+            </div>
+            <p class="whitespace-nowrap text-xs text-ink-2 sm:text-right">
+              {SizingComponents.saving(h.hint)}
+            </p>
+          </li>
+        </ul>
+      </.panel>
     </Layouts.app>
     """
   end

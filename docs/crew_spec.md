@@ -534,10 +534,30 @@ the repo's jobs that GitHub still has queued or waiting.
 
 - **Snippets:** the repo page shows a copy-ready `runs-on:` line for each
   allowed size.
-- **Hints:** the job page suggests:
-  - a smaller size when the last 10 runs of the same `(repo, workflow,
-    job name)` all peaked under 40% of both memory and vCPU;
-  - a larger one when any of them hit an OOM kill (§16.5).
+- **Hints** (`Crew.Sizing`, display only): the job page shows one once
+  the job finishes, and the repo page lists its jobs' hints. They come
+  from the last 10 finished runs of the same `(repo, workflow, job name)`
+  on the shape the newest one ran on (none if it has no shape), from
+  summaries a newer guest wrote (§16.5). Memory and CPU are sized separately, since memory is what
+  limits placement (§8.3):
+  - **larger** when any run had a process killed for memory, most stalled
+    on memory, or one peaked at 90% of its memory: never fewer vCPUs, and
+    the disk the runs used (adding vCPUs when it's also waiting on a CPU);
+  - **faster** when most runs (3 or more) had tasks waiting for a CPU a
+    quarter of the time, to the smallest size with more vCPUs that holds
+    its memory and disk (and no less memory if a run stalled on it);
+  - **smaller**, after 5 complete successful runs (a final summary
+    covering 80% of the run), to the allowed size with the least memory
+    that holds the highest peak plus 25% (at least 512 MiB), the highest
+    disk use plus 25% (at least 2 GiB), and enough vCPUs that no run would
+    be over 5% slower by estimate: on v vCPUs, `cpu_excess[v]` core-seconds
+    of waiting work done on v, over the run's duration. An incomplete
+    run's estimate counts against fewer vCPUs too: the work its samples
+    saw was done;
+  - **custom** when the best allowed size reserves at least twice the
+    memory the job needs and 4 GiB more: the hint names a shape (1 or an
+    even count of vCPUs, whole GiB) for an admin to add;
+  - **fits** otherwise.
 
 ## 8. Scheduling
 

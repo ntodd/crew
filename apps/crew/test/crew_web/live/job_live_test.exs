@@ -260,6 +260,52 @@ defmodule CrewWeb.JobLiveTest do
     assert_push_event(view, "source", %{source: "live", total: 1}, 1_000)
   end
 
+  describe "right-sizing (§7.5)" do
+    test "a finished job with enough runs shows its hint and the runs-on line", %{
+      conn: conn,
+      repo: repo
+    } do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 88)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/88")
+      assert has_element?(view, "#sizing", "From the last 5 runs of this job")
+      assert has_element?(view, "#sizing", "Try xs")
+      assert has_element?(view, "#sizing", "frees 6.0 GiB a run")
+      assert has_element?(view, "#sizing code", "runs-on: crew-xs")
+    end
+
+    test "a custom size tells an admin where to add it", %{conn: conn, repo: repo} do
+      busy = [name: "build", cpu_excess: [1200.0, 600.0, 120.0]]
+      summarized_jobs_fixture(repo, 4, busy)
+      summarized_job_fixture(repo, [run_id: 4242, id: 89] ++ busy)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/89")
+      assert has_element?(view, "#sizing", "A custom size would fit")
+      assert has_element?(view, "#sizing", "4 vCPU · 2.0 GiB · 20 GiB disk")
+      assert has_element?(view, "#sizing a[href='/admin/sizes']", "Sizes & labels")
+      refute has_element?(view, "#sizing code", "runs-on:")
+
+      # A member can't add sizes, so there's no link for them.
+      member = user_fixture()
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/89")
+      assert has_element?(view, "#sizing", "An admin can add it on Sizes & labels.")
+      refute has_element?(view, "#sizing a[href='/admin/sizes']")
+    end
+
+    test "a job that's still running has none", %{conn: conn, path: path} do
+      {:ok, view, _} = live(conn, path)
+      refute has_element?(view, "#sizing")
+    end
+  end
+
   describe "access (§18.3)" do
     test "an open page whose access lapses stops getting lines, and goes", %{
       repo: repo,

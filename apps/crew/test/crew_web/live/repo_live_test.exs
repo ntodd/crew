@@ -130,6 +130,39 @@ defmodule CrewWeb.RepoLiveTest do
     refute has_element?(view, "#snippets", "runs-on: crew-m")
   end
 
+  describe "right-sizing (§7.5)" do
+    test "lists each job with a change to suggest, linked to its newest run", %{
+      conn: conn,
+      repo: repo
+    } do
+      [_ | _] = jobs = summarized_jobs_fixture(repo, 5, name: "test")
+      summarized_jobs_fixture(repo, 5, name: "e2e", peak_mem_mib: 5000)
+      newest = List.last(jobs)
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#sizing", "Try xs")
+      assert has_element?(view, "#sizing", "frees 6.0 GiB a run")
+
+      assert has_element?(
+               view,
+               ~s(#sizing a[href="/runs/#{newest.github_run_id}/attempts/1/jobs/#{newest.github_id}"]),
+               "CI · test"
+             )
+
+      # e2e fits m.
+      refute has_element?(view, "#sizing", "e2e")
+    end
+
+    test "says when there's nothing to change", %{conn: conn, repo: repo} do
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#sizing-empty")
+
+      summarized_jobs_fixture(repo, 5, name: "e2e", peak_mem_mib: 5000)
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#sizing-empty")
+    end
+  end
+
   test "admins change settings, and queued jobs are re-parsed", %{conn: conn, repo: repo} do
     {:ok, job} = Crew.Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-xl"]))
     {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")

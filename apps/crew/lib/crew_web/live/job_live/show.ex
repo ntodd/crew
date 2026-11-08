@@ -14,8 +14,8 @@ defmodule CrewWeb.JobLive.Show do
 
   require Logger
 
-  alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Sizes, VMs}
-  alias CrewWeb.JobStatus
+  alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Scope, Sizes, Sizing, VMs}
+  alias CrewWeb.{JobStatus, SizingComponents}
 
   @flush_ms 250
   @steps_poll_ms 10_000
@@ -73,6 +73,7 @@ defmodule CrewWeb.JobLive.Show do
       steps: steps(source, job, vm),
       usual: usual_durations(job),
       metrics: if(vm, do: Metrics.vm_series(vm.id), else: []),
+      sizing: Sizing.for_job(job),
       status: JobStatus.of(job, DateTime.utc_now())
     )
   end
@@ -581,6 +582,15 @@ defmodule CrewWeb.JobLive.Show do
               <dt class="text-ink-3">Peak disk</dt>
               <dd class="text-ink tabular-nums">{gib(@job.peak_disk_mib || 0)} GiB</dd>
             </dl>
+          </.panel>
+
+          <.panel :if={@sizing} id="sizing" title="Right-sizing">
+            <:subtitle>{SizingComponents.basis(@sizing)}</:subtitle>
+            <SizingComponents.hint_details
+              hint={@sizing}
+              job={@job}
+              admin={Scope.admin?(@current_scope)}
+            />
           </.panel>
         </aside>
       </div>
