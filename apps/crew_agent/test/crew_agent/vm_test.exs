@@ -144,6 +144,28 @@ defmodule CrewAgent.VMTest do
     end
   end
 
+  test "vm.metrics carries the guest's network rates between its samples" do
+    vm_id = start_vm()
+    await("vm.state", &(&1.vm_id == vm_id and &1.state == "booted"))
+    token = token_of(vm_id)
+    post = &Req.post!(api() <> "/v1/metrics", json: &1, auth: {:bearer, token}, retry: false)
+    # The agent clamps a sample's t to the VM's life so far.
+    t0 = System.os_time(:millisecond)
+
+    assert post.(%{"t" => t0, "net_rx_bytes" => 1_000, "net_tx_bytes" => 0}).status == 204
+    # The guest API takes one sample every 2 s.
+    Process.sleep(2_100)
+
+    assert post.(%{"t" => t0 + 2_000, "net_rx_bytes" => 6_000, "net_tx_bytes" => 500}).status ==
+             204
+
+    send(VM.whereis(vm_id), :metrics)
+    m = await("vm.metrics", &(&1.vm_id == vm_id and &1.net_rx_bps > 0))
+    assert m.payload.net_rx_bps == 20_000.0
+    assert m.payload.net_tx_bps == 2_000.0
+    VMs.stop(vm_id, true, 0)
+  end
+
   test "logs are acked, resent, and reported gone" do
     vm_id = start_vm(start_command(), [{"FAKE_JOB_SECONDS", "30"}])
     log = await("vm.log", &(&1.vm_id == vm_id))

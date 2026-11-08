@@ -16,7 +16,7 @@ defmodule CrewAgent.VM do
 
   require Logger
 
-  alias CrewAgent.{Config, Driver, Net, Outbox, SafeFS}
+  alias CrewAgent.{Config, Driver, GuestSample, Net, Outbox, SafeFS}
   alias CrewAgent.VMs.Cleanup
   alias CrewProtocol.{Event, Guest, Text}
 
@@ -526,6 +526,7 @@ defmodule CrewAgent.VM do
   def handle_call({:metrics, body}, _from, state) do
     with {:ok, state} <- rate(state, :metrics),
          {:ok, m} <- Guest.cast_metrics(body, life(state)) do
+      m = Map.merge(m, GuestSample.rates(state.guest_metrics, m))
       {:reply, {:ok, stop_flag(state)}, %{state | guest_metrics: m}}
     else
       {:error, reason, state} -> {:reply, {:error, reason}, state}
@@ -958,8 +959,8 @@ defmodule CrewAgent.VM do
         mem_used_mib: Map.get(g, :mem_used_mib, 0),
         mem_total_mib: Map.get(g, :mem_total_mib, 0),
         disk_used_mib: Map.get(g, :disk_used_mib, 0),
-        net_rx_bps: 0,
-        net_tx_bps: 0,
+        net_rx_bps: Map.get(g, :net_rx_bps, 0.0),
+        net_tx_bps: Map.get(g, :net_tx_bps, 0.0),
         host_cpu_pct: min(host.cpu_pct * 1.0, 100_000.0),
         host_rss_mib: host.rss_mib
       })
