@@ -56,4 +56,18 @@ defmodule CrewWeb.Charts.GeometryTest do
     week = G.time_ticks(until - 7 * 86_400, until)
     assert length(week) in 6..8
   end
+
+  test "day ticks fall on UTC days, at most seven, the last on the range's end" do
+    # 2026-11-08 00:00 UTC
+    until = 1_794_096_000
+
+    for days <- [7, 30, 90] do
+      ticks = G.day_ticks(until - (days - 1) * 86_400, until)
+      assert Enum.all?(ticks, &(rem(&1, 86_400) == 0))
+      assert length(ticks) <= 7
+      assert List.last(ticks) == until
+    end
+
+    assert length(G.day_ticks(until - 6 * 86_400, until)) == 7
+  end
 end

@@ -2694,6 +2694,8 @@ The sidebar has:
 - **Queue**
 - **Repos**
 - **Boxes**
+- **Right-sizing**
+- **Usage**
 - **Admin** (admins only): Images, Sizes & labels, Caches, People, Audit,
   Deployment, Oban
 
@@ -2708,7 +2710,8 @@ The sidebar has:
     offline, plus a "reboot needed" badge;
   - firewall and virtualisation badges.
 - **Counters:** running, waiting and booting jobs, each linking to a
-  filtered Runs page.
+  filtered Runs page, and job minutes today (UTC, §16.6) with
+  yesterday's in its note, linking to Usage.
 - **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3).
 - **Recent:** the last 20 completed jobs.
 - **Charts (24 hours):** jobs started per 5 minutes, stacked by conclusion;
@@ -2745,6 +2748,26 @@ The sidebar has:
 - **Per class:** demand, supply, deficit, and stalled or backoff state.
 - **A 6-hour chart** of queue depth and booting VMs.
 - **Admins can change a repo's priority** from here (audit-logged).
+
+**Usage (`/usage`)** (§16.6)
+- **The range:** the last 7, 30 or 90 UTC days (`?days=`, 30 by
+  default); the subtitle says the days are UTC.
+- **Tiles:** job minutes, with the rounded-up minutes GitHub would bill;
+  VM minutes; overhead (boot, idle and teardown as a share of VM time,
+  with each one's minutes); and what was reserved, in GiB-hours and
+  vCPU-hours.
+- **A chart** of VM minutes per day stacked by phase, with job minutes
+  as a line.
+- **By box:** VM minutes, busy share, job minutes, memory and vCPU use,
+  reserved GiB-hours. Every box, for members too; a revoked one says so.
+- **By repo:** jobs, job minutes, rounded-up minutes, VM minutes and
+  overhead. Members see the repos they can read, and the rest as one
+  "Other repos" row with no name or link.
+- **By size:** each shape, named after the size that matches it, with
+  jobs, job minutes and VM minutes.
+- Closed days come from the rollup; today is counted live. Older days
+  it hasn't stored yet are named as not counted. On a phone the tables
+  drop their secondary columns.
 
 **Repos (`/repos`)**
 - **The repo list:** enabled, jobs over 7 days, success rate, p50 wait and

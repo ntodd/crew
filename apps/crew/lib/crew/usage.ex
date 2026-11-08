@@ -17,7 +17,7 @@ defmodule Crew.Usage do
   """
   import Ecto.Query
 
-  alias Crew.{Repo, Scheduler, VMs}
+  alias Crew.{Repo, Repos, Scheduler, Scope, Sizes, VMs}
   alias Crew.Boxes.Box
   alias Crew.Jobs.Job
   alias Crew.Metrics.BoxMetric
@@ -29,6 +29,8 @@ defmodule Crew.Usage do
   @recompute_days 2
   # Days without a rollup filled in per run, oldest first.
   @backfill_days 31
+  # The pairs top_jobs/3 keeps.
+  @top_jobs 10
 
   @doc """
   One UTC day from the raw rows, as `%{rows: [...], boxes: [...]}`: the
@@ -41,7 +43,7 @@ defmodule Crew.Usage do
     until = max(until, from)
 
     vms = VMs.overlapping(from, until)
-    jobs = finished_jobs(from, until)
+    jobs = finished_jobs(from, day_end)
     linked = linked_vms(jobs, vms)
     sizes = Map.new(Repo.all(Size), &{&1.id, &1})
 
@@ -221,6 +223,259 @@ defmodule Crew.Usage do
     case Enum.reject([vm, job], &is_nil/1) do
       [] -> nil
       ts -> ts |> Enum.min(DateTime) |> DateTime.to_date()
+    end
+  end
+
+  # -- reads -------------------------------------------------------------------
+
+  @doc """
+  Usage from `from` to `to` (UTC days, both included; never past today)
+  for `scope`: `totals`, a `series` with every day, and breakdowns by
+  box, repo and shape, each with `vm_s` (the four phases added up).
+
+  Closed days come from the stored tables; today, and a closed day the
+  rollup hasn't stored yet within its last 2, are computed live and
+  cached for the dashboard's `chart_cache_ms`. Older closed days it
+  hasn't stored yet are listed in `pending` and count nothing.
+
+  Everyone sees the fleet and every box in full: box pages already show
+  every box's whole allocation. In `repos`, someone who isn't an admin
+  sees only the repos they can read; the rest add up into one row with
+  `repo: nil`. Archived repos and revoked boxes count like any other.
+  """
+  def summary(%Scope{} = scope, %Date{} = from, %Date{} = to) do
+    {to, days} = days(from, to)
+    {rows, box_days, pending} = load(days, Date.utc_today())
+    sizes = Sizes.list()
+
+    %{
+      from: from,
+      to: to,
+      pending: pending,
+      totals: total(rows),
+      series: series(days, rows),
+      boxes: by_box(rows, box_days),
+      repos: by_repo(rows, Repos.readable_ids(scope)),
+      shapes: by_shape(rows, sizes)
+    }
+  end
+
+  @doc """
+  The fleet's totals for each day from `from` to `to`, as `summary/3`'s
+  `series`, without the breakdowns: everyone may see them.
+  """
+  def daily(%Date{} = from, %Date{} = to) do
+    {_to, days} = days(from, to)
+    {rows, _box_days, _pending} = load(days, Date.utc_today())
+    series(days, rows)
+  end
+
+  defp days(from, to) do
+    to = Enum.min([to, Date.utc_today()], Date)
+    {to, if(Date.compare(from, to) == :gt, do: [], else: Enum.to_list(Date.range(from, to)))}
+  end
+
+  defp series(days, rows) do
+    by_day = Enum.group_by(rows, & &1.day)
+    Enum.map(days, &(by_day |> Map.get(&1, []) |> total() |> Map.put(:day, &1)))
+  end
+
+  # The days' rows and box days, stored or live, and the closed days
+  # still waiting for the rollup.
+  defp load([], _today), do: {[], [], []}
+
+  defp load(days, today) do
+    {from, to} = {List.first(days), List.last(days)}
+
+    stored =
+      from(r in RolledDay, where: r.day >= ^from and r.day <= ^to, select: r.day)
+      |> Repo.all()
+      |> MapSet.new()
+
+    live_since = Date.add(today, -@recompute_days)
+
+    {live, missing} =
+      days
+      |> Enum.reject(&MapSet.member?(stored, &1))
+      |> Enum.split_with(&(Date.compare(&1, live_since) != :lt))
+
+    pending =
+      case missing != [] and first_day() do
+        %Date{} = first -> Enum.filter(missing, &(Date.compare(&1, first) != :lt))
+        _ -> []
+      end
+
+    computed = Enum.map(live, &cached/1)
+
+    # Only the days found stored above: one stored since then is already
+    # among the live ones.
+    stored_days = MapSet.to_list(stored)
+
+    rows =
+      from(d in Day, where: d.day in ^stored_days)
+      |> Repo.all()
+      |> Enum.map(&plain/1)
+
+    box_days =
+      from(b in BoxDay, where: b.day in ^stored_days)
+      |> Repo.all()
+      |> Enum.map(&plain/1)
+
+    {rows ++ Enum.flat_map(computed, & &1.rows), box_days ++ Enum.flat_map(computed, & &1.boxes),
+     pending}
+  end
+
+  defp cached(day) do
+    ttl = Application.get_env(:crew, :chart_cache_ms, 30_000)
+    Crew.Cache.fetch({__MODULE__, day}, ttl, fn -> compute(day) end)
+  end
+
+  defp plain(struct), do: struct |> Map.from_struct() |> Map.delete(:__meta__)
+
+  defp total(rows) do
+    t =
+      Map.merge(
+        Map.new(Tally.fields(), &{&1, 0}),
+        Tally.add(Enum.map(rows, &Map.take(&1, Tally.fields())))
+      )
+
+    Map.put(t, :vm_s, t.boot_s + t.idle_s + t.busy_s + t.teardown_s)
+  end
+
+  # Every box with rows or box days, the most VM time first. Use is the
+  # day-weighted share of what it offered while online, over the days
+  # that have both.
+  defp by_box(rows, box_days) do
+    rows_by = Enum.group_by(rows, & &1.box_id)
+    days_by = Enum.group_by(box_days, & &1.box_id)
+    ids = Enum.uniq(Enum.reject(Map.keys(rows_by), &is_nil/1) ++ Map.keys(days_by))
+    boxes = Repo.all(from b in Box, where: b.id in ^ids)
+
+    named =
+      for box <- boxes do
+        rows = Map.get(rows_by, box.id, [])
+        days = Map.get(days_by, box.id, [])
+        online = days |> Enum.map(& &1.online_s) |> Enum.reject(&is_nil/1)
+
+        rows
+        |> total()
+        |> Map.merge(%{
+          box: box,
+          online_s: if(online == [], do: nil, else: Enum.sum(online)),
+          mem_use: use(rows, days, :mem_mib_s, :allocatable_memory_mib),
+          vcpu_use: use(rows, days, :vcpu_s, :allocatable_vcpus)
+        })
+      end
+      |> Enum.sort_by(&{-&1.vm_s, &1.box.name})
+
+    case Map.get(rows_by, nil) do
+      nil ->
+        named
+
+      rows ->
+        named ++
+          [rows |> total() |> Map.merge(%{box: nil, online_s: nil, mem_use: nil, vcpu_use: nil})]
+    end
+  end
+
+  defp use(rows, days, used, offered) do
+    {num, den} =
+      Enum.reduce(days, {0, 0}, fn d, {num, den} ->
+        case {d.online_s, Map.get(d, offered)} do
+          {o, c} when is_number(o) and o > 0 and is_number(c) and c > 0 ->
+            day_used = rows |> Enum.filter(&(&1.day == d.day)) |> Enum.sum_by(&Map.get(&1, used))
+            {num + day_used, den + c * o}
+
+          _ ->
+            {num, den}
+        end
+      end)
+
+    if den > 0, do: num / den
+  end
+
+  defp by_repo(rows, readable) do
+    repos = Map.new(Repos.list_all(), &{&1.id, &1})
+    {mine, others} = Enum.split_with(rows, &(readable == :all or &1.repo_id in readable))
+
+    named =
+      mine
+      |> Enum.group_by(& &1.repo_id)
+      |> Enum.flat_map(fn {id, rows} ->
+        case Map.get(repos, id) do
+          nil -> []
+          repo -> [rows |> total() |> Map.put(:repo, repo)]
+        end
+      end)
+      |> Enum.sort_by(&{-&1.job_s, -&1.vm_s, &1.repo.full_name})
+
+    if others == [], do: named, else: named ++ [others |> total() |> Map.put(:repo, nil)]
+  end
+
+  defp by_shape(rows, sizes) do
+    rows
+    |> Enum.group_by(&{&1.vcpus, &1.memory_mib})
+    |> Enum.map(fn {{vcpus, memory}, rows} ->
+      rows
+      |> total()
+      |> Map.put(:shape, %{
+        name: size_name(sizes, vcpus, memory),
+        vcpus: vcpus,
+        memory_mib: memory
+      })
+    end)
+    |> Enum.sort_by(&{&1.shape.memory_mib || 0, &1.shape.vcpus || 0})
+  end
+
+  # The size a shape matches, a live one first.
+  defp size_name(sizes, vcpus, memory) do
+    matching = Enum.filter(sizes, &(&1.vcpus == vcpus and &1.memory_mib == memory))
+
+    case Enum.find(matching, &is_nil(&1.retired_at)) || List.first(matching) do
+      nil -> nil
+      size -> size.name
+    end
+  end
+
+  @doc """
+  The 10 `(workflow_name, name)` pairs of `repo` with the most job
+  minutes over the last `days` UTC days, today among them, read from
+  `jobs` (the rollup keeps no job names), with their counts and
+  rounded-up minutes. Nothing for a scope that can't read the repo.
+  """
+  def top_jobs(%Scope{} = scope, repo, days \\ 30) do
+    if Repos.can_read?(scope, repo.id) do
+      since = Date.utc_today() |> Date.add(1 - days) |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+
+      from(j in Job,
+        where:
+          j.repo_id == ^repo.id and j.completed_at >= ^since and j.classification == "ours" and
+            j.gh_state == "completed",
+        select: map(j, [:workflow_name, :name, :conclusion, :started_at, :completed_at])
+      )
+      |> Repo.all()
+      |> Enum.group_by(&{&1.workflow_name, &1.name})
+      |> Enum.flat_map(fn {{workflow, name}, jobs} ->
+        case jobs |> Enum.map(&Tally.job/1) |> Tally.add() do
+          %{job_count: n} = t ->
+            [
+              %{
+                workflow_name: workflow,
+                name: name,
+                jobs: n,
+                job_s: t.job_s,
+                job_billable_min: t.job_billable_min
+              }
+            ]
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.sort_by(&{-&1.job_s, &1.workflow_name || "", &1.name || ""})
+      |> Enum.take(@top_jobs)
+    else
+      []
     end
   end
 end
