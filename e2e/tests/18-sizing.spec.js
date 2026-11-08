@@ -153,3 +153,22 @@ test("the right-sizing page: the week's memory, each repo's share, every hint", 
   await shot(page, layer, "fleet-mobile")
   await page.setViewportSize({width: 1440, height: 900})
 })
+
+// e2e/seeds/sizing.exs makes 26 runs before CI · lint's, the newest of
+// which is its 27th.
+test("a job that moved sizes shows its time on each", async ({page}) => {
+  await signIn(page)
+  await page.goto("/runs/7700027/attempts/1/jobs/8800027")
+  await connected(page)
+
+  const panel = page.locator("#sizing")
+  await expect(panel).toContainText("m fits")
+  const rows = page.locator("#sizing-durations li")
+  await expect(rows).toHaveCount(2)
+  await expect(rows.nth(0)).toContainText("m (4 vCPU · 8.0 GiB)")
+  await expect(rows.nth(0)).toContainText("9m 00s")
+  await expect(rows.nth(0)).toContainText("6 runs")
+  await expect(rows.nth(1)).toContainText("l (8 vCPU · 16.0 GiB)")
+  await expect(rows.nth(1)).toContainText("8m 20s")
+  await shot(page, layer, "job-durations")
+})

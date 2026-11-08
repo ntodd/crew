@@ -558,6 +558,12 @@ the repo's jobs that GitHub still has queued or waiting.
     memory the job needs and 4 GiB more: the hint names a shape (1 or an
     even count of vCPUs, whole GiB) for an admin to add;
   - **fits** otherwise.
+- **Time on each size:** when a job's recent successful runs (its last 30
+  within 90 days) used more than one shape, its page shows the median
+  duration on each. That's the
+  check that a smaller size didn't slow it down: Crew counts reclaimable
+  page cache as free, so a job that reads a lot can get slower on less
+  memory without ever running out.
 - **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
   days, for the repos the viewer can read: the memory the runs reserved
   and the most they used, in GiB-hours (a VM's memory times how long it

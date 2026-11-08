@@ -19,6 +19,7 @@ defmodule Crew.Sizing do
   # totals cover the last 7.
   @repo_days 30
   @week_days 7
+  @durations_days 90
   # MiB-seconds in a GiB-hour.
   @mib_hour 1024 * 3600
 
@@ -54,6 +55,62 @@ defmodule Crew.Sizing do
   end
 
   def for_job(_job), do: nil
+
+  @doc """
+  How long a finished job's successful runs took on each shape they ran
+  on, the median of each, smallest shape first (§7.5): the check that a
+  new size didn't slow it down. Crew counts reclaimable page cache as
+  free, so a job that reads a lot can get slower on less memory without
+  running out. From its last 30 successful runs within 90 days. Empty for
+  a job still running, or with one shape to go on.
+  """
+  def durations(%Job{gh_state: "completed", classification: "ours"} = job) do
+    runs =
+      job
+      |> shaped_successes()
+      |> Enum.map(&{{&1.vcpus, &1.memory_mib}, duration(&1.started_at, &1.completed_at)})
+      |> Enum.filter(fn {_, d} -> is_integer(d) and d >= 0 end)
+      |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+
+    if map_size(runs) < 2, do: [], else: medians(runs)
+  end
+
+  def durations(_job), do: []
+
+  # The job's last successful runs whose summary has their shape, bounded
+  # in time as well as count: a job with years of runs from before
+  # summaries kept a shape would otherwise be read in full.
+  defp shaped_successes(job) do
+    since = DateTime.add(DateTime.utc_now(), -@durations_days * 86_400)
+
+    from(j in Job,
+      where:
+        j.repo_id == ^job.repo_id and j.workflow_name == ^job.workflow_name and
+          j.name == ^job.name and j.classification == "ours" and j.gh_state == "completed" and
+          j.completed_at >= ^since and j.conclusion == "success" and not is_nil(j.vcpus) and
+          not is_nil(j.memory_mib),
+      order_by: [desc: j.completed_at, desc: j.id],
+      limit: @history,
+      select: map(j, [:vcpus, :memory_mib, :started_at, :completed_at])
+    )
+    |> Repo.all()
+  end
+
+  defp medians(runs) do
+    sizes = Sizes.list()
+
+    runs
+    |> Enum.map(fn {{vcpus, memory}, ds} ->
+      name = Enum.find_value(sizes, &(&1.vcpus == vcpus and &1.memory_mib == memory and &1.name))
+
+      %{
+        shape: %{name: name, vcpus: vcpus, memory_mib: memory},
+        runs: length(ds),
+        median_s: ds |> Enum.sort() |> Enum.at(div(length(ds), 2))
+      }
+    end)
+    |> Enum.sort_by(&{&1.shape.memory_mib, &1.shape.vcpus})
+  end
 
   @doc """
   Every job of `repo` that ran in the last 30 days and has a change to

@@ -6,7 +6,8 @@
 #   - CI · build needs 4 vCPUs but 1 GiB: a custom size;
 #   - CI · e2e had a process killed for memory: larger;
 #   - Nightly · integration waits on its CPUs: faster;
-#   - CI · lint fits m, so the repo page doesn't list it.
+#   - CI · lint fits m, so the repo page doesn't list it; it moved there
+#     from l, so its page shows its time on each.
 import Ecto.Query
 
 alias Crew.Jobs
@@ -167,3 +168,13 @@ for h <- 1..6,
       )
 
 for h <- 1..6, do: finish.("CI", "lint", 2 * h, %{on_m | peak_mem_mib: 5200}, "success")
+
+for h <- 1..3,
+    do:
+      finish.(
+        "CI",
+        "lint",
+        20 + h,
+        Map.merge(on_l, %{label: "crew-l", peak_mem_mib: 5200, duration: 500}),
+        "success"
+      )

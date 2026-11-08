@@ -218,4 +218,56 @@ defmodule Crew.SizingTest do
       assert %{repos: [], reserved_gib_h: +0.0} = Sizing.fleet(admin())
     end
   end
+
+  describe "durations/1" do
+    defp ran(repo, minutes, attrs) do
+      started = hours_ago(attrs[:hours] || 1)
+
+      finished(repo, [started_at: started] ++ Keyword.delete(attrs, :hours))
+      |> then(fn job ->
+        Repo.update_all(from(j in Crew.Jobs.Job, where: j.id == ^job.id),
+          set: [completed_at: DateTime.add(started, minutes * 60)]
+        )
+
+        Repo.get!(Crew.Jobs.Job, job.id)
+      end)
+    end
+
+    test "the median duration of the job's successful runs on each shape it ran on", %{
+      repo: repo
+    } do
+      l = [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+      for {m, h} <- [{10, 9}, {12, 8}, {11, 7}], do: ran(repo, m, [hours: h] ++ l)
+      for {m, h} <- [{9, 6}, {14, 5}], do: ran(repo, m, hours: h)
+      ran(repo, 30, hours: 4, conclusion: "failure")
+      newest = ran(repo, 13, hours: 3)
+
+      assert [
+               %{shape: %{name: "m", vcpus: 4, memory_mib: 8192}, runs: 3, median_s: 780},
+               %{shape: %{name: "l", vcpus: 8}, runs: 3, median_s: 660}
+             ] = Sizing.durations(newest)
+    end
+
+    test "a run under a second counts; one older than 90 days doesn't", %{repo: repo} do
+      l = [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+      ran(repo, 0, [hours: 5] ++ l)
+      ran(repo, 20, [hours: 91 * 24] ++ l)
+      newest = ran(repo, 10, hours: 1)
+
+      assert [%{shape: %{vcpus: 4}}, %{shape: %{vcpus: 8}, runs: 1, median_s: 0}] =
+               Sizing.durations(newest)
+    end
+
+    test "nothing to compare on one shape, or for a job still running", %{repo: repo} do
+      for h <- 1..3, do: ran(repo, 10, hours: h)
+      assert Sizing.durations(ran(repo, 10, hours: 0)) == []
+
+      {:ok, running} =
+        Crew.Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: unique(), status: "in_progress")
+        )
+
+      assert Sizing.durations(running) == []
+    end
+  end
 end
