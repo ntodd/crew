@@ -87,6 +87,7 @@ defmodule CrewGuest.OutboxTest do
     end
 
     test "a request is at most 1 MiB, and requests at most 8 a second", %{api: api} do
+      record_request_starts(api)
       o = start_outbox(api)
       sent = lines(1..96, 32_768)
       Outbox.log(o, sent)
@@ -97,8 +98,12 @@ defmodule CrewGuest.OutboxTest do
       assert Enum.all?(reqs, &(&1.bytes <= 1_048_576))
       assert FakeAPI.log_texts(api) == Enum.map(sent, & &1.text)
 
-      # Requests start 125 ms apart; arrival at the server jitters a little.
-      gaps = reqs |> Enum.map(& &1.at) |> Enum.chunk_every(2, 1, :discard)
+      # The Outbox starts requests 125 ms apart. The client sees each start
+      # a moment later, but connecting and uploading come after, so they
+      # can't eat into the gap the way they did at the server.
+      starts = request_starts("/v1/log")
+      assert length(starts) == length(reqs)
+      gaps = Enum.chunk_every(starts, 2, 1, :discard)
       assert Enum.all?(gaps, fn [a, b] -> b - a >= 100 end)
     end
 
@@ -195,6 +200,7 @@ defmodule CrewGuest.OutboxTest do
     }
 
     test "only the latest snapshot goes, at most 2 a second", %{api: api} do
+      record_request_starts(api)
       o = start_outbox(api)
 
       for n <- 1..10 do
@@ -205,8 +211,10 @@ defmodule CrewGuest.OutboxTest do
       eventually(fn -> match?([%{number: 10}], FakeAPI.last_steps(api)) end)
       reqs = FakeAPI.requests(api, "/v1/steps")
       assert length(reqs) <= 3
-      # Requests start 500 ms apart; arrival at the server jitters a little.
-      gaps = reqs |> Enum.map(& &1.at) |> Enum.chunk_every(2, 1, :discard)
+      # Requests start 500 ms apart, as the client sees them.
+      starts = request_starts("/v1/steps")
+      assert length(starts) == length(reqs)
+      gaps = Enum.chunk_every(starts, 2, 1, :discard)
       assert Enum.all?(gaps, fn [a, b] -> b - a >= 400 end)
     end
 
