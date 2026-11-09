@@ -91,29 +91,6 @@ defmodule CrewWeb.RepoLive.Show do
     end
   end
 
-  # The -spare examples (§7.2) that would run here: crew-spare when the
-  # default size is allowed, and the largest allowed size's. A size named
-  # before the rule (`spare`, `l-spare`) keeps the label it hides.
-  defp spare_examples(allowed, sizes) do
-    names = MapSet.new(sizes, & &1.name)
-    hidden? = &MapSet.member?(names, &1)
-
-    default =
-      if Enum.any?(allowed, & &1.is_default) and not hidden?.("spare"),
-        do: ["crew-spare"],
-        else: []
-
-    sized =
-      allowed
-      |> Enum.map(&"#{&1.name}-spare")
-      |> Enum.reject(hidden?)
-      |> List.last()
-      |> List.wrap()
-      |> Enum.map(&("crew-" <> &1))
-
-    default ++ sized
-  end
-
   def handle_event("create_schedule", %{"schedule" => params}, socket) do
     case Schedules.create(socket.assigns.current_scope, socket.assigns.repo, params) do
       {:ok, _schedule} ->
@@ -173,6 +150,29 @@ defmodule CrewWeb.RepoLive.Show do
   @impl true
   def handle_info({:schedules_changed, _repo_id}, socket),
     do: {:noreply, assign_schedules(socket)}
+
+  # The -spare examples (§7.2) that would run here: crew-spare when the
+  # default size is allowed, and the largest allowed size's. A size named
+  # before the rule (`spare`, `l-spare`) keeps the label it hides.
+  defp spare_examples(allowed, sizes) do
+    names = MapSet.new(sizes, & &1.name)
+    hidden? = &MapSet.member?(names, &1)
+
+    default =
+      if Enum.any?(allowed, & &1.is_default) and not hidden?.("spare"),
+        do: ["crew-spare"],
+        else: []
+
+    sized =
+      allowed
+      |> Enum.map(&"#{&1.name}-spare")
+      |> Enum.reject(hidden?)
+      |> List.last()
+      |> List.wrap()
+      |> Enum.map(&("crew-" <> &1))
+
+    default ++ sized
+  end
 
   defp allowed(repo, sizes) do
     sizes
