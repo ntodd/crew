@@ -202,20 +202,28 @@ defmodule CrewGuest.OutboxTest do
     test "only the latest snapshot goes, at most 2 a second", %{api: api} do
       record_request_starts(api)
       o = start_outbox(api)
+      began = System.monotonic_time(:millisecond)
 
       for n <- 1..10 do
         Outbox.steps(o, [%{@step | number: n}])
         Process.sleep(20)
       end
 
+      # Each request after the first needs a snapshot that came in after the
+      # one before it started, so they fit in the time the snapshots took.
+      :sys.get_state(o)
+      sending = System.monotonic_time(:millisecond) - began
+
       eventually(fn -> match?([%{number: 10}], FakeAPI.last_steps(api)) end)
       reqs = FakeAPI.requests(api, "/v1/steps")
-      assert length(reqs) <= 3
-      # Requests start 500 ms apart, as the client sees them.
+      assert length(reqs) <= div(sending, 500) + 2
       starts = request_starts("/v1/steps")
-      assert length(starts) == length(reqs)
+      # A retried attempt that never reached the server starts here too.
+      assert length(starts) >= length(reqs)
+      # Timed where the request starts, not where it arrives: under load the
+      # first connection can take over a second to reach the server.
       gaps = Enum.chunk_every(starts, 2, 1, :discard)
-      assert Enum.all?(gaps, fn [a, b] -> b - a >= 400 end)
+      assert Enum.all?(gaps, fn [a, b] -> b - a >= 450 end)
     end
 
     test "a body over 256 KiB is cut down to fit", %{api: api} do
