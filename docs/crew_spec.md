@@ -2733,7 +2733,7 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 - A phase that comes out negative, because GitHub's and Crew's clocks
   differ or because the runner was booted for another job, is shown as 0,
   labelled "runner started for another job" where that applies.
-- The repo page shows p50 and p95 for each phase over 7 days, and the
+- The repo page shows run time and queue wait p50 and p95 over its window (§17.3), and the
   dashboard does the same for the whole fleet.
 
 ### 16.5 Resources per job
@@ -2991,19 +2991,34 @@ The sidebar has:
   run, the most-used size, the last run.
 - **Filters**, kept in the URL: a search on the name, enabled or disabled,
   public or private, and "has a priority".
-- **A repo page:**
-  - settings (§7.4) and `runs-on` snippets;
-  - workflow schedules (§7.6, admins): each with its next run, when it
-    last started and the last error, with Run now, Disable and Remove,
-    and a form to add one;
-  - recent runs;
-  - 30-day p50/p95 duration trends per workflow and job;
-  - flaky jobs (failed, then passed on a re-run of the same SHA within 7
-    days);
-  - right-sizing hints;
-  - **Usage** over 30 days (§16.6): jobs, job minutes and the rounded-up
-    minutes, VM minutes and overhead, a chart per day, and the jobs with
-    the most minutes, linking to Usage;
+- **A repo page,** full width, over the last 7 or 30 days (in the URL,
+  30 by default), from `Crew.Jobs.Insights`: the jobs that ran on Crew
+  (ours, completed, started, with a runner), by the UTC day they
+  finished. Jobs finishing refresh it, a few seconds at a time.
+  - **A stats strip:** jobs (passed, failed, other), pass rate (of passed
+    and failed; `timed_out` and `startup_failure` count as failed,
+    `cancelled` and `skipped` as other), run time p50 with p95, queue
+    wait p50 with p95 (queued, or seen, to started), job minutes with the
+    rounded-up minutes, and flaky jobs. Percentiles are nearest-rank: p50
+    of two values is the lower.
+  - **Two charts:** jobs per day stacked by outcome, in the status hues;
+    and run time, the p50 and p95 per day as lines, broken on days with
+    no jobs.
+  - **Workflows and jobs:** one row per `(workflow, job)`, the most
+    minutes first: runs, pass rate with a meter, p50, p95, wait p50,
+    minutes, and its last run, linked.
+  - **Flaky jobs:** a job that failed and then passed on a re-run of the
+    same commit, within the window; how many flakes in how many runs,
+    linked to the last flaky run. A failure fixed by a new commit, or a
+    pass followed by a failure, isn't flaky.
+  - **Recent runs,** the latest 8, linking to Runs filtered to the repo.
+  - right-sizing hints (§7.5);
+  - **VM time** (§16.6): VM minutes, overhead, VMs and unused VMs, and
+    the chart per day by phase with job minutes, linking to Usage;
+  - a rail: settings (§7.4) and workflow schedules (§7.6) for admins,
+    each schedule with its next run, when it last started and the last
+    error, with Run now, Disable and Remove, and a form to add one; and
+    the `runs-on` snippets;
   - permissions the installation is missing;
   - for public repos: a warning when fork-PR approval isn't set to
     "require approval for all outside collaborators" (§19.5).

@@ -105,32 +105,11 @@ defmodule CrewWeb.UsagePanelsTest do
 
       {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
 
-      assert has_element?(view, "#usage-jobs", "3")
-      assert has_element?(view, "#usage-job-minutes", "22")
-      assert has_element?(view, "#usage", "23 rounded up")
       assert has_element?(view, "#usage-vm-minutes", "23")
       assert has_element?(view, "#usage-overhead", "%")
-      assert has_element?(view, "#usage-chart")
+      assert has_element?(view, "#usage-chart", "Job minutes")
       assert has_element?(view, ~s(#usage a[href="/usage"]))
-
-      top = view |> element("#usage-top-jobs") |> render()
-      {test, _} = :binary.match(top, "CI · test")
-      {lint, _} = :binary.match(top, "CI · lint")
-      assert test < lint
-    end
-
-    test "a job with no workflow name shows its own", %{conn: conn, repo: repo} do
-      now = DateTime.utc_now() |> Map.put(:microsecond, {0, 6})
-
-      job_row_fixture(repo,
-        workflow_name: nil,
-        name: "deploy",
-        started_at: DateTime.add(now, -90),
-        completed_at: now
-      )
-
-      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
-      assert view |> element("#usage-top-jobs li") |> render() =~ ~r/>\s*deploy\s*</
+      refute has_element?(view, "#usage-jobs")
     end
 
     test "with nothing in the last 30 days, it says so", %{conn: conn, repo: repo} do

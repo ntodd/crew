@@ -239,34 +239,27 @@ defmodule CrewWeb.UsageComponents do
   defp box_use(_summary, _key), do: nil
 
   attr :summary, :map, required: true
-  attr :top_jobs, :list, required: true
+  attr :days, :integer, required: true
 
   @doc """
-  A repo's last 30 days (§17.3): its jobs and their minutes, its VM
-  minutes and their overhead, the chart, and its jobs with the most
-  minutes.
+  A repo's VM time over the window (§17.3): VM minutes and their
+  overhead, and the chart of VM minutes per day by phase with job
+  minutes over it. The jobs themselves are the page's insights.
   """
   def repo_panel(assigns) do
     ~H"""
-    <.panel id="usage" title="Usage" class="mt-4">
-      <:subtitle>Last 30 days. Days are UTC.</:subtitle>
+    <.panel id="usage" title="VM time">
+      <:subtitle>Last {@days} days. Days are UTC.</:subtitle>
       <:actions>
         <.link navigate={~p"/usage"} class="text-xs font-medium text-accent-ink hover:underline">
           All usage
         </.link>
       </:actions>
       <p :if={empty?(@summary)} id="usage-empty" class="text-sm text-ink-3">
-        No Crew jobs in the last 30 days.
+        No VM time in the last {@days} days.
       </p>
       <div :if={not empty?(@summary)} class="space-y-4">
         <dl class="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
-          <.stat id="usage-jobs" label="Jobs" value={delimit(@summary.totals.job_count)} />
-          <.stat
-            id="usage-job-minutes"
-            label="Job minutes"
-            value={minutes(@summary.totals.job_s)}
-            note={"#{delimit(@summary.totals.job_billable_min)} rounded up"}
-          />
           <.stat id="usage-vm-minutes" label="VM minutes" value={minutes(@summary.totals.vm_s)} />
           <.stat
             id="usage-overhead"
@@ -274,21 +267,15 @@ defmodule CrewWeb.UsageComponents do
             value={overhead(@summary.totals)}
             note="boot, idle and teardown"
           />
+          <.stat id="usage-vms" label="VMs" value={delimit(@summary.totals.vm_count)} />
+          <.stat
+            id="usage-unused"
+            label="Unused VMs"
+            value={delimit(@summary.totals.unused_count)}
+            note="booted, never took a job"
+          />
         </dl>
         <.chart id="usage-chart" summary={@summary} />
-        <div :if={@top_jobs != []}>
-          <h3 class="mb-1 text-xs font-medium text-ink-2">Jobs with the most minutes</h3>
-          <ul id="usage-top-jobs" class="divide-y divide-line text-sm">
-            <li :for={j <- @top_jobs} class="flex items-center justify-between gap-3 py-2">
-              <span class="min-w-0 truncate text-ink">
-                {Enum.join(Enum.reject([j.workflow_name, j.name], &is_nil/1), " · ")}
-              </span>
-              <span class="shrink-0 text-xs tabular-nums text-ink-2">
-                {minutes(j.job_s)} min · {delimit(j.jobs)} {if j.jobs == 1, do: "run", else: "runs"}
-              </span>
-            </li>
-          </ul>
-        </div>
       </div>
     </.panel>
     """
