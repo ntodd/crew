@@ -17,10 +17,18 @@ defmodule Crew.VMs do
   @fork_refused "fork PRs are refused on this repo"
   @live ~w(requested starting booted idle busy finished failed)
 
+  # One server per VM. Past its restart budget the supervisor ends, and
+  # every VM's server with it, and nothing starts them again until the
+  # control plane boots. So the budget is for crashes that are each their
+  # own VM's, not OTP's default of 3 in 5 s: one event reaches every VM
+  # on a box (an inventory, a disconnect), and a box can run dozens. A
+  # server that crashes each time it starts still uses it up.
   def child_spec(_),
     do: %{
       id: @sup,
-      start: {DynamicSupervisor, :start_link, [[strategy: :one_for_one, name: @sup]]},
+      start:
+        {DynamicSupervisor, :start_link,
+         [[strategy: :one_for_one, max_restarts: 100, max_seconds: 5, name: @sup]]},
       type: :supervisor
     }
 

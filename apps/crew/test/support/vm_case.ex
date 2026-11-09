@@ -25,6 +25,7 @@ defmodule Crew.VMCase do
   setup tags do
     Crew.DataCase.setup_sandbox(tags)
     Req.Test.set_req_test_to_shared(tags)
+    restart_vm_supervisor()
 
     key = :public_key.generate_key({:rsa, 2048, 65_537})
     pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, key)])
@@ -55,6 +56,15 @@ defmodule Crew.VMCase do
     Crew.Images.put_box_state(box.id, image.id, "ready")
 
     %{repo: repo, box: box, image: image, inst: repo.installation.github_id}
+  end
+
+  @doc """
+  A new VM supervisor, with its own restart budget: the servers earlier
+  tests crashed don't count against this test's.
+  """
+  def restart_vm_supervisor do
+    :ok = Supervisor.terminate_child(Crew.Supervisor, Crew.VMs.Supervisor)
+    {:ok, _} = Supervisor.restart_child(Crew.Supervisor, Crew.VMs.Supervisor)
   end
 
   @doc "Stops every VM server (their timers would outlive the test's sandbox)."
