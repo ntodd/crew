@@ -8,14 +8,15 @@ defmodule Crew.Jobs do
   state is recorded in `job_events` and otherwise ignored.
 
   Changes are broadcast with ids only (§9.3): `{:job_changed, id}` on
-  `jobs` and `job:<id>`, `{:run_changed, id}` on `run:<id>` and `jobs`.
+  `jobs`, `job:<id>` and `repo:<repo_id>`; `{:run_changed, id}` on `jobs`,
+  `run:<id>` and `repo:<repo_id>`.
   """
   import Ecto.Query
 
   require Logger
 
   alias Crew.{Audit, Repo, Repos, Sizes}
-  alias Crew.Jobs.{CancelRun, Classify, FetchRunAttempt, Job, JobEvent, RunAttempt}
+  alias Crew.Jobs.{CancelRun, Classify, FetchRunAttempt, Insights, Job, JobEvent, RunAttempt}
   alias Crew.Repos.Repo, as: GitRepo
 
   @checking_fork "checking fork status"
@@ -126,6 +127,9 @@ defmodule Crew.Jobs do
     Enum.reduce(filters, query, fn
       {"repo", name}, q when is_binary(name) and name != "" ->
         join(q, :inner, [a], r in assoc(a, :repo), on: r.full_name == ^name)
+
+      {"repo_id", id}, q when is_binary(id) ->
+        where(q, [a], a.repo_id == ^id)
 
       {"q", search}, q when is_binary(search) ->
         search |> String.split() |> Enum.reduce(q, &search_term/2)
@@ -594,6 +598,7 @@ defmodule Crew.Jobs do
     settle_attempt_jobs(repo, attempt)
     Phoenix.PubSub.broadcast(Crew.PubSub, "jobs", {:run_changed, attempt.id})
     Phoenix.PubSub.broadcast(Crew.PubSub, "run:#{attempt.id}", {:run_changed, attempt.id})
+    Phoenix.PubSub.broadcast(Crew.PubSub, repo_topic(attempt.repo_id), {:run_changed, attempt.id})
     {:ok, attempt}
   end
 
@@ -897,7 +902,9 @@ defmodule Crew.Jobs do
       values
       |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
       |> Enum.sort()
-      |> Enum.map(fn {t, xs} -> {t, percentile(xs, 0.5), percentile(xs, 0.95)} end)
+      |> Enum.map(fn {t, xs} ->
+        {t, Insights.percentile(xs, 0.5), Insights.percentile(xs, 0.95)}
+      end)
     end
 
     waits =
@@ -916,11 +923,6 @@ defmodule Crew.Jobs do
       wait: series.(waits),
       boot: series.(boots)
     }
-  end
-
-  defp percentile(xs, p) do
-    sorted = Enum.sort(xs)
-    Enum.at(sorted, min(length(sorted) - 1, floor(p * length(sorted))))
   end
 
   @doc "The last `n` successful completions of the same job (repo, workflow, name), for \"usually X\"."
@@ -990,9 +992,15 @@ defmodule Crew.Jobs do
     :ok
   end
 
+  @doc "Subscribes to one repo's job and run changes (§9.3): `{:job_changed, id}` and `{:run_changed, id}`."
+  def subscribe_repo(repo_id), do: Phoenix.PubSub.subscribe(Crew.PubSub, repo_topic(repo_id))
+
+  defp repo_topic(repo_id), do: "repo:#{repo_id}"
+
   defp broadcast_job(job) do
     Phoenix.PubSub.broadcast(Crew.PubSub, "jobs", {:job_changed, job.id})
     Phoenix.PubSub.broadcast(Crew.PubSub, "job:#{job.id}", {:job_changed, job.id})
+    Phoenix.PubSub.broadcast(Crew.PubSub, repo_topic(job.repo_id), {:job_changed, job.id})
 
     if job.run_attempt_id,
       do:
