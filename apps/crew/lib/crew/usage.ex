@@ -5,9 +5,9 @@ defmodule Crew.Usage do
   VM time is time held: a VM counts from `requested_at` until
   `destroyed_at`, split by phase (boot, idle, busy, teardown), and a VM
   held across midnight splits across both days. Job minutes count
-  finished work: a job counts whole on the UTC day of its
-  `completed_at`, never split, with its seconds and its seconds rounded
-  up to whole minutes, as GitHub bills hosted runners.
+  finished work, by jobs a runner took: a job counts whole on the UTC
+  day of its `completed_at`, never split, with its seconds and its
+  seconds rounded up to whole minutes, as GitHub bills hosted runners.
 
   `compute/1` reads a day from the raw rows. `Crew.Usage.Rollup` stores
   closed days in `usage_days`, `usage_box_days` and `usage_rollups`,
@@ -90,14 +90,23 @@ defmodule Crew.Usage do
     })
   end
 
-  # Finished Crew jobs that completed in the window, on
-  # jobs(classification, gh_state, completed_at).
-  defp finished_jobs(from, until) do
-    from(j in Job,
+  # Finished Crew jobs a runner took. GitHub stamps started_at on a job
+  # cancelled in the queue too, with no runner, and counting it would
+  # count the wait as work.
+  defp ran_jobs do
+    from j in Job,
       where:
         j.classification == "ours" and j.gh_state == "completed" and
-          j.completed_at >= ^DateTime.from_unix!(from) and
-          j.completed_at < ^DateTime.from_unix!(until) and not is_nil(j.started_at),
+          not is_nil(j.started_at) and not is_nil(j.runner_name) and j.runner_name != ""
+  end
+
+  # The ones that completed in the window, on
+  # jobs(classification, gh_state, completed_at).
+  defp finished_jobs(from, until) do
+    from(j in ran_jobs(),
+      where:
+        j.completed_at >= ^DateTime.from_unix!(from) and
+          j.completed_at < ^DateTime.from_unix!(until),
       select:
         map(j, [
           :repo_id,
@@ -494,10 +503,8 @@ defmodule Crew.Usage do
     if Repos.can_read?(scope, repo.id) do
       since = Date.utc_today() |> Date.add(1 - days) |> DateTime.new!(~T[00:00:00], "Etc/UTC")
 
-      from(j in Job,
-        where:
-          j.repo_id == ^repo.id and j.completed_at >= ^since and j.classification == "ours" and
-            j.gh_state == "completed",
+      from(j in ran_jobs(),
+        where: j.repo_id == ^repo.id and j.completed_at >= ^since,
         select: map(j, [:workflow_name, :name, :conclusion, :started_at, :completed_at])
       )
       |> Repo.all()

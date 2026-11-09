@@ -251,6 +251,20 @@ defmodule Crew.UsageSummaryTest do
       assert length(Usage.top_jobs(admin(), repo)) == 10
     end
 
+    test "leaves out jobs no runner took", %{repo: repo} do
+      now = DateTime.utc_now() |> Map.put(:microsecond, {0, 6})
+      job_row_fixture(repo, started_at: DateTime.add(now, -100), completed_at: now)
+
+      job_row_fixture(repo,
+        runner_name: nil,
+        conclusion: "cancelled",
+        started_at: DateTime.add(now, -9000),
+        completed_at: now
+      )
+
+      assert [%{name: "test", jobs: 1, job_s: 100}] = Usage.top_jobs(admin(), repo)
+    end
+
     test "nothing for a repo the viewer can't read", %{repo: repo, other: other} do
       now = DateTime.utc_now() |> Map.put(:microsecond, {0, 6})
       job_row_fixture(repo, started_at: DateTime.add(now, -100), completed_at: now)
