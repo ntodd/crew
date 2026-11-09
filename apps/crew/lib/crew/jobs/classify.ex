@@ -17,7 +17,8 @@ defmodule Crew.Jobs.Classify do
           label_key: [String.t()],
           size_id: term(),
           arch: String.t() | nil,
-          aliased: boolean()
+          aliased: boolean(),
+          spare: boolean()
         }
 
   @doc """
@@ -28,7 +29,15 @@ defmodule Crew.Jobs.Classify do
   @spec classify([String.t()], map()) :: result()
   def classify(labels, context) do
     key = Labels.key(labels)
-    base = %{label_key: key, size_id: nil, arch: nil, aliased: false, unsatisfiable_reason: nil}
+
+    base = %{
+      label_key: key,
+      size_id: nil,
+      arch: nil,
+      aliased: false,
+      spare: false,
+      unsatisfiable_reason: nil
+    }
 
     if context.repo.enabled do
       parsed(Labels.parse(labels, context.sizes, context.aliases), base, context)
@@ -50,7 +59,8 @@ defmodule Crew.Jobs.Classify do
           base
           | size_id: parsed.size_id,
             arch: Atom.to_string(parsed.arch),
-            aliased: parsed.alias
+            aliased: parsed.alias,
+            spare: parsed.spare
         }
 
         case static_reason(parsed, context) do

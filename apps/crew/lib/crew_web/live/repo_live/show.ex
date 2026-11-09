@@ -1,8 +1,9 @@
 defmodule CrewWeb.RepoLive.Show do
   @moduledoc """
   A repo (§17.3): its settings (§7.4, admins), the `runs-on` snippets for
-  its allowed sizes and its jobs' right-sizing hints (§7.5), its usage
-  over 30 days (§16.6), and the permissions its installation is missing.
+  its allowed sizes with a line on `-spare` (§7.2), its jobs' right-sizing
+  hints (§7.5), its usage over 30 days (§16.6), and the permissions its
+  installation is missing.
   Changing settings re-parses its queued jobs.
   """
   use CrewWeb, :live_view
@@ -68,6 +69,29 @@ defmodule CrewWeb.RepoLive.Show do
     end
   end
 
+  # The -spare examples (§7.2) that would run here: crew-spare when the
+  # default size is allowed, and the largest allowed size's. A size named
+  # before the rule (`spare`, `l-spare`) keeps the label it hides.
+  defp spare_examples(allowed, sizes) do
+    names = MapSet.new(sizes, & &1.name)
+    hidden? = &MapSet.member?(names, &1)
+
+    default =
+      if Enum.any?(allowed, & &1.is_default) and not hidden?.("spare"),
+        do: ["crew-spare"],
+        else: []
+
+    sized =
+      allowed
+      |> Enum.map(&"#{&1.name}-spare")
+      |> Enum.reject(hidden?)
+      |> List.last()
+      |> List.wrap()
+      |> Enum.map(&("crew-" <> &1))
+
+    default ++ sized
+  end
+
   defp allowed(repo, sizes) do
     sizes
     |> Enum.reject(&(&1.retired_at != nil))
@@ -114,6 +138,18 @@ defmodule CrewWeb.RepoLive.Show do
               </span>
             </li>
           </ul>
+          <p
+            :if={(examples = spare_examples(allowed(@repo, @sizes), @sizes)) != []}
+            id="spare-hint"
+            class="mt-3 text-xs text-ink-3"
+          >
+            Add <code class="font-mono text-ink-2">-spare</code>
+            for background work that only gets room regular jobs aren't using:
+            <%= for {label, i} <- Enum.with_index(examples) do %>
+              <span :if={i > 0}>or</span>
+              <code class="font-mono text-ink-2">runs-on: {label}</code>
+            <% end %>.
+          </p>
         </.panel>
 
         <.panel :if={Scope.admin?(@current_scope)} id="settings" title="Settings">

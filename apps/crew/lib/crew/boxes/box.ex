@@ -27,6 +27,8 @@ defmodule Crew.Boxes.Box do
     field :reserve_memory_mib, :integer
     field :cpu_overcommit, :float, default: 1.5
     field :max_vms, :integer
+    # The share spare jobs may use (§8.3); nil is 50.
+    field :spare_pct, :integer
     field :draining, :boolean, default: false
     field :drain_reason, :string
     field :reboot_required, :boolean, default: false

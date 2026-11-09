@@ -183,6 +183,34 @@ defmodule Crew.BoxesTest do
     end
   end
 
+  describe "capacity overrides (§8.3)" do
+    test "spare_pct is 0 to 100, or unset for the default" do
+      box = box_fixture()
+
+      for pct <- [0, 50, 100, nil] do
+        assert Boxes.change_overrides(box, %{spare_pct: pct}).valid?, inspect(pct)
+      end
+
+      assert Boxes.change_overrides(box, %{spare_pct: ""}).valid?
+
+      for pct <- [-1, 101] do
+        refute Boxes.change_overrides(box, %{spare_pct: pct}).valid?, inspect(pct)
+      end
+    end
+
+    test "a spare_pct change is audited with the other overrides", %{admin: admin} do
+      box = box_fixture()
+      {:ok, box} = Boxes.update_overrides(admin, box, %{"spare_pct" => "30", "max_vms" => "6"})
+      assert box.spare_pct == 30
+
+      assert [%{action: "box.overrides", metadata: %{"spare_pct" => 30, "max_vms" => 6}} | _] =
+               Crew.Audit.recent()
+
+      {:ok, box} = Boxes.update_overrides(admin, box, %{"spare_pct" => ""})
+      assert box.spare_pct == nil
+    end
+  end
+
   describe "joins and leaves" do
     test "a join records the agent and marks the box online; a leave marks it offline" do
       box = box_fixture()

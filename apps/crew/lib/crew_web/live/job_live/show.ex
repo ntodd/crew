@@ -65,7 +65,7 @@ defmodule CrewWeb.JobLive.Show do
       vm: vm,
       box: vm && Boxes.get(vm.box_id),
       image: vm && vm.image_id && Images.get(vm.image_id),
-      size: vm && Sizes.get(vm.size_id),
+      size: (vm && Sizes.get(vm.size_id)) || (job.size_id && Sizes.get(job.size_id)),
       source: source,
       sources: available,
       total: total(source, job, vm) || 0,
@@ -397,6 +397,15 @@ defmodule CrewWeb.JobLive.Show do
   defp phase_seconds({:other, s}), do: s
   defp phase_seconds(s), do: s || 0
 
+  # A spare job (§7.2) waits for room regular jobs aren't using.
+  defp spare_tag(assigns) do
+    ~H"""
+    <.badge size="sm" data-tier="spare" title="Runs on room regular jobs aren't using">
+      spare
+    </.badge>
+    """
+  end
+
   # -- render -----------------------------------------------------------------------------
 
   @impl true
@@ -560,6 +569,7 @@ defmodule CrewWeb.JobLive.Show do
               <dt class="text-ink-3">Size</dt>
               <dd class="text-ink">
                 {@size && @size.name} · {@vm.vcpus} vCPU · {gib(@vm.memory_mib)} GiB
+                <.spare_tag :if={@job.spare} />
               </dd>
               <dt class="text-ink-3">Image</dt>
               <dd class="truncate text-ink">{(@image && @image.version) || "–"}</dd>
@@ -569,6 +579,13 @@ defmodule CrewWeb.JobLive.Show do
             <p :if={@job.taken_cross_class} class="mt-2 text-xs text-ink-3">
               Taken by a runner started for [{Enum.join(@vm.class_key, ", ")}].
             </p>
+            <dl
+              :if={is_nil(@vm) and @size}
+              class="mb-1.5 grid grid-cols-[auto_1fr] gap-x-3 text-sm"
+            >
+              <dt class="text-ink-3">Size</dt>
+              <dd class="text-ink">{@size.name} <.spare_tag :if={@job.spare} /></dd>
+            </dl>
             <p :if={is_nil(@vm)} class="text-sm text-ink-3">Not on a Crew VM.</p>
           </.panel>
 

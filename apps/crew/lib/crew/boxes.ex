@@ -690,7 +690,7 @@ defmodule Crew.Boxes do
     end)
   end
 
-  @override_fields ~w(allocatable_vcpus_override allocatable_memory_mib_override reserve_vcpus reserve_memory_mib cpu_overcommit max_vms)a
+  @override_fields ~w(allocatable_vcpus_override allocatable_memory_mib_override reserve_vcpus reserve_memory_mib cpu_overcommit max_vms spare_pct)a
 
   def change_overrides(%Box{} = box, attrs \\ %{}) do
     box
@@ -704,6 +704,10 @@ defmodule Crew.Boxes do
     |> Ecto.Changeset.validate_number(:allocatable_vcpus_override, greater_than: 0)
     |> Ecto.Changeset.validate_number(:allocatable_memory_mib_override, greater_than: 0)
     |> Ecto.Changeset.validate_number(:max_vms, greater_than: 0)
+    |> Ecto.Changeset.validate_number(:spare_pct,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 100
+    )
   end
 
   @doc "Capacity overrides (§8.3). Audited with what changed."

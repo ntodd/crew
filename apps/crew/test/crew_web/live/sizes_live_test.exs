@@ -55,6 +55,31 @@ defmodule CrewWeb.SizesLiveTest do
     refute has_element?(view, "#alias-#{a.id}")
   end
 
+  test "a size named before the -spare rule says to rename it", %{conn: conn} do
+    for name <- ["spare", "big-spare"] do
+      Repo.insert!(%Crew.Sizes.Size{name: name, vcpus: 2, memory_mib: 4096, disk_gib: 40})
+    end
+
+    {:ok, view, _} = live(conn, ~p"/admin/sizes")
+
+    assert has_element?(
+             view,
+             "#size-spare-warning",
+             "can't be spare: rename it to use crew-spare"
+           )
+
+    assert has_element?(view, "#size-card-spare", "rename it to use crew-spare")
+
+    assert has_element?(
+             view,
+             "#size-big-spare-warning",
+             "can't end in -spare: rename it to use crew-big-spare"
+           )
+
+    assert has_element?(view, "#size-big-spare-warning", "finish their jobs first")
+    refute has_element?(view, "#size-m-warning")
+  end
+
   describe "the label tester" do
     test "a Crew label: its size, arch and the boxes that could hold it", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/admin/sizes")
@@ -68,6 +93,22 @@ defmodule CrewWeb.SizesLiveTest do
       assert has_element?(view, "#tested", "arm64")
       assert has_element?(view, "#tested", "m4")
       assert has_element?(view, "#tested", "crew-l-arm64, self-hosted")
+    end
+
+    test "a spare label: spare, and the boxes whose spare share could hold it", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/sizes")
+
+      view |> form("#label-tester", %{"runs_on" => "crew-l-spare"}) |> render_change()
+      assert has_element?(view, "#tested", "spare")
+      assert has_element?(view, "#tested", "spare share could hold it: m4")
+
+      # m4 offers 25.5 vCPUs, so half of it can't hold 16, though all of it can.
+      view |> form("#label-tester", %{"runs_on" => "crew-xl-spare"}) |> render_change()
+      assert has_element?(view, "#tested", "No box's spare share could hold it")
+
+      view |> form("#label-tester", %{"runs_on" => "crew-xl"}) |> render_change()
+      refute has_element?(view, "#tested", "spare")
+      assert has_element?(view, "#tested", "Boxes that could hold it: m4")
     end
 
     test "not Crew's, and unsatisfiable", %{conn: conn} do

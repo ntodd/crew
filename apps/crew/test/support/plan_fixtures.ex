@@ -43,6 +43,7 @@ defmodule Crew.PlanFixtures do
       reserve_memory_mib: Map.get(attrs, :reserve_memory_mib),
       cpu_overcommit: Map.get(attrs, :cpu_overcommit, 1.5),
       max_vms: Map.get(attrs, :max_vms),
+      spare_pct: Map.get(attrs, :spare_pct),
       vm_area_free_mib: Map.get(attrs, :vm_area_free_mib, area),
       last_repo_ran_at: Map.get(attrs, :last_repo_ran_at, %{})
     }
@@ -64,6 +65,7 @@ defmodule Crew.PlanFixtures do
       queued_at: Map.get(attrs, :queued_at, @now - 60_000 + n),
       blocked_reason: Map.get(attrs, :blocked_reason)
     }
+    |> put_tier(attrs)
   end
 
   def vm(n, box_id, attrs \\ []) do
@@ -86,7 +88,13 @@ defmodule Crew.PlanFixtures do
       idle_at: Map.get(attrs, :idle_at),
       image_id: Map.get(attrs, :image_id, "img-1")
     }
+    |> put_tier(attrs)
   end
+
+  # Jobs and VMs carry `spare` only when a test gives it: the plan reads
+  # a missing one as regular.
+  defp put_tier(map, %{spare: spare}), do: Map.put(map, :spare, spare)
+  defp put_tier(map, _attrs), do: map
 
   def repo(id, attrs \\ []),
     do: Map.merge(%{id: id, priority: 0, max_concurrent: nil, allowed_boxes: nil}, Map.new(attrs))

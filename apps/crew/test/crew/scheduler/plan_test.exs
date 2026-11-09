@@ -405,6 +405,14 @@ defmodule Crew.Scheduler.PlanTest do
     end
   end
 
+  describe "the tier (§7.2)" do
+    test "each placement carries its job's tier, regular when the job doesn't say" do
+      jobs = [job(1), job(2, spare: true, label_key: ["crew-m-spare"]), job(3, spare: false)]
+      tiers = Map.new(placements(Plan.plan(snapshot(jobs: jobs))), &{&1.job_id, &1.spare})
+      assert tiers == %{"job-1" => false, "job-2" => true, "job-3" => false}
+    end
+  end
+
   test "it's pure: the same snapshot gives the same actions" do
     snap = snapshot(boxes: [box("a"), box("b")], jobs: for(n <- 1..8, do: job(n)))
     assert Plan.plan(snap) == Plan.plan(snap)

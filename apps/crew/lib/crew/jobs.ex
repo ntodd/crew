@@ -349,7 +349,8 @@ defmodule Crew.Jobs do
           :label_key,
           :size_id,
           :arch,
-          :aliased
+          :aliased,
+          :spare
         ])
       )
       |> Map.merge(progress(data))
@@ -680,7 +681,15 @@ defmodule Crew.Jobs do
 
     changes =
       classified
-      |> Map.take([:classification, :unsatisfiable_reason, :label_key, :size_id, :arch, :aliased])
+      |> Map.take([
+        :classification,
+        :unsatisfiable_reason,
+        :label_key,
+        :size_id,
+        :arch,
+        :aliased,
+        :spare
+      ])
       |> Map.put(:blocked_reason, fork_blocked(job, classified, attempt))
 
     changeset = Ecto.Changeset.change(job, changes)
@@ -773,7 +782,7 @@ defmodule Crew.Jobs do
 
   # -- the dashboard (§17.3) ----------------------------------------------------------
 
-  @doc "Running, waiting and booting counts for Crew's jobs."
+  @doc "Running, waiting (regular, with spare apart) and booting counts for Crew's jobs."
   def counts do
     running =
       Repo.aggregate(
@@ -781,11 +790,15 @@ defmodule Crew.Jobs do
         :count
       )
 
+    # Waiting is regular jobs; spare ones (§7.2) are counted apart.
     waiting =
-      Repo.aggregate(
-        from(j in Job, where: j.classification == "ours" and j.gh_state == "queued"),
-        :count
+      Repo.all(
+        from j in Job,
+          where: j.classification == "ours" and j.gh_state == "queued",
+          group_by: j.spare,
+          select: {j.spare, count(j.id)}
       )
+      |> Map.new()
 
     booting =
       Repo.aggregate(
@@ -793,15 +806,21 @@ defmodule Crew.Jobs do
         :count
       )
 
-    %{running: running, waiting: waiting, booting: booting}
+    %{
+      running: running,
+      waiting: Map.get(waiting, false, 0),
+      waiting_spare: Map.get(waiting, true, 0),
+      booting: booting
+    }
   end
 
   @doc "The `n` longest-waiting Crew jobs, with their reasons."
   def longest_waiting(n \\ 10) do
+    # Regular jobs first: spare ones (§7.2) can wait for hours by design.
     Repo.all(
       from j in Job,
         where: j.classification == "ours" and j.gh_state == "queued",
-        order_by: [asc: coalesce(j.queued_at, j.seen_at)],
+        order_by: [asc: j.spare, asc: coalesce(j.queued_at, j.seen_at)],
         limit: ^n,
         preload: [:repo, :size]
     )

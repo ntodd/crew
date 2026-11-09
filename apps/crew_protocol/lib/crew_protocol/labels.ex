@@ -10,6 +10,12 @@ defmodule CrewProtocol.Labels do
       crew-<size>-<arch>   that size and arch            <arch> ∈ { x64, arm64 }
 
   next to labels from the generic set `{self-hosted, linux, x64, arm64}`.
+  Any of the four takes a `-spare` suffix, always last (`crew-l-spare`,
+  `crew-l-arm64-spare`): the job runs on spare capacity (§7.2).
+
+  A label that parsed before the suffix existed parses the same way, so a
+  size named `spare` or `x-spare` keeps its label. Only a Crew label whose
+  size is unknown and that ends in `-spare` is parsed again without it.
 
   `parse/3` lowercases, deduplicates and sorts the labels into the
   **label key**: a runner for the class is registered with exactly that
@@ -29,7 +35,8 @@ defmodule CrewProtocol.Labels do
           size_id: term(),
           arch: :any | :x64 | :arm64,
           key: [String.t()],
-          alias: boolean()
+          alias: boolean(),
+          spare: boolean()
         }
 
   def generic, do: @generic
@@ -61,19 +68,68 @@ defmodule CrewProtocol.Labels do
         case Enum.find(sizes, &(&1.id == size_id)) do
           nil -> {:unsatisfiable, "the alias's size no longer exists"}
           %{retired: true, name: name} -> {:unsatisfiable, "size #{name} retired"}
-          _ -> {:ours, %{size_id: size_id, arch: arch, key: key, alias: true}}
+          _ -> {:ours, %{size_id: size_id, arch: arch, key: key, alias: true, spare: false}}
         end
     end
   end
 
   defp parse_crew(crew, others, key, sizes) do
+    case parse_crew_label(crew, others, key, sizes) do
+      {:unknown_size, name} -> parse_spare(crew, name, others, key, sizes)
+      result -> result
+    end
+  end
+
+  # Today's parse of one Crew label, with an unknown size left for the
+  # -spare checks.
+  defp parse_crew_label(crew, others, key, sizes) do
     with :ok <- only_generic(crew, others),
          {size_name, crew_arch} = split(crew),
          {:ok, size} <- find_size(size_name, sizes),
          {:ok, arch} <- arch(crew_arch, others) do
-      {:ours, %{size_id: size.id, arch: arch, key: key, alias: false}}
+      {:ours, %{size_id: size.id, arch: arch, key: key, alias: false, spare: false}}
     end
   end
+
+  # The size didn't parse. A label ending in -spare is parsed again
+  # without it, and that result stands; one with -spare before its arch
+  # is told where it goes.
+  defp parse_spare(crew, size_name, others, key, sizes) do
+    cond do
+      String.ends_with?(crew, "-spare") ->
+        case parse_crew_label(String.replace_suffix(crew, "-spare", ""), others, key, sizes) do
+          {:ours, parsed} -> {:ours, %{parsed | spare: true}}
+          {:unknown_size, name} -> unknown_size(name)
+          result -> result
+        end
+
+      label = misplaced_spare(crew, size_name, sizes) ->
+        {:unsatisfiable, "-spare goes last: #{label}"}
+
+      true ->
+        unknown_size(size_name)
+    end
+  end
+
+  # crew-l-spare-arm64 → crew-l-arm64-spare, when l is a size; and
+  # crew-spare-arm64 → crew-arm64-spare.
+  defp misplaced_spare(crew, size_name, sizes) do
+    with {_, arch} when arch != :any <- split(crew),
+         {:ok, base} <- without_spare(size_name, sizes) do
+      "#{base}-#{arch}-spare"
+    else
+      _ -> nil
+    end
+  end
+
+  defp without_spare("spare", _sizes), do: {:ok, "crew"}
+
+  defp without_spare(size_name, sizes) do
+    name = String.replace_suffix(size_name, "-spare", "")
+    if name != size_name and Enum.any?(sizes, &(&1.name == name)), do: {:ok, "crew-" <> name}
+  end
+
+  defp unknown_size(name), do: {:unsatisfiable, "unknown size #{name}"}
 
   defp only_generic(crew, others) do
     case Enum.reject(others, &(&1 in @generic)) do
@@ -107,7 +163,7 @@ defmodule CrewProtocol.Labels do
 
   defp find_size(name, sizes) do
     case Enum.find(sizes, &(&1.name == name)) do
-      nil -> {:unsatisfiable, "unknown size #{name}"}
+      nil -> {:unknown_size, name}
       %{retired: true} -> {:unsatisfiable, "size #{name} retired"}
       size -> {:ok, size}
     end

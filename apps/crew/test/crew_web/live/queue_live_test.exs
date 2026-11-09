@@ -37,6 +37,29 @@ defmodule CrewWeb.QueueLiveTest do
     assert has_element?(view, "#queue-chart")
   end
 
+  test "spare jobs and classes are tagged, and a class with both tiers is mixed", %{
+    conn: conn,
+    repo: repo
+  } do
+    for {id, labels} <- [{5, ["crew-m-spare"]}, {6, ["crew-l-spare"]}, {7, ["crew-l-spare"]}] do
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: id, run_id: 901, name: "job #{id}", labels: labels)
+        )
+    end
+
+    # Mid-rename (§7.1): one of the class's jobs is still regular.
+    Repo.update_all(from(j in Crew.Jobs.Job, where: j.github_id == 7), set: [spare: false])
+    [spare, regular] = for id <- [5, 1], do: Repo.get_by!(Crew.Jobs.Job, github_id: id)
+
+    {:ok, view, _} = live(log_in(conn, user_fixture(role: "admin")), ~p"/queue")
+
+    assert has_element?(view, "#blocked-#{spare.id} [data-tier]", "spare")
+    refute has_element?(view, "#blocked-#{regular.id} [data-tier]")
+    assert has_element?(view, "#classes [data-tier=spare]", "spare")
+    assert has_element?(view, "#classes [data-tier=mixed]", "mixed")
+  end
+
   test "admins change a repo's priority here, audited", %{conn: conn, repo: repo} do
     admin = user_fixture(role: "admin")
     {:ok, view, _} = live(log_in(conn, admin), ~p"/queue")
