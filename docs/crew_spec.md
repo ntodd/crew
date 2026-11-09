@@ -983,6 +983,24 @@ what it may show (§18.3).
 | Webhook deliveries | 7 days |
 | Audit log | Forever |
 
+`Crew.Jobs.Prune` (hourly at :27, on `maintenance`) deletes run
+attempts, jobs and VM rows a batch at a time, and their events with
+them:
+
+- A job's age is when it completed, or for one that never did, its last
+  event. A run attempt goes with its jobs, once every one of them is
+  past the retention and the attempt hasn't changed for it either: a
+  run never shows only some of its jobs, and while one of them is open
+  the reconciler, which upserts every job it lists for an attempt
+  (§8.8), has none to add back. A job with no run attempt goes on its
+  own.
+- A VM's age is when it was destroyed. One that isn't destroyed stays,
+  and so does one a job that's kept ran on.
+- Nothing goes that the usage rollup may still read (§16.6): nothing
+  from today or the last 2 closed days, and nothing at all while it has
+  older days to fill in, since the oldest rows decide where it fills in
+  from.
+
 ## 10. Agent and protocol
 
 ### 10.1 Structure and state
