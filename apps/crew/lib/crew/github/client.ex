@@ -553,6 +553,21 @@ defmodule Crew.GitHub.Client do
     end
   end
 
+  @doc "Starts a workflow on a ref with `workflow_dispatch` (a schedule firing, §7.6)."
+  def dispatch_workflow(installation_id, repo, workflow, ref) do
+    case installation_request(
+           installation_id,
+           :post,
+           "#{repo_path(repo)}/actions/workflows/#{URI.encode(workflow)}/dispatches",
+           json: %{"ref" => ref},
+           endpoint: "/repos/{o}/{r}/actions/workflows/{file}/dispatches",
+           class: :normal
+         ) do
+      {:ok, %{status: 204}} -> :ok
+      other -> unexpected(other)
+    end
+  end
+
   # -- helpers --------------------------------------------------------------------
 
   defp paginate(req, url, extract, max_pages \\ 50) do

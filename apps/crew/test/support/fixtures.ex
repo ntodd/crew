@@ -63,6 +63,23 @@ defmodule Crew.Fixtures do
     |> Repo.preload(:installation)
   end
 
+  @doc "A workflow schedule (§7.6). Its clock starts an hour ago unless `last_due_at` says otherwise."
+  def schedule_fixture(repo, attrs \\ []) do
+    attrs = Map.new(attrs)
+
+    %Crew.Schedules.Schedule{
+      repo_id: repo.id,
+      workflow: Map.get(attrs, :workflow, "flake-hunt.yml"),
+      ref: Map.get(attrs, :ref, "main"),
+      cron: Map.get(attrs, :cron, "17 7 * * *"),
+      enabled: Map.get(attrs, :enabled, true),
+      last_due_at: Map.get(attrs, :last_due_at, DateTime.add(DateTime.utc_now(), -3600)),
+      last_dispatched_at: Map.get(attrs, :last_dispatched_at),
+      last_error: Map.get(attrs, :last_error)
+    }
+    |> Repo.insert!()
+  end
+
   @doc "A workflow_job webhook payload (GitHub's shape, trimmed to what Crew reads)."
   def workflow_job_payload(repo, attrs \\ []) do
     attrs = Map.new(attrs)
