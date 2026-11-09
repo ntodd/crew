@@ -312,6 +312,37 @@ defmodule Crew.VMs.ServerTest do
       assert VMs.get!(id).state == "destroyed"
     end
 
+    test "a VM busy on the guest's hook that exits with a cleanup error still links its job",
+         %{box: box, repo: repo} do
+      job = queued_job(repo, id: 508)
+      id = place(box, repo)
+      vm = to_idle(box, id)
+
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "job_started", "at" => 3})
+      await_state(id, "busy")
+
+      agent_event(box, "vm.exited", %{"vm_id" => id, "reason" => "poweroff", "cleanup" => "error"})
+
+      await_state(id, "finished")
+
+      for status <- ["in_progress", "completed"] do
+        {:ok, _} =
+          Jobs.handle_workflow_job(
+            workflow_job_payload(repo,
+              id: 508,
+              run_id: job.github_run_id,
+              status: status,
+              conclusion: if(status == "completed", do: "success"),
+              runner_name: vm.name
+            )
+          )
+      end
+
+      assert eventually(fn -> VMs.get!(id).job_id end) == job.id
+      assert eventually(fn -> Jobs.get_job!(job.id).vm_id end) == id
+      assert VMs.get!(id).state == "finished"
+    end
+
     test "a job taken across classes is flagged", %{box: box, repo: repo} do
       job = queued_job(repo, id: 502, labels: ["crew-m"])
       id = place(box, repo, label_key: ["crew-m", "self-hosted"])

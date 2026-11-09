@@ -84,7 +84,7 @@ module vm_lifecycle {
       | JobStarted(j) =>
         if (preJob.contains(s))
           Ok({ vm: vm.with("jobId", j).with("state", "busy"), effects: Set(LinkJob(j)) })
-        else if (s == "busy" and vm.jobId == "")
+        else if ((s == "busy" or s == "finished") and vm.jobId == "")
           Ok({ vm: vm.with("jobId", j), effects: Set(LinkJob(j)) })
         else if (s == "failed")
           Ok({ vm: vm.with("state", "busy").with("reason", "").with("jobId", j),
@@ -102,6 +102,8 @@ module vm_lifecycle {
           Ok({ vm: vm.with("state", "finished").with("reason", "").with("jobId", j),
                effects: Set(LinkJob(j), ArmFinished) })
         else if (s == "busy") goTo(vm, "finished", Set(ArmFinished))
+        else if (s == "finished" and vm.jobId == "")
+          Ok({ vm: vm.with("jobId", j), effects: Set(LinkJob(j)) })
         else Ignored
       | Exited(e) =>
         if (s == "requested") failTo(vm, "boot_failed", Set(DeleteRunner))
@@ -710,9 +712,9 @@ module vm_lifecycle {
       .expect(S.killedDuringJob and S.stopReasonDuringJob == "lost")
 
   /// A VM that went busy on the guest's hook, then exited with a cleanup
-  /// error before GitHub's in_progress arrived: finished ignores the
-  /// webhook, and the job never links to the VM while the server lives.
-  run finishedDropsLinkTest =
+  /// error before GitHub's in_progress arrived: it stays finished, and the
+  /// webhook that names it links the job there.
+  run finishedLinksJobTest =
     init.then(cpJitOkA).then(agentDeliverOk)
       .then(cpDeliverAgentA)         // starting
       .then(guestFetchPayloadA).then(cpDeliverAgentA)   // booted
@@ -722,9 +724,9 @@ module vm_lifecycle {
       .then(ghCompleteA)
       .then(vmmPoweroffA)
       .then(agentPollCleanupFails).then(cpDeliverAgentA) // finished, cleanup failed: stays
-      .then(cpHookA)                 // in_progress or completed: ignored in finished
+      .then(cpHookA)                 // in_progress or completed: linked in finished
       .then(cpHookA)
-      .expect(S.cpJobNamesRunner and not(S.cpJobLinked) and S.cp.state == "finished")
+      .expect(S.cpJobNamesRunner and S.cpJobLinked and S.cp.state == "finished")
 
   /// The happy path, so the model's plumbing is known to carry a VM
   /// from requested to destroyed.

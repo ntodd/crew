@@ -148,6 +148,19 @@ defmodule Crew.VMs.MachineTest do
              t("busy", {:job_completed, "job-2"}, %{job_id: "job-1"})
   end
 
+  test "a VM that finished before GitHub named its job still links it" do
+    # Busy on the guest's hook or a 422, then exited with its cleanup
+    # failed: the server is still up, so GitHub's webhooks land here.
+    for event <- [{:job_started, "job-1"}, {:job_completed, "job-1"}] do
+      assert {:ok, %{state: "finished", job_id: "job-1", alive: false}, [{:link_job, "job-1"}]} =
+               t("finished", event, %{alive: false})
+    end
+
+    # A linked one keeps its job.
+    for event <- [{:job_started, "job-2"}, {:job_completed, "job-2"}],
+        do: assert(t("finished", event, %{job_id: "job-1"}) == :ignored)
+  end
+
   test "the guest says its runner took a job: busy, with the job to be named by GitHub" do
     for s <- ~w(requested starting booted idle),
         do: assert({:ok, %{state: "busy", job_id: nil}, []} = t(s, :guest_job_started))
