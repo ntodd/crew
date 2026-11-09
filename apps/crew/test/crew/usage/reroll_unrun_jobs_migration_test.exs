@@ -41,8 +41,7 @@ defmodule Crew.Usage.RerollUnrunJobsMigrationTest do
   defp ran_job(repo, day),
     do: job_row_fixture(repo, started_at: at(day, 0), completed_at: at(day, 60))
 
-  # A version after every real one, so Ecto doesn't warn it's out of order.
-  defp migrate(module), do: Ecto.Migrator.up(Repo, 99_999_999_999_999, module, log: false)
+  defp migrate(module), do: module.forget(Repo)
 
   defp rolled, do: Repo.all(from r in RolledDay, order_by: r.day, select: r.day)
 

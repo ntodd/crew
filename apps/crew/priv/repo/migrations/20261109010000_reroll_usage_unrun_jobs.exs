@@ -10,11 +10,15 @@ defmodule Crew.Repo.Migrations.RerollUsageUnrunJobs do
   # Only days whose box samples are all still kept (7 days, §9.4): a day
   # rolled up again without them would lose its online time. Older days
   # keep what was stored.
-  def up do
+  def up, do: forget(repo())
+
+  # Public so its test can run it on the sandbox, which the migrator's
+  # lock can't share on Postgres.
+  def forget(repo) do
     since = Date.utc_today() |> Date.add(-6) |> DateTime.new!(~T[00:00:00], "Etc/UTC")
 
     days =
-      repo().all(
+      repo.all(
         from(j in "jobs",
           where:
             j.classification == "ours" and j.gh_state == "completed" and
@@ -29,7 +33,7 @@ defmodule Crew.Repo.Migrations.RerollUsageUnrunJobs do
     # A day at a time: ecto_sqlite3 takes neither an empty list nor a
     # typed one for `in`, and there are at most 7.
     for day <- days,
-        do: repo().delete_all(from(r in "usage_rollups", where: r.day == type(^day, :date)))
+        do: repo.delete_all(from(r in "usage_rollups", where: r.day == type(^day, :date)))
 
     :ok
   end
