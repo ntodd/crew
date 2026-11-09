@@ -487,12 +487,18 @@ defmodule Crew.VMs.Server do
     state
   end
 
+  # The delete's answer settles a requested VM, so its ack timeout can't
+  # start a second delete meanwhile. Without a runner there's nothing to
+  # delete: the answer is :gone, now. Sent to itself instead, it could
+  # land after a JIT config already in the mailbox had registered a
+  # runner and sent vm.start.
   defp effect(state, {:delete_runner_then, reason}, _event) do
-    if state.vm.runner_id,
-      do: delete_runner_then(state, reason),
-      else: send(self(), {:runner_delete_result, {:ok, :gone}, reason})
-
-    state
+    if state.vm.runner_id do
+      delete_runner_then(state, reason)
+      disarm(state, :ack)
+    else
+      apply_transition(state, {:runner_deleted, :gone, reason})
+    end
   end
 
   defp effect(state, {:stop, force}, event) do

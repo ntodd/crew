@@ -203,17 +203,11 @@ defmodule Crew.VMs.MachineTest do
              t("finished", {:exited, "poweroff", :ok}, %{fail_reason: "reaped"})
   end
 
-  test "box disconnects" do
-    lost_or_check = {"requested", nil, []}
-
-    assert {:ok, %{state: "failed", fail_reason: "lost"}, [:delete_runner]} =
-             t("requested", :box_disconnected)
-
-    for s <- ~w(starting booted idle),
+  test "box disconnects: a pre-job VM's runner is deleted before it fails as lost" do
+    for s <- ~w(requested starting booted idle),
         do: assert({:ok, %{state: ^s}, [{:delete_runner_then, "lost"}]} = t(s, :box_disconnected))
 
     for s <- ~w(busy finished failed), do: assert(t(s, :box_disconnected) == :ignored)
-    _ = lost_or_check
   end
 
   test "box revoked: everything is destroyed" do

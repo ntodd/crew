@@ -104,11 +104,9 @@ defmodule Crew.VMs.Machine do
   def transition(%{state: s} = vm, {:exited, _reason, :error}) when s in ["finished", "failed"],
     do: {:ok, %{vm | alive: false}, [:cleanup_failed]}
 
-  # The box disconnects.
-  def transition(%{state: "requested"} = vm, :box_disconnected),
-    do: fail(vm, "lost", [:delete_runner])
-
-  def transition(%{state: s} = vm, :box_disconnected) when s in ["starting", "booted", "idle"],
+  # The box disconnects. A requested VM may have booted from a vm.start
+  # whose op.result hasn't come back, so its runner is deleted first too.
+  def transition(%{state: s} = vm, :box_disconnected) when s in @pre_job,
     do: {:ok, vm, [{:delete_runner_then, "lost"}]}
 
   def transition(_vm, :box_disconnected), do: :ignored
