@@ -57,6 +57,8 @@ config :crew, Oban,
        {"*/5 * * * *", Crew.GitHub.Redeliver},
        # §6.3: runners left behind.
        {"*/10 * * * *", Crew.GitHub.RunnerGC},
+       # §7.6: workflows Crew starts on a cron.
+       {"* * * * *", Crew.Schedules.Tick},
        # §9.4: log retention and the total cap.
        {"17 * * * *", Crew.Logs.Prune},
        # §9.4: jobs, run attempts and VMs, 90 days.

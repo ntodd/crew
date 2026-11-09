@@ -232,4 +232,263 @@ defmodule CrewWeb.RepoLiveTest do
     refute has_element?(view, "#repo-settings")
     assert_raise Ecto.NoResultsError, fn -> live(conn, ~p"/repos/#{repo.id}") end
   end
+
+  describe "schedules" do
+    setup %{repo: repo} do
+      key = :public_key.generate_key({:rsa, 2048, 65_537})
+      pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, key)])
+
+      Application.put_env(:crew, :github_app, %{
+        app_id: "1",
+        client_id: "Iv1.x",
+        client_secret: "s",
+        private_key: pem
+      })
+
+      on_exit(fn -> Application.delete_env(:crew, :github_app) end)
+      Crew.GitHub.InstallationTokens.clear()
+      Crew.GitHub.Budget.reset()
+
+      test = self()
+
+      Crew.GitHubStub.stub(%{
+        {"POST", "/app/installations/#{repo.installation.github_id}/access_tokens"} =>
+          {201, %{"token" => "ghs", "expires_at" => "2099-01-01T00:00:00Z"}},
+        {"POST", "/repos/#{repo.full_name}/actions/workflows/flake-hunt.yml/dispatches"} =>
+          fn conn ->
+            send(test, {:dispatched, Crew.GitHubStub.body(conn)})
+            Plug.Conn.send_resp(conn, 204, "")
+          end
+      })
+
+      :ok
+    end
+
+    test "an admin adds a schedule, sees it listed with its next run, and removes it", %{
+      conn: conn,
+      repo: repo
+    } do
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#schedules-empty")
+
+      view
+      |> form("#schedule-form",
+        schedule: %{workflow: "flake-hunt.yml", ref: "main", cron: "17 7 * * *"}
+      )
+      |> render_submit()
+
+      [s] = Crew.Schedules.list(repo.id)
+      assert has_element?(view, "#schedule-#{s.id}", "flake-hunt.yml")
+      assert has_element?(view, "#schedule-#{s.id}", "17 7 * * *")
+      assert has_element?(view, "#schedule-#{s.id} time")
+      refute has_element?(view, "#schedules-empty")
+
+      view |> element("#schedule-#{s.id} button", "Remove") |> render_click()
+      refute has_element?(view, "#schedule-#{s.id}")
+      assert Crew.Schedules.list(repo.id) == []
+    end
+
+    test "a bad cron is refused with the reason", %{conn: conn, repo: repo} do
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      html =
+        view
+        |> form("#schedule-form", schedule: %{workflow: "ci.yml", ref: "main", cron: "17 7"})
+        |> render_submit()
+
+      assert html =~ "five fields"
+      assert Crew.Schedules.list(repo.id) == []
+    end
+
+    test "run now dispatches at once; disable and enable flip the schedule", %{
+      conn: conn,
+      repo: repo
+    } do
+      s = schedule_fixture(repo)
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      view |> element("#schedule-#{s.id} button", "Run now") |> render_click()
+      assert_received {:dispatched, %{"ref" => "main"}}
+      assert render(view) =~ "Started flake-hunt.yml on main"
+      assert Crew.Repo.reload!(s).last_dispatched_at
+
+      view |> element("#schedule-#{s.id} button", "Disable") |> render_click()
+      refute Crew.Repo.reload!(s).enabled
+      assert has_element?(view, "#schedule-#{s.id}", "Off")
+
+      view |> element("#schedule-#{s.id} button", "Enable") |> render_click()
+      assert Crew.Repo.reload!(s).enabled
+    end
+
+    test "a failed dispatch shows GitHub's answer on the schedule", %{conn: conn, repo: repo} do
+      Crew.GitHubStub.stub(%{
+        {"POST", "/app/installations/#{repo.installation.github_id}/access_tokens"} =>
+          {201, %{"token" => "ghs", "expires_at" => "2099-01-01T00:00:00Z"}},
+        {"POST", "/repos/#{repo.full_name}/actions/workflows/flake-hunt.yml/dispatches"} =>
+          {422, %{"message" => "Workflow does not have 'workflow_dispatch' trigger"}}
+      })
+
+      s = schedule_fixture(repo)
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      view |> element("#schedule-#{s.id} button", "Run now") |> render_click()
+      assert has_element?(view, "#schedule-#{s.id}", "workflow_dispatch")
+    end
+
+    test "members see no schedules", %{repo: repo} do
+      member = user_fixture(role: "member")
+
+      Crew.Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        can_push: false,
+        checked_at: DateTime.utc_now()
+      })
+
+      schedule_fixture(repo)
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/repos/#{repo.id}")
+      refute has_element?(view, "#schedules")
+      refute has_element?(view, "#schedule-form")
+    end
+  end
+
+  describe "CI insights" do
+    defp hours_ago(h),
+      do: DateTime.utc_now() |> DateTime.add(-h * 3600) |> Map.put(:microsecond, {0, 6})
+
+    # A finished Crew job with its run attempt, so it shows in recent runs too.
+    defp ran(repo, attrs \\ []) do
+      attrs = Map.new(attrs)
+      completed = Map.get(attrs, :completed_at, hours_ago(1))
+      started = DateTime.add(completed, -Map.get(attrs, :run_s, 60))
+      run_id = System.unique_integer([:positive])
+
+      attempt =
+        Crew.Repo.insert!(%Crew.Jobs.RunAttempt{
+          repo_id: repo.id,
+          github_run_id: run_id,
+          run_attempt: 1,
+          run_number: Map.get(attrs, :run_number, 1),
+          workflow_name: Map.get(attrs, :workflow_name, "CI"),
+          head_branch: "main",
+          head_sha: Map.get(attrs, :sha, "abc1234"),
+          actor_login: "mona",
+          status: "completed",
+          conclusion: Map.get(attrs, :conclusion, "success"),
+          gh_created_at: started,
+          gh_updated_at: completed
+        })
+
+      job_row_fixture(repo,
+        workflow_name: Map.get(attrs, :workflow_name, "CI"),
+        name: Map.get(attrs, :name, "test"),
+        conclusion: Map.get(attrs, :conclusion, "success"),
+        queued_at: DateTime.add(started, -10),
+        started_at: started,
+        completed_at: completed,
+        github_run_id: run_id,
+        run_attempt_id: attempt.id
+      )
+    end
+
+    test "the headline stats, and the window toggle in the URL", %{conn: conn, repo: repo} do
+      ran(repo, run_s: 60)
+      ran(repo, run_s: 120)
+      ran(repo, run_s: 600, conclusion: "failure")
+      ran(repo, run_s: 300, completed_at: hours_ago(10 * 24))
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#stat-jobs", "4")
+      assert has_element?(view, "#stat-pass-rate", "75%")
+      assert has_element?(view, "#stat-run", "2m 00s")
+      assert has_element?(view, "#stat-run", "10m 00s")
+      assert has_element?(view, "#stat-wait", "10s")
+      assert has_element?(view, "#stat-minutes", "18")
+
+      view |> element("#window-7") |> render_click()
+      assert_patch(view, ~p"/repos/#{repo.id}?days=7")
+      assert has_element?(view, "#stat-jobs", "3")
+      assert has_element?(view, "#stat-pass-rate", "67%")
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}?days=7")
+      assert has_element?(view, "#stat-jobs", "3")
+
+      # A window the page doesn't offer falls back to 30 days.
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}?days=14")
+      assert has_element?(view, "#stat-jobs", "4")
+      assert has_element?(view, "#window-30[aria-current=page]")
+    end
+
+    test "the jobs table has each job's runs, pass rate and last run", %{conn: conn, repo: repo} do
+      ran(repo, name: "test", run_s: 600, conclusion: "failure", completed_at: hours_ago(2))
+      last = ran(repo, name: "test", run_s: 60)
+      ran(repo, workflow_name: nil, name: "deploy", run_s: 30)
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      row = view |> element("#job-rows tr", "test") |> render()
+      assert row =~ "CI"
+      assert row =~ "50%"
+      # p50 of [60, 600] is the lower; p95 the upper.
+      assert row =~ "1m 00s"
+      assert row =~ "10m 00s"
+      assert row =~ ~s(href="/runs/#{last.github_run_id}/attempts/1/jobs/#{last.github_id}")
+
+      assert view |> element("#job-rows tr", "deploy") |> render() =~ ~r/>\s*deploy\s*</
+    end
+
+    test "flaky jobs: failed, then passed on the same commit", %{conn: conn, repo: repo} do
+      ran(repo, name: "test", sha: "aaa", conclusion: "failure", completed_at: hours_ago(2))
+      ran(repo, name: "test", sha: "aaa", conclusion: "success", completed_at: hours_ago(1))
+      ran(repo, name: "lint", sha: "bbb", conclusion: "success")
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#stat-flaky", "1")
+      assert has_element?(view, "#flaky-jobs li", "test")
+      refute has_element?(view, "#flaky-jobs li", "lint")
+    end
+
+    test "recent runs link to each run, and to all of the repo's runs", %{conn: conn, repo: repo} do
+      job = ran(repo, workflow_name: "Release", run_number: 42)
+
+      # A repo deleted on GitHub and recreated under the same name is another row.
+      namesake = repo_fixture(name: "app", installation: repo.installation)
+      ran(namesake, workflow_name: "Namesake", run_number: 7)
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      assert has_element?(
+               view,
+               ~s(#recent-runs a[href="/runs/#{job.github_run_id}/attempts/1"]),
+               "Release"
+             )
+
+      assert has_element?(view, "#recent-runs", "#42")
+      refute has_element?(view, "#recent-runs", "Namesake")
+      assert has_element?(view, ~s(a[href="#{~p"/runs?#{%{repo: repo.full_name}}"}"]))
+    end
+
+    test "with no jobs in the window, the page says so", %{conn: conn, repo: repo} do
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#insights-empty")
+      refute has_element?(view, "#job-rows")
+    end
+
+    test "members see the insights, not the settings", %{repo: repo} do
+      member = user_fixture(role: "member")
+
+      Crew.Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        can_push: false,
+        checked_at: DateTime.utc_now()
+      })
+
+      ran(repo)
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#stat-jobs", "1")
+      refute has_element?(view, "#settings")
+      refute has_element?(view, "#repo-settings")
+    end
+  end
 end

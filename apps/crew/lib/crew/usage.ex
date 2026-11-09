@@ -29,8 +29,6 @@ defmodule Crew.Usage do
   @recompute_days 2
   # Days without a rollup filled in per run, oldest first.
   @backfill_days 31
-  # The pairs top_jobs/3 keeps.
-  @top_jobs 10
 
   @doc """
   One UTC day from the raw rows, as `%{rows: [...], boxes: [...]}`: the
@@ -506,46 +504,6 @@ defmodule Crew.Usage do
     case Enum.find(matching, &is_nil(&1.retired_at)) || List.first(matching) do
       nil -> nil
       size -> size.name
-    end
-  end
-
-  @doc """
-  The 10 `(workflow_name, name)` pairs of `repo` with the most job
-  minutes over the last `days` UTC days, today among them, read from
-  `jobs` (the rollup keeps no job names), with their counts and
-  rounded-up minutes. Nothing for a scope that can't read the repo.
-  """
-  def top_jobs(%Scope{} = scope, repo, days \\ 30) do
-    if Repos.can_read?(scope, repo.id) do
-      since = Date.utc_today() |> Date.add(1 - days) |> DateTime.new!(~T[00:00:00], "Etc/UTC")
-
-      from(j in ran_jobs(),
-        where: j.repo_id == ^repo.id and j.completed_at >= ^since,
-        select: map(j, [:workflow_name, :name, :conclusion, :started_at, :completed_at])
-      )
-      |> Repo.all()
-      |> Enum.group_by(&{&1.workflow_name, &1.name})
-      |> Enum.flat_map(fn {{workflow, name}, jobs} ->
-        case jobs |> Enum.map(&Tally.job/1) |> Tally.add() do
-          %{job_count: n} = t ->
-            [
-              %{
-                workflow_name: workflow,
-                name: name,
-                jobs: n,
-                job_s: t.job_s,
-                job_billable_min: t.job_billable_min
-              }
-            ]
-
-          _ ->
-            []
-        end
-      end)
-      |> Enum.sort_by(&{-&1.job_s, &1.workflow_name || "", &1.name || ""})
-      |> Enum.take(@top_jobs)
-    else
-      []
     end
   end
 end

@@ -406,6 +406,7 @@ Everything else is acknowledged and dropped.
 | `GET /repos/{o}/{r}/actions/runs/{run_id}/attempts/{n}/jobs` | Reconciling jobs. Crew fetches per run attempt, never per job. |
 | `GET /repos/{o}/{r}/actions/jobs/{job_id}` | Once at completion, for the final steps and conclusion; every 10 s for a job someone is watching (§16.2) |
 | `GET /repos/{o}/{r}/actions/jobs/{job_id}/logs` | After completion (§16.3). It redirects to one plain-text file for the whole job. |
+| `POST /repos/{o}/{r}/actions/workflows/{file}/dispatches` | A schedule fires (§7.6). Through the App's `actions: write`, which Crew already holds for JIT runners. |
 
 ### 6.6 API budget
 
@@ -658,6 +659,43 @@ the repo's jobs that GitHub still has queued or waiting.
   larger sizes take, and the net), each repo's share, and every hint,
   the most memory freed in a week first. Archived repos' runs still count
   toward the week; only live repos get hints.
+
+### 7.6 Workflow schedules (admin, on the repo page)
+
+GitHub runs a workflow's `schedule:` trigger when its scheduler gets to
+it, which in practice has been 6 to 10 hours late for the repos Crew
+serves: a 2 AM hunt lands in the working day. Crew can own the trigger
+instead. A **schedule** is a repo, a workflow file, a ref and a cron
+(GitHub's grammar: five fields, UTC). `Crew.Schedules.Tick` runs every
+minute (Oban cron, `github` queue) and fires each due schedule with
+`POST .../actions/workflows/{file}/dispatches`.
+
+- **The clock.** Each schedule keeps `last_due_at`, the latest cron minute
+  accounted for. A schedule is due when its cron has matched since then,
+  and that match is less than an hour old. The clock starts at creation,
+  and restarts when the schedule is enabled or given a new cron, so the
+  first fire is the next match, never one that already passed. A tick
+  missed while the control plane was down fires once, late; a match
+  older than an hour (a week disabled, a long outage, an archived repo
+  reinstalled) waits for the next one rather than running a night job
+  in the afternoon.
+- **Once per match.** `fire` moves the clock before it dispatches, in one
+  `UPDATE ... WHERE last_due_at < match`, so a tick that overlaps a slow
+  one finds nothing to claim. The tick itself is unique within its minute
+  in Oban, like the other cron workers.
+- **Failures.** A dispatch GitHub refuses (no `workflow_dispatch` trigger,
+  no such file or ref, a suspended installation) or that crashes (a lost
+  connection) leaves the clock moved and keeps the answer in
+  `last_error`, shown on the repo page: a broken schedule fails once per
+  match, not once per minute, and doesn't stop the schedules after it.
+- **Run now** dispatches at once without moving the clock, for checking a
+  schedule works. **Disable** keeps it without firing it.
+- The workflow needs a `workflow_dispatch:` trigger, and should drop its
+  `schedule:` so GitHub doesn't start it again hours later.
+- Admins only; every change and manual run is audit-logged
+  (`schedule.create`, `schedule.update`, `schedule.delete`, `schedule.run`).
+  A workflow, ref and cron can be scheduled once per repo. A disabled or
+  archived repo's schedules stay, and don't fire.
 
 ## 8. Scheduling
 
@@ -1081,6 +1119,7 @@ migrations, Unix-second timestamps for metrics. `RELEASE_DISTRIBUTION=none`.
 | `Crew.Accounts` | Users, sessions, roles, allowlists (copy Foreman's) |
 | `Crew.GitHub` | The App, installations, the client and its budget, webhooks, redelivery, JIT configs, runners, runner GC |
 | `Crew.Repos` | Repos, repo settings, the user→repo access cache (§18.3) |
+| `Crew.Schedules` | Workflow schedules and the minute tick that fires them (§7.6) |
 | `Crew.Sizes` | Sizes, aliases, label parsing |
 | `Crew.Jobs` | Run attempts, jobs, job events, steps |
 | `Crew.Scheduler` | The plan, the pass loop, reaping, stalls, quarantine, backoff |
@@ -1108,7 +1147,7 @@ migrations, Unix-second timestamps for metrics. `RELEASE_DISTRIBUTION=none`.
 | Queue | Concurrency | Jobs |
 |---|---|---|
 | `hooks` | 10 | webhook processing |
-| `github` | 5 | final job fetch, log fetch, runner GC, enrichment |
+| `github` | 5 | final job fetch, log fetch, runner GC, enrichment, the schedule tick (every minute, §7.6) |
 | `reconcile` | 1 | reconciler, redelivery |
 | `maintenance` | 1 | pruning; the usage rollup (`Crew.Usage.Rollup`, hourly at :53, §16.6) |
 | `default` | 5 | everything else |
@@ -2694,7 +2733,7 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 - A phase that comes out negative, because GitHub's and Crew's clocks
   differ or because the runner was booted for another job, is shown as 0,
   labelled "runner started for another job" where that applies.
-- The repo page shows p50 and p95 for each phase over 7 days, and the
+- The repo page shows run time and queue wait p50 and p95 over its window (§17.3), and the
   dashboard does the same for the whole fleet.
 
 ### 16.5 Resources per job
@@ -2952,16 +2991,34 @@ The sidebar has:
   run, the most-used size, the last run.
 - **Filters**, kept in the URL: a search on the name, enabled or disabled,
   public or private, and "has a priority".
-- **A repo page:**
-  - settings (§7.4) and `runs-on` snippets;
-  - recent runs;
-  - 30-day p50/p95 duration trends per workflow and job;
-  - flaky jobs (failed, then passed on a re-run of the same SHA within 7
-    days);
-  - right-sizing hints;
-  - **Usage** over 30 days (§16.6): jobs, job minutes and the rounded-up
-    minutes, VM minutes and overhead, a chart per day, and the jobs with
-    the most minutes, linking to Usage;
+- **A repo page,** full width, over the last 7 or 30 days (in the URL,
+  30 by default), from `Crew.Jobs.Insights`: the jobs that ran on Crew
+  (ours, completed, started, with a runner), by the UTC day they
+  finished. Jobs finishing refresh it, a few seconds at a time.
+  - **A stats strip:** jobs (passed, failed, other), pass rate (of passed
+    and failed; `timed_out` and `startup_failure` count as failed,
+    `cancelled` and `skipped` as other), run time p50 with p95, queue
+    wait p50 with p95 (queued, or seen, to started), job minutes with the
+    rounded-up minutes, and flaky jobs. Percentiles are nearest-rank: p50
+    of two values is the lower.
+  - **Two charts:** jobs per day stacked by outcome, in the status hues;
+    and run time, the p50 and p95 per day as lines, broken on days with
+    no jobs.
+  - **Workflows and jobs:** one row per `(workflow, job)`, the most
+    minutes first: runs, pass rate with a meter, p50, p95, wait p50,
+    minutes, and its last run, linked.
+  - **Flaky jobs:** a job that failed and then passed on a re-run of the
+    same commit, within the window; how many flakes in how many runs,
+    linked to the last flaky run. A failure fixed by a new commit, or a
+    pass followed by a failure, isn't flaky.
+  - **Recent runs,** the latest 8, linking to Runs filtered to the repo.
+  - right-sizing hints (§7.5);
+  - **VM time** (§16.6): VM minutes, overhead, VMs and unused VMs, and
+    the chart per day by phase with job minutes, linking to Usage;
+  - a rail: settings (§7.4) and workflow schedules (§7.6) for admins,
+    each schedule with its next run, when it last started and the last
+    error, with Run now, Disable and Remove, and a form to add one; and
+    the `runs-on` snippets;
   - permissions the installation is missing;
   - for public repos: a warning when fork-PR approval isn't set to
     "require approval for all outside collaborators" (§19.5).
@@ -3534,6 +3591,8 @@ repos(id, installation_id, github_id unique, full_name, private, default_branch,
       allowed_sizes [string] null, allowed_boxes [uuid] null, max_concurrent int null,
       fork_prs enum(refuse, allow), priority int, archived_at)
 user_repo_access(user_id, repo_id, can_push, checked_at)            pk(user_id, repo_id)
+schedules(id, repo_id, workflow, ref, cron, enabled, last_due_at, last_dispatched_at,
+          last_error null)                   unique(repo_id, workflow, ref, cron)  -- §7.6
 
 sizes(id, name unique, vcpus, memory_mib, disk_gib, disk_iops null,
       disk_bandwidth_mbps null, net_bandwidth_mbps null, is_default, retired_at)

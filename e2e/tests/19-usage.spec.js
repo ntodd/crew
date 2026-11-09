@@ -123,20 +123,21 @@ test("a box's page: its last 30 days", async ({page}) => {
   await page.setViewportSize({width: 1440, height: 900})
 })
 
-test("a repo's page: its last 30 days and its top jobs", async ({page}) => {
+test("a repo's page: its last 30 days, its jobs and its VM time", async ({page}) => {
   await signIn(page)
   await page.goto("/usage")
   await connected(page)
   await page.locator("#usage-repos").getByRole("link", {name: "mona/storefront"}).click()
   await connected(page)
 
+  await expect(page.locator("#stat-jobs dd").first()).not.toHaveText("0")
+  await expect(page.locator("#stat-minutes")).toContainText("rounded up")
+  await expect(page.locator("#job-rows tr")).toHaveCount(4)
+  await expect(page.locator("#job-rows")).toContainText("e2e")
+
   const panel = page.locator("#usage")
-  await expect(page.locator("#usage-jobs")).not.toHaveText("0")
-  await expect(panel).toContainText("rounded up")
   await expect(page.locator("#usage-overhead")).toHaveText(/\d+%/)
   await expect(page.locator("#usage-chart path.chart-area").first()).toBeVisible()
-  await expect(page.locator("#usage-top-jobs li")).toHaveCount(4)
-  await expect(page.locator("#usage-top-jobs")).toContainText("CI · e2e")
   await panel.scrollIntoViewIfNeeded()
   await shot(page, layer, "repo", {fullPage: false})
   await setTheme(page, "dark")
