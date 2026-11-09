@@ -2599,7 +2599,10 @@ that's present, the last to the end of the held span:
   with no `requested_at` is skipped.
 
 **Job time** counts finished work: jobs with `classification == "ours"`,
-`gh_state == "completed"`, and both `started_at` and `completed_at`.
+`gh_state == "completed"`, both `started_at` and `completed_at`, and a
+`runner_name`. GitHub stamps `started_at` on a job cancelled in the
+queue too, with no runner, and without that last test its wait would
+count as work.
 
 - `job_s` is `completed_at - started_at`. A negative duration counts
   nothing; zero counts as a job of 0 s.

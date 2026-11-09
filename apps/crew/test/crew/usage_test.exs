@@ -21,6 +21,7 @@ defmodule Crew.UsageTest do
           classification: "ours",
           gh_state: "completed",
           conclusion: "success",
+          runner_name: "crew-runner",
           seen_at: at(0),
           size_id: Repo.get_by!(Crew.Sizes.Size, name: "m").id
         },
@@ -120,6 +121,28 @@ defmodule Crew.UsageTest do
 
       assert Map.take(row, [:job_count, :success_count, :failure_count, :job_s, :job_billable_min]) ==
                %{job_count: 2, success_count: 1, failure_count: 1, job_s: 61, job_billable_min: 2}
+    end
+
+    test "a job no runner took counts nothing", %{repo: repo} do
+      # GitHub stamps started_at on a job cancelled in the queue too, so
+      # its wait would count as work.
+      job_fixture(repo, started_at: at(100), completed_at: at(161))
+
+      job_fixture(repo,
+        runner_name: nil,
+        conclusion: "cancelled",
+        started_at: at(0),
+        completed_at: at(9000)
+      )
+
+      job_fixture(repo,
+        runner_name: "",
+        conclusion: "cancelled",
+        started_at: at(0),
+        completed_at: at(9000)
+      )
+
+      assert %{rows: [%{job_count: 1, job_s: 61, job_billable_min: 2}]} = Usage.compute(@day)
     end
 
     test "a job counts whole on the day it completed", %{repo: repo} do

@@ -295,6 +295,7 @@ defmodule Crew.Fixtures do
           classification: "ours",
           gh_state: "completed",
           conclusion: "success",
+          runner_name: "crew-runner",
           seen_at: DateTime.utc_now(),
           workflow_name: "CI",
           name: "test",
