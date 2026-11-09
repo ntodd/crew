@@ -11,7 +11,8 @@ defmodule Crew.VMs.Server do
   On control plane boot a server starts for every VM that isn't
   destroyed, and its timers are recomputed from the stored timestamps.
   A VM still in `requested` gets its runner deleted and becomes failed
-  (`cp_restart`): `vm.start` is never resent (§8.6).
+  (`cp_restart`), or busy when the delete answers 422: `vm.start` is
+  never resent (§8.6).
   """
   use GenServer, restart: :transient
 
@@ -110,13 +111,17 @@ defmodule Crew.VMs.Server do
     {:noreply, arm(state, :jit, ms(:jit), {:timeout, "jit_timeout"})}
   end
 
-  def handle_continue(:boot, %{vm: %VM{state: "requested"} = vm} = state) do
+  def handle_continue(:boot, %{vm: %VM{state: "requested", runner_id: nil}} = state) do
     # The control plane restarted mid-placement: start over with a fresh
     # VM and JIT config, never a resent vm.start.
-    if vm.runner_id, do: delete_runner_async(vm, vm.runner_id)
+    {:noreply, apply_transition(state, {:runner_deleted, :gone, "cp_restart"})}
+  end
 
-    {:noreply,
-     apply_transition(state, {:runner_deleted, :gone, "cp_restart"}, force_reason: "cp_restart")}
+  def handle_continue(:boot, %{vm: %VM{state: "requested"}} = state) do
+    # vm.start may have reached the agent: the runner is deleted first,
+    # and a 422 means it took a job, so the VM is busy (§8.6).
+    delete_runner_then(state, "cp_restart")
+    {:noreply, state}
   end
 
   def handle_continue(:boot, state), do: {:noreply, rearm(state)}
@@ -373,11 +378,9 @@ defmodule Crew.VMs.Server do
   defp carry_on(state, _from, _to, _event), do: state
 
   defp override_reason(%{state: "failed"} = next, opts) do
-    cond do
-      opts[:force_reason] -> %{next | fail_reason: opts[:force_reason]}
-      opts[:start_error_code] == "image_not_ready" -> %{next | fail_reason: "image_not_ready"}
-      true -> next
-    end
+    if opts[:start_error_code] == "image_not_ready",
+      do: %{next | fail_reason: "image_not_ready"},
+      else: next
   end
 
   defp override_reason(next, _opts), do: next
@@ -575,7 +578,16 @@ defmodule Crew.VMs.Server do
 
     Task.start(fn ->
       Process.put(:"$callers", callers)
-      result = Client.delete_runner(repo.installation.github_id, repo.full_name, vm.runner_id)
+
+      # A crash is an error like any other, so the retries cover it:
+      # nothing else moves the VM on while it waits.
+      result =
+        try do
+          Client.delete_runner(repo.installation.github_id, repo.full_name, vm.runner_id)
+        catch
+          kind, error -> {:error, {kind, error}}
+        end
+
       send(server, {:runner_delete_result, result, reason})
     end)
   end

@@ -995,8 +995,9 @@ or `completed` that names it then links the job without changing its state.
 
 **`vm.start` is never resent.** After a reconnect or a control plane
 restart, any VM still in `requested` gets its runner deleted and becomes
-`failed`: `agent_timeout`, or `cp_restart` at boot. The scheduler places a
-fresh VM with a fresh JIT config. The agent treats `vm.start` as
+`failed`: `agent_timeout`, or `cp_restart` at boot. As for any timeout, the
+delete comes first, and a 422 means the runner took a job, so the VM goes
+`busy` instead. The scheduler places a fresh VM with a fresh JIT config. The agent treats `vm.start` as
 idempotent by `vm_id` (§10.3) all the same.
 
 **Failure policy:**

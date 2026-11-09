@@ -93,7 +93,8 @@ The other spikes are recorded here as they run.
   is checked against what the VM boots with. crew-vmctl has the same
   formula (`vmctl.BootMiB`) and refuses an `fc.json` that differs.
 - **Timers** are recomputed from the stored timestamps when servers
-  start at boot; a VM still `requested` at boot fails as `cp_restart`.
+  start at boot; a VM still `requested` at boot has its runner deleted
+  and fails as `cp_restart`, or goes `busy` when the delete answers 422.
 - **Job links** come from the webhook's `runner_name`, when it names one
   of this deployment's runners (`crew-<deployment id>-…`). A job taken by
   a runner booted for another class is flagged `taken_cross_class`.

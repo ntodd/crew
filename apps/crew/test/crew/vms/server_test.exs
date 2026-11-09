@@ -775,22 +775,71 @@ defmodule Crew.VMs.ServerTest do
   end
 
   describe "a control plane restart" do
-    test "a requested VM gets its runner deleted and fails as cp_restart", %{box: box, repo: repo} do
+    test "a requested VM gets its runner deleted first, then fails as cp_restart", %{
+      box: box,
+      repo: repo
+    } do
       id = place(box, repo)
       assert_command("vm.start")
-      vm = eventually(fn -> VMs.get!(id).start_op_id && VMs.get!(id) end)
-      pid = Server.whereis(id)
-      ref = Process.monitor(pid)
-      DynamicSupervisor.terminate_child(Crew.VMs.Supervisor, pid)
-      assert_receive {:DOWN, ^ref, _, _, _}
+      eventually(fn -> VMs.get!(id).start_op_id end)
+      restart(id)
 
-      VMs.boot_servers()
+      assert_receive {:runner_deleted, _}, 1_000
       assert await_state(id, "failed").fail_reason == "cp_restart"
+      assert assert_command("vm.stop").payload.force
+      refute_enqueued(worker: Crew.VMs.DeleteRunner)
+    end
 
-      assert_enqueued(
-        worker: Crew.VMs.DeleteRunner,
-        args: %{repo_id: repo.id, runner_id: vm.runner_id}
+    test "a requested VM whose runner took a job is busy, not stopped", %{box: box, repo: repo} do
+      GitHubStub.stub(github_routes(repo, delete_status: 422))
+      id = place(box, repo)
+      assert_command("vm.start")
+      eventually(fn -> VMs.get!(id).start_op_id end)
+      restart(id)
+
+      assert_receive {:runner_deleted, _}, 1_000
+      await_state(id, "busy")
+      refute_received {:dispatch, %CrewProtocol.Command{type: "vm.stop"}}
+    end
+
+    @tag timers: %{delete_retry: 10}
+    test "a delete that crashes is retried, not left hanging", %{box: box, repo: repo} do
+      calls = :counters.new(1, [])
+
+      status = fn ->
+        :counters.add(calls, 1, 1)
+        if :counters.get(calls, 1) == 1, do: raise("connection reset"), else: 204
+      end
+
+      GitHubStub.stub(github_routes(repo, delete_status: status))
+      id = place(box, repo)
+      assert_command("vm.start")
+      eventually(fn -> VMs.get!(id).start_op_id end)
+      restart(id)
+
+      assert await_state(id, "failed").fail_reason == "cp_restart"
+      assert :counters.get(calls, 1) == 2
+    end
+
+    test "a requested VM with no runner yet fails as cp_restart at once", %{box: box, repo: repo} do
+      GitHubStub.stub(
+        Map.put(
+          github_routes(repo),
+          {"POST", "/repos/#{repo.full_name}/actions/runners/generate-jitconfig"},
+          {500, %{}}
+        )
       )
+
+      id = place(box, repo)
+
+      eventually(fn ->
+        Repo.exists?(from e in Crew.VMs.VMEvent, where: e.vm_id == ^id and e.kind == "jit_error")
+      end)
+
+      restart(id)
+
+      assert await_state(id, "failed").fail_reason == "cp_restart"
+      refute_received {:runner_deleted, _}
     end
 
     test "an idle VM is adopted as it was", %{box: box, repo: repo} do
@@ -803,5 +852,15 @@ defmodule Crew.VMs.ServerTest do
       assert new != pid
       assert VMs.get!(id).state == "idle"
     end
+  end
+
+  # The control plane goes down and comes back: the VM's server stops,
+  # and boot starts one for every VM that isn't destroyed.
+  defp restart(id) do
+    pid = Server.whereis(id)
+    ref = Process.monitor(pid)
+    DynamicSupervisor.terminate_child(Crew.VMs.Supervisor, pid)
+    assert_receive {:DOWN, ^ref, _, _, _}
+    VMs.boot_servers()
   end
 end
