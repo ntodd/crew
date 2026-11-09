@@ -468,6 +468,25 @@ defmodule Crew.VMs.ServerTest do
       refute_received {:jit_requested, _}
     end
 
+    test "servers crashing one after another each come back, and the others stay up", %{
+      box: box,
+      repo: repo
+    } do
+      bystander = place(box, repo)
+      assert_command("vm.start")
+      pid = Server.whereis(bystander)
+
+      for _ <- 1..5 do
+        id = place(box, repo)
+        assert_command("vm.start")
+        eventually(fn -> VMs.get!(id).start_op_id end)
+        Process.exit(Server.whereis(id), :kill)
+        assert await_state(id, "failed").fail_reason == "cp_restart"
+      end
+
+      assert Server.whereis(bystander) == pid
+    end
+
     @tag timers: %{boot: 100}
     test "a crashed server rebuilds its timers", %{box: box, repo: repo} do
       id = place(box, repo)
