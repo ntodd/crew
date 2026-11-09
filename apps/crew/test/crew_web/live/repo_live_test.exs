@@ -232,4 +232,123 @@ defmodule CrewWeb.RepoLiveTest do
     refute has_element?(view, "#repo-settings")
     assert_raise Ecto.NoResultsError, fn -> live(conn, ~p"/repos/#{repo.id}") end
   end
+
+  describe "schedules" do
+    setup %{repo: repo} do
+      key = :public_key.generate_key({:rsa, 2048, 65_537})
+      pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, key)])
+
+      Application.put_env(:crew, :github_app, %{
+        app_id: "1",
+        client_id: "Iv1.x",
+        client_secret: "s",
+        private_key: pem
+      })
+
+      on_exit(fn -> Application.delete_env(:crew, :github_app) end)
+      Crew.GitHub.InstallationTokens.clear()
+      Crew.GitHub.Budget.reset()
+
+      test = self()
+
+      Crew.GitHubStub.stub(%{
+        {"POST", "/app/installations/#{repo.installation.github_id}/access_tokens"} =>
+          {201, %{"token" => "ghs", "expires_at" => "2099-01-01T00:00:00Z"}},
+        {"POST", "/repos/#{repo.full_name}/actions/workflows/flake-hunt.yml/dispatches"} =>
+          fn conn ->
+            send(test, {:dispatched, Crew.GitHubStub.body(conn)})
+            Plug.Conn.send_resp(conn, 204, "")
+          end
+      })
+
+      :ok
+    end
+
+    test "an admin adds a schedule, sees it listed with its next run, and removes it", %{
+      conn: conn,
+      repo: repo
+    } do
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#schedules-empty")
+
+      view
+      |> form("#schedule-form",
+        schedule: %{workflow: "flake-hunt.yml", ref: "main", cron: "17 7 * * *"}
+      )
+      |> render_submit()
+
+      [s] = Crew.Schedules.list(repo.id)
+      assert has_element?(view, "#schedule-#{s.id}", "flake-hunt.yml")
+      assert has_element?(view, "#schedule-#{s.id}", "17 7 * * *")
+      assert has_element?(view, "#schedule-#{s.id} time")
+      refute has_element?(view, "#schedules-empty")
+
+      view |> element("#schedule-#{s.id} button", "Remove") |> render_click()
+      refute has_element?(view, "#schedule-#{s.id}")
+      assert Crew.Schedules.list(repo.id) == []
+    end
+
+    test "a bad cron is refused with the reason", %{conn: conn, repo: repo} do
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      html =
+        view
+        |> form("#schedule-form", schedule: %{workflow: "ci.yml", ref: "main", cron: "17 7"})
+        |> render_submit()
+
+      assert html =~ "five fields"
+      assert Crew.Schedules.list(repo.id) == []
+    end
+
+    test "run now dispatches at once; disable and enable flip the schedule", %{
+      conn: conn,
+      repo: repo
+    } do
+      s = schedule_fixture(repo)
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      view |> element("#schedule-#{s.id} button", "Run now") |> render_click()
+      assert_received {:dispatched, %{"ref" => "main"}}
+      assert render(view) =~ "Started flake-hunt.yml on main"
+      assert Crew.Repo.reload!(s).last_dispatched_at
+
+      view |> element("#schedule-#{s.id} button", "Disable") |> render_click()
+      refute Crew.Repo.reload!(s).enabled
+      assert has_element?(view, "#schedule-#{s.id}", "Off")
+
+      view |> element("#schedule-#{s.id} button", "Enable") |> render_click()
+      assert Crew.Repo.reload!(s).enabled
+    end
+
+    test "a failed dispatch shows GitHub's answer on the schedule", %{conn: conn, repo: repo} do
+      Crew.GitHubStub.stub(%{
+        {"POST", "/app/installations/#{repo.installation.github_id}/access_tokens"} =>
+          {201, %{"token" => "ghs", "expires_at" => "2099-01-01T00:00:00Z"}},
+        {"POST", "/repos/#{repo.full_name}/actions/workflows/flake-hunt.yml/dispatches"} =>
+          {422, %{"message" => "Workflow does not have 'workflow_dispatch' trigger"}}
+      })
+
+      s = schedule_fixture(repo)
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+
+      view |> element("#schedule-#{s.id} button", "Run now") |> render_click()
+      assert has_element?(view, "#schedule-#{s.id}", "workflow_dispatch")
+    end
+
+    test "members see no schedules", %{repo: repo} do
+      member = user_fixture(role: "member")
+
+      Crew.Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        can_push: false,
+        checked_at: DateTime.utc_now()
+      })
+
+      schedule_fixture(repo)
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/repos/#{repo.id}")
+      refute has_element?(view, "#schedules")
+      refute has_element?(view, "#schedule-form")
+    end
+  end
 end
