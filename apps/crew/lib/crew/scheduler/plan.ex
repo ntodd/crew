@@ -22,7 +22,7 @@ defmodule Crew.Scheduler.Plan do
      one, those its VMs use and the newest other is sent `image.remove`.
 
   Actions:
-  - `{:place, %{job_id, class, repo_id, box_id, size_id, image_id}}`
+  - `{:place, %{job_id, class, repo_id, box_id, size_id, image_id, spare}}`
   - `{:reasons, job_id, blocked_reason | nil, wait_reason | nil}`
   - `{:reap, vm_id, :excess | :idle_max | :draining}`
   - `{:excess_since, class, ms | nil}`
@@ -340,7 +340,8 @@ defmodule Crew.Scheduler.Plan do
               repo_id: unit.repo_id,
               box_id: box.id,
               size_id: unit.size_id,
-              image_id: image_id
+              image_id: image_id,
+              spare: spare?(unit)
             }
 
             vm = %{
@@ -348,6 +349,7 @@ defmodule Crew.Scheduler.Plan do
               box_id: box.id,
               repo_id: unit.repo_id,
               class: unit.class,
+              spare: spare?(unit),
               vcpus: size.vcpus,
               memory_mib: size.memory_mib,
               disk_gib: size.disk_gib,
@@ -365,6 +367,9 @@ defmodule Crew.Scheduler.Plan do
         end
     end
   end
+
+  # A job's or VM's tier (§7.2). Snapshots without it are regular.
+  defp spare?(x), do: Map.get(x, :spare, false)
 
   defp order_key(snap, job, active) do
     priority = (snap.repos[job.repo_id] || %{})[:priority] || 0

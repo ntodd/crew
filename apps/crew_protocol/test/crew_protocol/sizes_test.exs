@@ -20,6 +20,14 @@ defmodule CrewProtocol.SizesTest do
       end
     end
 
+    test "can't be spare or end in -spare, which mean spare capacity in a label" do
+      assert Sizes.name_error("spare") == "can't be spare"
+      assert Sizes.name_error("big-spare") == "can't end in -spare"
+      assert Sizes.name_error("spares") == nil
+      assert Sizes.name_error("sparex") == nil
+      assert Sizes.name_error("spare-m") == nil
+    end
+
     test "can't be an arch, end in an arch, or contain crew" do
       for name <- ~w(x64 arm64 big-x64 m-arm64 crew mycrew crewm) do
         assert {:error, [{:name, _}]} = Sizes.validate(%{@ok | name: name}), name

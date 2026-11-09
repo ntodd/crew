@@ -450,7 +450,20 @@ doesn't run in releases) and edited on the admin page Sizes & labels.
 
 **Rules:**
 - **Names:** a lowercase DNS label of 1–12 characters. They can't be `x64`
-  or `arm64`, end in `-x64` or `-arm64`, or contain `crew`.
+  or `arm64`, end in `-x64` or `-arm64`, be `spare`, end in `-spare`, or
+  contain `crew`.
+  - **A size named before the `spare` rule** keeps working: its label
+    parses as it always did (§7.2) and it can still be edited, but it
+    hides the spare form of that label. The Sizes page shows the name error on its row and says to
+    rename it.
+  - **Renaming it hands the label over.** Say size `l-spare` has regular
+    VMs registered with `[crew-l-spare]`. After the rename to `l`, the
+    re-parse (§7.4) makes queued `crew-l-spare` jobs spare jobs on `l`, in
+    the same class. The old VMs are still regular, and still the class's
+    supply, so they can take the now-spare jobs until they finish or are
+    reaped, the way edits to a size's shape apply only to VMs started
+    afterwards. Crew doesn't drain on rename: runners already started
+    for the label finish their jobs first.
 - **`vcpus`:** 1 or an even number up to 32. That's Firecracker's rule, and
   the `vz` driver follows it too for consistency.
 - **`memory_mib`:** at least 1024, a multiple of 256.
@@ -469,30 +482,60 @@ doesn't run in releases) and edited on the admin page Sizes & labels.
 A job opts into Crew with a `runs-on` containing exactly one Crew label:
 
 ```
-crew                 default size, any arch
-crew-<size>          that size, any arch
-crew-<arch>          default size, that arch
-crew-<size>-<arch>   that size and arch            <arch> ∈ { x64, arm64 }
+crew                       default size, any arch
+crew-<size>                that size, any arch
+crew-<arch>                default size, that arch
+crew-<size>-<arch>         that size and arch            <arch> ∈ { x64, arm64 }
+
+crew-spare                 default size, any arch, spare
+crew-<size>-spare          that size, any arch, spare
+crew-<arch>-spare          default size, that arch, spare
+crew-<size>-<arch>-spare   that size and arch, spare
 ```
 
 Other labels may appear next to it, from the **generic** set
 `{self-hosted, linux, x64, arm64}`. `x64` or `arm64` fixes the arch, and
 contradicting the Crew label's arch is unsatisfiable.
 
+**The `-spare` suffix** is optional and always last. It asks for spare
+capacity: room regular jobs aren't using (below). A label that parsed
+before the suffix existed parses the same way, so the parse goes in this
+order:
+
+1. **Parse the label as without the suffix.** Any `{:ours, _}` from that
+   is regular. A size already named `spare` or `x-spare` keeps meaning
+   what it meant.
+2. **Only when that fails with an unknown size and the Crew label ends in
+   `-spare`,** parse again with the suffix removed (`crew-spare` becomes
+   `crew`, `crew-l-arm64-spare` becomes `crew-l-arm64`). That result
+   stands: `{:ours, _}`, spare; or its own reason (`crew-nope-spare` is
+   "unknown size nope", `crew-l-spare` with `l` retired is "size l
+   retired").
+3. **When it fails on an unknown size that ends in `-spare`,** and the
+   name without it is a size (`crew-l-spare-arm64`), the reason is
+   "-spare goes last: crew-l-arm64-spare". `crew-spare-arm64` is told
+   `crew-arm64-spare` the same way.
+
+Aliases (§7.3) are never spare.
+
 `CrewProtocol.Labels.parse(labels, sizes, aliases)` lowercases,
 deduplicates and sorts the labels into the **label key**, then returns:
 
 | Result | When |
 |---|---|
-| `{:ours, %{size_id, arch: :any \| :x64 \| :arm64, key}}` | Exactly one Crew label plus generic labels only, a known size, no contradiction; or an exact alias match (§7.3) |
+| `{:ours, %{size_id, arch: :any \| :x64 \| :arm64, key, alias, spare}}` | Exactly one Crew label plus generic labels only, a known size, no contradiction; or an exact alias match (§7.3) |
 | `:not_ours` | No Crew label and no alias match |
-| `{:unsatisfiable, reason}` | More than one Crew label, a Crew label next to a non-generic label, an unknown or retired size, or contradictory arch labels |
+| `{:unsatisfiable, reason}` | More than one Crew label, a Crew label next to a non-generic label, an unknown or retired size, `-spare` before the arch, or contradictory arch labels |
+
+`spare` is true only for a Crew label that parsed through step 2. The
+label key keeps the suffix.
 
 **Classes:**
 - **A class is `(repo, label key)`.** A runner for a class is registered
   with exactly the label key as its labels:
   - `runs-on: crew-m` → runner labels `[crew-m]`
   - `runs-on: [self-hosted, crew-m]` → `[crew-m, self-hosted]`
+  - `runs-on: crew-l-spare` → `[crew-l-spare]`
 - **Jobs can be taken across classes.** GitHub gives a runner any queued
   job whose labels are all among the runner's. So a
   `[crew-m, self-hosted]` runner can also take a `[crew-m]` job, or a bare
@@ -501,6 +544,13 @@ deduplicates and sorts the labels into the **label key**, then returns:
   - The class it was booted for keeps its deficit, so the next pass places
     another VM.
   - The job page notes "taken by a runner started for `<key>`".
+  - **Tiers don't mix through the Crew label.** A runner without
+    `crew-l-spare` can't take a `crew-l-spare` job, and a `[crew-l-spare]`
+    runner only takes jobs that ask for `crew-l-spare`. Generic labels are
+    the exception: a `[crew-l-spare, self-hosted]` runner can take a job
+    that asks only for `[self-hosted]`, which is regular if it matches an
+    alias. A VM keeps the tier it was placed for (`vms.spare`), and the
+    job keeps its own.
 - **The docs recommend `runs-on: crew-<size>` alone.** Only runners with
   exactly that key can take such a job, and Crew's runners never take jobs
   outside Crew unless a workflow uses only generic labels.
@@ -3365,6 +3415,7 @@ jobs(id, repo_id, run_attempt_id null, github_id unique, github_run_id, run_atte
      classification enum(ours, not_ours, unsatisfiable), unsatisfiable_reason null,
      gh_state enum(waiting, queued, in_progress, completed), blocked_reason null,
      conclusion null, runner_name null, vm_id null, taken_cross_class bool,
+     spare bool,                                      -- from the labels (§7.2)
      queued_at, seen_at, started_at, completed_at,
      steps map, log_source enum(github, live) null,
      peak_mem_mib, peak_cpu_pct, avg_cpu_pct, peak_disk_mib, net_bytes, oom bool)
@@ -3384,7 +3435,8 @@ boxes(id, name unique, type enum(linux-metal, linux-vm, mac-vm, mac-vz), driver,
       update fields …)                                -- Foreman keeps agent keys on boxes too
 operations(...)                                       -- copy Foreman; args never include jit_config
 vms(id, box_id, name unique, repo_id, class_key [string], size_id, vcpus, memory_mib,
-    disk_gib, image_id, lease_index, start_op_id null,
+    disk_gib, spare bool,                            -- the tier it was placed for; never changes
+    image_id, lease_index, start_op_id null,
     state enum(requested, starting, booted, idle, busy, finished, failed, destroyed),
     fail_reason null, job_id null, runner_id null, deadline, log_epoch null,
     last_log_seq, last_log_n,

@@ -29,12 +29,20 @@ defmodule Crew.Sizes.Size do
   end
 
   # The rules are CrewProtocol's, shared with the agent's vm.start checks.
+  # A saved size keeps a name a later rule forbids (a size named before
+  # the -spare rule, §7.1) until it's renamed.
   defp validate_rules(changeset) do
     size = Map.new(@fields, &{&1, get_field(changeset, &1)})
+    kept_name? = changeset.data.id != nil and not changed?(changeset, :name)
 
     case CrewProtocol.Sizes.validate(size) do
-      :ok -> changeset
-      {:error, errors} -> Enum.reduce(errors, changeset, fn {f, m}, cs -> add_error(cs, f, m) end)
+      :ok ->
+        changeset
+
+      {:error, errors} ->
+        errors
+        |> Enum.reject(fn {f, _} -> f == :name and kept_name? end)
+        |> Enum.reduce(changeset, fn {f, m}, cs -> add_error(cs, f, m) end)
     end
   end
 

@@ -219,6 +219,7 @@ defmodule Crew.Scheduler do
             :label_key,
             :size_id,
             :arch,
+            :spare,
             :queued_at,
             :inserted_at,
             :blocked_reason,
@@ -234,6 +235,7 @@ defmodule Crew.Scheduler do
         label_key: j.label_key,
         size_id: j.size_id,
         arch: arch(j.arch),
+        spare: j.spare,
         queued_at: ms(j.queued_at || j.inserted_at),
         blocked_reason: j.blocked_reason,
         wait_reason: j.wait_reason
@@ -251,6 +253,7 @@ defmodule Crew.Scheduler do
       box_id: vm.box_id,
       repo_id: vm.repo_id,
       class: {vm.repo_id, vm.class_key},
+      spare: vm.spare,
       vcpus: vm.vcpus,
       memory_mib: vm.memory_mib,
       disk_gib: vm.disk_gib,
@@ -289,7 +292,8 @@ defmodule Crew.Scheduler do
           class: p.class,
           box: Map.fetch!(boxes, p.box_id),
           size: Map.fetch!(sizes, p.size_id),
-          image_id: p.image_id
+          image_id: p.image_id,
+          spare: p.spare
         }
       end
 

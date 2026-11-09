@@ -46,6 +46,18 @@ defmodule Crew.SchedulerTest do
       assert id == job.id
     end
 
+    test "carries each job's and VM's tier", %{box: box, repo: repo} do
+      regular = queued_job(repo, id: 14)
+      spare = queued_job(repo, id: 15, labels: ["crew-m-spare"])
+      vm_fixture(box, repo_id: repo.id, spare: true, state: "idle")
+      vm_fixture(box, repo_id: repo.id, state: "idle")
+
+      snap = Scheduler.snapshot()
+      tiers = Map.new(snap.jobs, &{&1.id, &1.spare})
+      assert tiers == %{regular.id => false, spare.id => true}
+      assert snap.vms |> Enum.map(& &1.spare) |> Enum.sort() == [false, true]
+    end
+
     test "uses the box's latest free VM area", %{box: box} do
       online(box)
 
@@ -80,6 +92,24 @@ defmodule Crew.SchedulerTest do
       Scheduler.pass()
       assert length(VMs.list_live()) == 1
       assert Jobs.get_job!(job.id).wait_reason == "booting a runner on m4"
+    end
+
+    test "a spare job's VM is written spare, and a regular job's isn't", %{
+      box: box,
+      repo: repo
+    } do
+      online(box)
+      spare = queued_job(repo, id: 25, labels: ["crew-m-spare"])
+      regular = queued_job(repo, id: 26)
+
+      actions = Scheduler.pass()
+      tiers = for {:place, p} <- actions, into: %{}, do: {p.job_id, p.spare}
+      assert tiers == %{spare.id => true, regular.id => false}
+
+      assert VMs.list_live() |> Enum.map(&{&1.class_key, &1.spare}) |> Enum.sort() == [
+               {["crew-m"], false},
+               {["crew-m-spare"], true}
+             ]
     end
 
     test "with no box online, the job waits with a reason", %{repo: repo} do

@@ -52,6 +52,8 @@ defmodule CrewProtocol.Sizes do
       not Regex.match?(@name, name) -> "must be a lowercase DNS label of 1 to 12 characters"
       name in ["x64", "arm64"] -> "can't be an arch"
       String.ends_with?(name, ["-x64", "-arm64"]) -> "can't end in an arch"
+      name == "spare" -> "can't be spare"
+      String.ends_with?(name, "-spare") -> "can't end in -spare"
       String.contains?(name, "crew") -> "can't contain crew"
       true -> nil
     end

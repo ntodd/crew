@@ -75,7 +75,8 @@ defmodule Crew.VMs do
   @doc """
   Inserts the scheduler's placements as `requested` VMs in one
   transaction (reserving their allocation), then starts their servers,
-  which register the runners and send `vm.start` (§8.3 step 4).
+  which register the runners and send `vm.start` (§8.3 step 4). A
+  placement's `spare` (default false) is the tier it was placed for.
   """
   def create_placements([]), do: []
 
@@ -97,6 +98,7 @@ defmodule Crew.VMs do
           repo_id: repo_id,
           class_key: key,
           class_hash: VM.class_hash(key),
+          spare: Map.get(p, :spare, false),
           size_id: p.size.id,
           vcpus: p.size.vcpus,
           memory_mib: p.size.memory_mib,

@@ -10,6 +10,8 @@ defmodule Crew.VMs.VM do
     belongs_to :repo, Crew.Repos.Repo
     field :class_key, {:array, :string}
     field :class_hash, :string
+    # The tier it was placed for (§7.2), whatever job it takes.
+    field :spare, :boolean, default: false
     belongs_to :size, Crew.Sizes.Size
     field :vcpus, :integer
     field :memory_mib, :integer

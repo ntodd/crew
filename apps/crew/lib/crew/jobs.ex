@@ -349,7 +349,8 @@ defmodule Crew.Jobs do
           :label_key,
           :size_id,
           :arch,
-          :aliased
+          :aliased,
+          :spare
         ])
       )
       |> Map.merge(progress(data))
@@ -680,7 +681,15 @@ defmodule Crew.Jobs do
 
     changes =
       classified
-      |> Map.take([:classification, :unsatisfiable_reason, :label_key, :size_id, :arch, :aliased])
+      |> Map.take([
+        :classification,
+        :unsatisfiable_reason,
+        :label_key,
+        :size_id,
+        :arch,
+        :aliased,
+        :spare
+      ])
       |> Map.put(:blocked_reason, fork_blocked(job, classified, attempt))
 
     changeset = Ecto.Changeset.change(job, changes)
