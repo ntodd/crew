@@ -64,6 +64,12 @@ defmodule Crew.VMs.Machine do
   def transition(%{state: "busy", job_id: nil} = vm, {:job_completed, job_id}),
     do: {:ok, %{vm | state: "finished", job_id: job_id}, [{:link_job, job_id}, :arm_finished]}
 
+  # Busy without a job, then exited before GitHub named it, with the
+  # server kept by a failed cleanup: the job is still linked.
+  def transition(%{state: "finished", job_id: nil} = vm, {event, job_id})
+      when event in [:job_started, :job_completed],
+      do: {:ok, %{vm | job_id: job_id}, [{:link_job, job_id}]}
+
   # Failed but alive: the runner took a job before its delete landed.
   def transition(%{state: "failed"} = vm, {:job_started, job_id}),
     do:

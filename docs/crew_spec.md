@@ -988,6 +988,11 @@ job. If an `in_progress` names it anyway (the runner took a job before the
 delete landed), it goes to `busy` and is kept, and the force stop is
 cancelled.
 
+**Busy before its job is named:** the guest's `job_started` hook or a 422 on
+the runner's delete makes a VM `busy` before GitHub names its job. If it
+exits first and its cleanup fails, it stays `finished`, and the `in_progress`
+or `completed` that names it then links the job without changing its state.
+
 **`vm.start` is never resent.** After a reconnect or a control plane
 restart, any VM still in `requested` gets its runner deleted and becomes
 `failed`: `agent_timeout`, or `cp_restart` at boot. The scheduler places a

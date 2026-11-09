@@ -76,12 +76,12 @@ ordinary. The fix in both is to use `{:delete_runner_then, reason}` from
 `requested` as the other states do: the machine already handles the 422
 answer.
 
-`jobLinked` holds on random runs but `finishedDropsLinkTest` shows the
-gap (#107): a VM that went `busy` on the guest's `job_started` hook, then exited
-with a cleanup error before GitHub's `in_progress` arrived, sits in
-`finished` and ignores both webhooks. The job never links to the VM while
-the server lives (`late_link/2` only runs once it's gone). Accounting
-only.
+`jobLinked` holds on random runs, and `finishedLinksJobTest` walks the
+path they seldom find (#107): a VM that went `busy` on the guest's
+`job_started` hook, then exited with a cleanup error before GitHub's
+`in_progress` arrived, sits in `finished` with its server up, so
+`late_link/2` never runs. `finished` with no job links the job either
+webhook names.
 
 ### Replay against the Elixir machine
 
