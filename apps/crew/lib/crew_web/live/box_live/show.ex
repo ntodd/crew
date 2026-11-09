@@ -3,24 +3,51 @@ defmodule CrewWeb.BoxLive.Show do
   A box (§17.3): status, capabilities (pinned and reported, with
   approval), firewall and virtualisation, the latest metrics, what its
   agent last reported (VMs and images), recent operations, the
-  reprovision Ignition for a Flatcar box (§12.2), and revoking.
+  reprovision Ignition for a Flatcar box (§12.2), its usage over 30 days
+  (§16.6, refreshed every minute), and revoking.
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Agents, Boxes, Metrics, Operations, Repos, Scheduler, Scope, VMs}
+  alias Crew.{Agents, Boxes, Metrics, Operations, Repos, Scheduler, Scope, Usage, VMs}
   alias Crew.Agents.{Releases, Updates}
   alias Crew.Boxes.Flatcar
+  alias CrewWeb.UsageComponents
+
+  @usage_days 30
+  @usage_refresh_ms 60_000
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     box = Boxes.get!(id)
-    if connected?(socket), do: Boxes.subscribe(box.id)
+
+    if connected?(socket) do
+      Boxes.subscribe(box.id)
+      Process.send_after(self(), :usage, @usage_refresh_ms)
+    end
 
     {:ok,
      socket
      |> assign(:page_title, box.name)
      |> assign(:data_disk, if(box.type == "linux-metal", do: Boxes.data_disk(box)))
-     |> load(box)}
+     |> load(box)
+     |> load_usage()}
+  end
+
+  # Its last 30 days: slower to read than the rest, so not on every sample.
+  defp load_usage(socket) do
+    today = Date.utc_today()
+
+    usage =
+      Usage.summary(
+        socket.assigns.current_scope,
+        Date.add(today, 1 - @usage_days),
+        today,
+        box_id: socket.assigns.box.id,
+        others: :each,
+        sort: :vm_s
+      )
+
+    assign(socket, :usage, usage)
   end
 
   # The arch a reprovision Ignition is for, by default: a Mac's VM is
@@ -38,6 +65,8 @@ defmodule CrewWeb.BoxLive.Show do
       vms: VMs.box_vms(box.id),
       allocation: VMs.allocation(box.id),
       capacity: Scheduler.capacity(box),
+      spare: Scheduler.spare_capacity(box),
+      spare_allocation: VMs.spare_allocation(box.id),
       readable: Repos.readable_ids(socket.assigns.current_scope),
       ops: Operations.recent_for_box(box.id, 10),
       images: box_images(box.id),
@@ -68,6 +97,10 @@ defmodule CrewWeb.BoxLive.Show do
   defp package_link(_package), do: nil
 
   defp busy_count(vms), do: Enum.count(vms, &(&1.state == "busy"))
+
+  defp vm_count(1, nil), do: "1 VM"
+  defp vm_count(n, nil), do: "#{n} VMs"
+  defp vm_count(n, max), do: "#{n} of #{max} VMs"
 
   attr :packages, :list, required: true
 
@@ -107,6 +140,11 @@ defmodule CrewWeb.BoxLive.Show do
   end
 
   @impl true
+  def handle_info(:usage, socket) do
+    Process.send_after(self(), :usage, @usage_refresh_ms)
+    {:noreply, load_usage(socket)}
+  end
+
   def handle_info({event, _id}, socket) when event in [:box_changed, :box_metrics],
     do: {:noreply, load(socket, Boxes.get!(socket.assigns.box.id))}
 
@@ -588,6 +626,7 @@ defmodule CrewWeb.BoxLive.Show do
                 {vm.vcpus} vCPU · {gib(vm.memory_mib)} GiB
               </span>
               <span class="flex items-center justify-end gap-3">
+                <.badge :if={vm.spare} size="sm" data-tier="spare">spare</.badge>
                 <.badge
                   color={vm_color(vm.state)}
                   dot
@@ -613,6 +652,8 @@ defmodule CrewWeb.BoxLive.Show do
           </ul>
         </.panel>
 
+        <UsageComponents.box_panel summary={@usage} />
+
         <.panel id="images" title="Images" padded={false}>
           <ul class="divide-y divide-line text-sm">
             <li :for={i <- @images} class="flex items-center justify-between gap-3 px-5 py-2.5">
@@ -631,6 +672,25 @@ defmodule CrewWeb.BoxLive.Show do
           <:subtitle>
             Overrides for what placement offers job VMs (§8.3). Empty means the default.
           </:subtitle>
+          <dl
+            :if={@capacity}
+            id="capacity-held"
+            class="mb-4 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm"
+          >
+            <dt class="text-ink-3">All VMs</dt>
+            <dd id="capacity-all" class="tabular-nums text-ink">
+              {vm_count(@allocation.count, @spare.box_max_vms)} · {@allocation.vcpus} of {trunc(
+                @capacity.vcpus
+              )} vCPUs · {gib(@allocation.memory_mib)} of {gib(@capacity.memory_mib)} GiB
+            </dd>
+            <dt class="text-ink-3">Spare VMs</dt>
+            <dd id="capacity-spare" class="tabular-nums text-ink">
+              {vm_count(@spare_allocation.count, @spare.max_vms)} · {@spare_allocation.vcpus} of {trunc(
+                @spare.vcpus
+              )} vCPUs · {gib(@spare_allocation.memory_mib)} of {gib(@spare.memory_mib)} GiB
+              <span class="text-ink-3">({@spare.pct}% share)</span>
+            </dd>
+          </dl>
           <.form for={@overrides} id="overrides" phx-submit="overrides" class="grid grid-cols-2 gap-3">
             <.input field={@overrides[:allocatable_vcpus_override]} type="number" label="vCPUs" />
             <.input
@@ -651,6 +711,14 @@ defmodule CrewWeb.BoxLive.Show do
               label="CPU overcommit"
             />
             <.input field={@overrides[:max_vms]} type="number" label="Most VMs" />
+            <.input
+              field={@overrides[:spare_pct]}
+              type="number"
+              min="0"
+              max="100"
+              placeholder="50"
+              label="Spare share (%)"
+            />
             <div class="col-span-2"><.button type="submit" size="sm">Save</.button></div>
           </.form>
         </.panel>

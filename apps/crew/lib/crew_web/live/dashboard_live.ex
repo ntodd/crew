@@ -2,7 +2,8 @@ defmodule CrewWeb.DashboardLive do
   @moduledoc """
   The dashboard (§17.3): the fleet strip (a card per box with its last
   half hour of CPU and memory, what's allocated of what it offers, VMs by
-  size and its status), running, waiting and booting counts, the longest
+  size and its status), running, waiting and booting counts and today's
+  job minutes (§16.6), the longest
   waits with their reasons, the last completed jobs, the day's charts,
   and the activity feed. Fleet-wide, so members see jobs of repos they
   can't read as "a job in another repo" (§18.3).
@@ -11,8 +12,8 @@ defmodule CrewWeb.DashboardLive do
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Boxes, Jobs, Repos}
-  alias CrewWeb.{BoxCard, Charts, JobStatus}
+  alias Crew.{Boxes, Jobs, Repos, Usage}
+  alias CrewWeb.{BoxCard, Charts, JobStatus, UsageComponents}
   alias CrewWeb.Charts.Geometry
 
   @refresh_ms 5_000
@@ -31,6 +32,8 @@ defmodule CrewWeb.DashboardLive do
   defp load(socket) do
     now = DateTime.utc_now()
     boxes = Boxes.list()
+    today = DateTime.to_date(now)
+    [yesterday_usage, today_usage] = Usage.daily(Date.add(today, -1), today)
 
     assign(socket,
       now: now,
@@ -41,7 +44,8 @@ defmodule CrewWeb.DashboardLive do
       recent: Jobs.recently_completed(20),
       started: Crew.Cache.fetch(:started_series, chart_cache_ms(), &Jobs.started_series/0),
       phases: Crew.Cache.fetch(:phase_series, chart_cache_ms(), &Jobs.phase_series/0),
-      repos?: Repos.list() != []
+      repos?: Repos.list() != [],
+      job_minutes: %{today: today_usage.job_s, yesterday: yesterday_usage.job_s}
     )
   end
 
@@ -123,7 +127,7 @@ defmodule CrewWeb.DashboardLive do
         </.link>
       </section>
 
-      <section id="counters" class="mb-4 grid grid-cols-3 gap-3">
+      <section id="counters" class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <.link
           navigate={~p"/runs?status=in_progress"}
           class="rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
@@ -137,6 +141,9 @@ defmodule CrewWeb.DashboardLive do
         >
           <p class="text-xs text-ink-3">Waiting</p>
           <p class="text-2xl font-semibold tabular-nums text-ink">{@counts.waiting}</p>
+          <p :if={@counts.waiting_spare > 0} id="waiting-spare" class="text-xs text-ink-3">
+            + {@counts.waiting_spare} spare
+          </p>
         </.link>
         <.link
           navigate={~p"/queue"}
@@ -145,15 +152,36 @@ defmodule CrewWeb.DashboardLive do
           <p class="text-xs text-ink-3">Booting</p>
           <p class="text-2xl font-semibold tabular-nums text-ink">{@counts.booting}</p>
         </.link>
+        <.link
+          navigate={~p"/usage"}
+          class="rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
+        >
+          <p class="text-xs text-ink-3">Job minutes today</p>
+          <p id="job-minutes-today" class="text-2xl font-semibold tabular-nums text-ink">
+            {UsageComponents.minutes(@job_minutes.today)}
+          </p>
+          <p class="text-xs text-ink-3">
+            {UsageComponents.minutes(@job_minutes.yesterday)} yesterday, UTC
+          </p>
+        </.link>
       </section>
 
       <div class="mb-4 grid gap-4 lg:grid-cols-2">
         <.panel id="waiting" title="Waiting longest" padded={false}>
           <ul class="divide-y divide-line text-sm">
-            <li :for={job <- @waiting} class="flex items-start justify-between gap-3 px-5 py-2.5">
+            <li
+              :for={job <- @waiting}
+              id={"waiting-#{job.id}"}
+              class="flex items-start justify-between gap-3 px-5 py-2.5"
+            >
               <span class="min-w-0">
                 <%= if readable?(@readable, job.repo_id) do %>
-                  <span class="block truncate text-ink">{job.name}</span>
+                  <span class="block truncate text-ink">
+                    {job.name}
+                    <.badge :if={job.spare} size="sm" data-tier="spare" class="ml-1 align-middle">
+                      spare
+                    </.badge>
+                  </span>
                   <span class="block truncate text-xs text-ink-3">{job.repo.full_name}</span>
                 <% else %>
                   <span class="block truncate text-ink-2">a job in another repo</span>

@@ -63,6 +63,27 @@ defmodule Crew.Scheduler.QueueTest do
     assert %{demand: 0, blocked: 2, stalled: true} = queue.classes[{"repo-a", ["crew-m"]}]
   end
 
+  test "each unit and class has its tier; a class with both is mixed" do
+    jobs = [
+      job(1),
+      job(2, spare: true, label_key: ["crew-m-spare"]),
+      job(3, spare: true, label_key: ["crew-l-spare"]),
+      job(4, spare: false, label_key: ["crew-l-spare"])
+    ]
+
+    queue = Plan.queue(snapshot(jobs: jobs))
+    tiers = Map.new(queue.units, &{&1.job_id, &1.spare})
+    assert tiers == %{"job-1" => false, "job-2" => true, "job-3" => true, "job-4" => false}
+    assert queue.classes[{"repo-a", ["crew-m"]}].tier == :regular
+    assert queue.classes[{"repo-a", ["crew-m-spare"]}].tier == :spare
+    assert queue.classes[{"repo-a", ["crew-l-spare"]}].tier == :mixed
+  end
+
+  test "a blocked class's tier comes from its blocked jobs" do
+    queue = Plan.queue(snapshot(jobs: [job(1, spare: true, arch: :x64)]))
+    assert queue.classes[{"repo-a", ["crew-m"]}].tier == :spare
+  end
+
   test "jobs held for the fork check show as blocked, though they're not demand" do
     queue = Plan.queue(snapshot(jobs: [job(1, blocked_reason: "checking fork status")]))
     assert queue.units == []

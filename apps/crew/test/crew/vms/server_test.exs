@@ -331,6 +331,38 @@ defmodule Crew.VMs.ServerTest do
       assert eventually(fn -> Jobs.get_job!(job.id).taken_cross_class end)
     end
 
+    test "a spare VM that takes a regular alias job stays spare, and the job regular", %{
+      box: box,
+      repo: repo
+    } do
+      Repo.insert!(%Crew.Sizes.LabelAlias{
+        labels: ["self-hosted"],
+        labels_key: "self-hosted",
+        size_id: size_m().id,
+        arch: "any"
+      })
+
+      job = queued_job(repo, id: 504, labels: ["self-hosted"])
+      assert job.classification == "ours" and job.aliased and not job.spare
+
+      id = place(box, repo, label_key: ["crew-m-spare", "self-hosted"], spare: true)
+      vm = to_idle(box, id)
+
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: 504,
+            run_id: job.github_run_id,
+            status: "in_progress",
+            runner_name: vm.name
+          )
+        )
+
+      assert await_state(id, "busy").spare
+      assert eventually(fn -> Jobs.get_job!(job.id).taken_cross_class end)
+      refute Jobs.get_job!(job.id).spare
+    end
+
     test "another deployment's runner name is left alone", %{repo: repo} do
       job = queued_job(repo, id: 503)
 
@@ -393,6 +425,15 @@ defmodule Crew.VMs.ServerTest do
       assert vm.fail_reason == "agent_timeout"
       stop = assert_command("vm.stop")
       assert stop.payload.force
+    end
+
+    @tag timers: %{ack: 50}
+    test "a spare VM times out like any other", %{box: box, repo: repo} do
+      id = place(box, repo, label_key: ["crew-m-spare"], spare: true)
+      assert_command("vm.start")
+      assert_receive {:runner_deleted, _}, 1_000
+      assert await_state(id, "failed").fail_reason == "agent_timeout"
+      assert assert_command("vm.stop").payload.force
     end
 
     @tag timers: %{boot: 50}
@@ -466,6 +507,25 @@ defmodule Crew.VMs.ServerTest do
       Process.exit(Server.whereis(id), :kill)
       assert await_state(id, "failed").fail_reason == "cp_restart"
       refute_received {:jit_requested, _}
+    end
+
+    test "servers crashing one after another each come back, and the others stay up", %{
+      box: box,
+      repo: repo
+    } do
+      bystander = place(box, repo)
+      assert_command("vm.start")
+      pid = Server.whereis(bystander)
+
+      for _ <- 1..5 do
+        id = place(box, repo)
+        assert_command("vm.start")
+        eventually(fn -> VMs.get!(id).start_op_id end)
+        Process.exit(Server.whereis(id), :kill)
+        assert await_state(id, "failed").fail_reason == "cp_restart"
+      end
+
+      assert Server.whereis(bystander) == pid
     end
 
     @tag timers: %{boot: 100}
@@ -611,6 +671,16 @@ defmodule Crew.VMs.ServerTest do
 
       agent_event(box, "vm.exited", %{"vm_id" => id, "reason" => "poweroff", "cleanup" => "ok"})
       await_state(id, "destroyed")
+    end
+
+    test "a spare VM is reaped like any other", %{box: box, repo: repo} do
+      id = place(box, repo, label_key: ["crew-m-spare"], spare: true)
+      to_idle(box, id)
+
+      VMs.reap(id, :excess)
+      assert_receive {:runner_deleted, _}
+      vm = await_state(id, "finished")
+      assert vm.fail_reason == "reaped" and vm.spare
     end
 
     test "two idle_max reaps in a row stall the class", %{box: box, repo: repo} do

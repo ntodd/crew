@@ -23,6 +23,7 @@ defmodule Crew.Jobs.Job do
     belongs_to :size, Crew.Sizes.Size
     field :arch, :string
     field :aliased, :boolean, default: false
+    field :spare, :boolean, default: false
     field :classification, :string
     field :unsatisfiable_reason, :string
     field :gh_state, :string

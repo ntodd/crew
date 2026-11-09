@@ -47,6 +47,7 @@ images/
   flatcar/         # Butane templates
 docs/
 e2e/
+models/            # Quint model of the VM lifecycle, replayed against Crew.VMs.Machine
 ```
 
 ## Development

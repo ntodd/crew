@@ -72,6 +72,46 @@ defmodule CrewWeb.DashboardTest do
     refute has_element?(view, "#dashboard-empty")
   end
 
+  test "the waiting counter counts regular jobs, and notes the spare ones", %{
+    conn: conn,
+    repo: repo
+  } do
+    {:ok, view, _} = live(log_in(conn, user_fixture(role: "admin")), ~p"/")
+    refute has_element?(view, "#waiting-spare")
+
+    for id <- [11, 12] do
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo, id: id, run_id: 600, labels: ["crew-l-spare"])
+        )
+    end
+
+    {:ok, view, _} = live(log_in(conn, user_fixture(role: "admin")), ~p"/")
+    assert has_element?(view, ~s(#counters a[href="/runs?status=queued"] p.text-2xl), "1")
+    assert has_element?(view, "#waiting-spare", "+ 2 spare")
+  end
+
+  test "waiting longest lists regular jobs before spare ones, which are tagged", %{
+    conn: conn,
+    repo: repo
+  } do
+    {:ok, spare} =
+      Jobs.handle_workflow_job(
+        workflow_job_payload(repo,
+          id: 13,
+          run_id: 600,
+          name: "fuzz",
+          labels: ["crew-l-spare"],
+          created_at: "2026-11-03T08:00:00Z"
+        )
+      )
+
+    {:ok, view, _} = live(log_in(conn, user_fixture(role: "admin")), ~p"/")
+    names = view |> element("#waiting") |> render() |> then(&Regex.scan(~r/waits|fuzz/, &1))
+    assert names == [["waits"], ["fuzz"]]
+    assert has_element?(view, "#waiting-#{spare.id} [data-tier=spare]", "spare")
+  end
+
   test "members see other repos' jobs masked", %{conn: conn, repo: repo, hidden: hidden} do
     member = user_fixture()
 

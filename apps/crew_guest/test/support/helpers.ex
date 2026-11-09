@@ -92,6 +92,40 @@ defmodule CrewGuest.TestHelpers do
     )
   end
 
+  @doc """
+  Records when the client starts each request to `api`, as Finch reports
+  it, for `request_starts/1`. That's the moment the Outbox paces, and,
+  unlike `at` at the server, it doesn't move when the first request's
+  connect and upload are slow.
+  """
+  def record_request_starts(api) do
+    id = {__MODULE__, make_ref()}
+    config = %{port: CrewGuest.FakeAPI.port(api), to: self()}
+    :telemetry.attach(id, [:finch, :request, :start], &__MODULE__.forward_request_start/4, config)
+    ExUnit.Callbacks.on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  @doc false
+  def forward_request_start(_event, _measurements, %{request: req}, %{port: port, to: to}) do
+    if req.port == port,
+      do: send(to, {:request_start, req.path, System.monotonic_time(:millisecond)})
+  end
+
+  @doc """
+  The monotonic ms at which the client started each request to `path`,
+  oldest first. Each request reports from its own process, so they're
+  sorted rather than taken in mailbox order.
+  """
+  def request_starts(path), do: path |> drain_request_starts() |> Enum.sort()
+
+  defp drain_request_starts(path) do
+    receive do
+      {:request_start, ^path, at} -> [at | drain_request_starts(path)]
+    after
+      0 -> []
+    end
+  end
+
   @doc "Starts a client for `api` that reports stop requests to the test process."
   def client(api, opts \\ []) do
     test = self()

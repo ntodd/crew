@@ -67,6 +67,17 @@ defmodule CrewAgent.VMTest do
     assert {:error, "duplicate", _} = Handler.handle(cmd)
   end
 
+  test "vm.start answers duplicate for a VM that exited but still holds logs" do
+    cmd = start_command()
+    vm_id = start_vm(cmd, [{"FAKE_JOB_SECONDS", "30"}, {"FAKE_IDLE_SECONDS", "0"}])
+    await("vm.log", &(&1.vm_id == vm_id))
+    VMs.stop(vm_id, true, 0)
+    await("vm.exited", &(&1.vm_id == vm_id))
+    # Its server is still there, holding the unacknowledged batch.
+    assert :sys.get_state(VM.whereis(vm_id)).exited
+    assert {:error, "duplicate", _} = Handler.handle(cmd)
+  end
+
   describe "the guest API" do
     setup do
       vm_id = start_vm()

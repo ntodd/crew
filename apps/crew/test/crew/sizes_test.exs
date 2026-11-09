@@ -24,6 +24,26 @@ defmodule Crew.SizesTest do
       assert errors[:name] && errors[:vcpus] && errors[:memory_mib] && errors[:disk_gib]
     end
 
+    test "a size named before the -spare rule can be edited, and renamed, but not created",
+         %{admin: admin} do
+      legacy =
+        Repo.insert!(%Crew.Sizes.Size{
+          name: "big-spare",
+          vcpus: 2,
+          memory_mib: 4096,
+          disk_gib: 40
+        })
+
+      assert {:ok, legacy} = Sizes.update(admin, legacy, %{vcpus: 4})
+      assert legacy.vcpus == 4
+      assert {:ok, %{name: "big"}} = Sizes.update(admin, legacy, %{name: "big"})
+
+      assert {:error, changeset} =
+               Sizes.create(admin, %{name: "new-spare", vcpus: 2, memory_mib: 4096, disk_gib: 40})
+
+      assert errors_on(changeset)[:name] == ["can't end in -spare"]
+    end
+
     test "names are unique", %{admin: admin} do
       assert {:error, changeset} =
                Sizes.create(admin, %{name: "m", vcpus: 2, memory_mib: 4096, disk_gib: 40})

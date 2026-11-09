@@ -281,6 +281,70 @@ defmodule Crew.Fixtures do
   defp ago(seconds),
     do: DateTime.utc_now() |> DateTime.add(-seconds) |> DateTime.truncate(:second)
 
+  @doc """
+  A job row written as is, with no webhook behind it: a finished,
+  successful Crew job on m unless `attrs` say otherwise.
+  """
+  def job_row_fixture(repo, attrs \\ []) do
+    Repo.insert!(
+      struct!(
+        %Crew.Jobs.Job{
+          repo_id: repo.id,
+          github_id: unique(),
+          github_run_id: unique(),
+          classification: "ours",
+          gh_state: "completed",
+          conclusion: "success",
+          runner_name: "crew-runner",
+          seen_at: DateTime.utc_now(),
+          workflow_name: "CI",
+          name: "test",
+          size_id: Repo.get_by!(Crew.Sizes.Size, name: "m").id
+        },
+        attrs
+      )
+    )
+  end
+
+  @doc """
+  A VM on `box` for `repo` that ran a job `busy` seconds long on `day`
+  (UTC), from 01:00: 30 s of boot, 30 s idle, the job, 10 s of
+  teardown. Returns the VM.
+  """
+  def ran_fixture(box, repo, day, busy, attrs \\ []) do
+    at = fn s ->
+      day
+      |> DateTime.new!(~T[00:00:00], "Etc/UTC")
+      |> DateTime.add(s)
+      |> Map.put(:microsecond, {0, 6})
+    end
+
+    vm =
+      vm_fixture(
+        box,
+        Keyword.merge(
+          [
+            repo_id: repo.id,
+            requested_at: at.(3600),
+            idle_at: at.(3630),
+            busy_at: at.(3660),
+            finished_at: at.(3660 + busy),
+            destroyed_at: at.(3670 + busy),
+            state: "destroyed"
+          ],
+          attrs
+        )
+      )
+
+    job_row_fixture(repo,
+      vm_id: vm.id,
+      started_at: at.(3660),
+      completed_at: at.(3660 + busy)
+    )
+
+    vm
+  end
+
   @doc "A `vm.metrics` sample for `vm` at `t` (Unix seconds)."
   def vm_metric_fixture(vm, t, attrs \\ []) do
     Repo.insert!(

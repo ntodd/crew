@@ -42,4 +42,26 @@ defmodule Crew.ObanConfigTest do
 
     assert Enum.any?(crontab, &match?({_, Crew.Metrics.Prune}, &1))
   end
+
+  test "jobs and VMs are pruned hourly, on the maintenance queue" do
+    crontab =
+      Enum.find_value(@plugins, fn
+        {Oban.Plugins.Cron, opts} -> Keyword.fetch!(opts, :crontab)
+        _ -> nil
+      end)
+
+    assert {"27 * * * *", Crew.Jobs.Prune} in crontab
+    assert Crew.Jobs.Prune.__opts__()[:queue] == :maintenance
+  end
+
+  test "usage is rolled up hourly, on the maintenance queue" do
+    crontab =
+      Enum.find_value(@plugins, fn
+        {Oban.Plugins.Cron, opts} -> Keyword.fetch!(opts, :crontab)
+        _ -> nil
+      end)
+
+    assert {"53 * * * *", Crew.Usage.Rollup} in crontab
+    assert Crew.Usage.Rollup.__opts__()[:queue] == :maintenance
+  end
 end

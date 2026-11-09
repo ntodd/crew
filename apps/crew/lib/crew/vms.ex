@@ -17,10 +17,18 @@ defmodule Crew.VMs do
   @fork_refused "fork PRs are refused on this repo"
   @live ~w(requested starting booted idle busy finished failed)
 
+  # One server per VM. Past its restart budget the supervisor ends, and
+  # every VM's server with it, and nothing starts them again until the
+  # control plane boots. So the budget is for crashes that are each their
+  # own VM's, not OTP's default of 3 in 5 s: one event reaches every VM
+  # on a box (an inventory, a disconnect), and a box can run dozens. A
+  # server that crashes each time it starts still uses it up.
   def child_spec(_),
     do: %{
       id: @sup,
-      start: {DynamicSupervisor, :start_link, [[strategy: :one_for_one, name: @sup]]},
+      start:
+        {DynamicSupervisor, :start_link,
+         [[strategy: :one_for_one, max_restarts: 100, max_seconds: 5, name: @sup]]},
       type: :supervisor
     }
 
@@ -75,7 +83,8 @@ defmodule Crew.VMs do
   @doc """
   Inserts the scheduler's placements as `requested` VMs in one
   transaction (reserving their allocation), then starts their servers,
-  which register the runners and send `vm.start` (§8.3 step 4).
+  which register the runners and send `vm.start` (§8.3 step 4). A
+  placement's `spare` (default false) is the tier it was placed for.
   """
   def create_placements([]), do: []
 
@@ -97,6 +106,7 @@ defmodule Crew.VMs do
           repo_id: repo_id,
           class_key: key,
           class_hash: VM.class_hash(key),
+          spare: Map.get(p, :spare, false),
           size_id: p.size.id,
           vcpus: p.size.vcpus,
           memory_mib: p.size.memory_mib,
@@ -357,6 +367,10 @@ defmodule Crew.VMs do
   @doc "What a box's VMs hold of it: every VM that isn't destroyed counts (§8.6)."
   def allocation(box_id), do: box_id |> for_box() |> allocation_of()
 
+  @doc "What a box's spare VMs hold of it (§8.3), counted as `allocation/1` counts."
+  def spare_allocation(box_id),
+    do: box_id |> for_box() |> Enum.filter(& &1.spare) |> allocation_of()
+
   @doc """
   What each box's VMs held over `since..until` (Unix seconds), counted as
   `allocation_of/1` counts it: `%{box_id => [{t, vcpus, memory_mib}]}`,
@@ -402,10 +416,13 @@ defmodule Crew.VMs do
 
   defp series_starts(since, until, step), do: Enum.to_list(since..(until - 1)//step)
 
-  # The VMs that held something at some point in the range: requested
-  # by its end, and not destroyed before its start. Two reads, each on an
-  # index: the ones still held, and the ones destroyed since the start.
-  defp overlapping(since, until) do
+  @doc """
+  The VMs that held something at some point in `since..until` (Unix
+  seconds): requested by its end, and not destroyed before its start.
+  Two reads, each on an index: the ones still held, and the ones
+  destroyed since the start.
+  """
+  def overlapping(since, until) do
     from_t = DateTime.from_unix!(since)
     until_t = DateTime.from_unix!(until)
     requested = from v in VM, where: v.requested_at <= ^until_t

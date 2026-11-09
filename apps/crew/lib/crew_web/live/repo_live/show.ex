@@ -1,14 +1,17 @@
 defmodule CrewWeb.RepoLive.Show do
   @moduledoc """
   A repo (§17.3): its settings (§7.4, admins), the `runs-on` snippets for
-  its allowed sizes and its jobs' right-sizing hints (§7.5), and the
-  permissions its installation is missing. Changing settings re-parses
-  its queued jobs.
+  its allowed sizes with a line on `-spare` (§7.2), its jobs' right-sizing
+  hints (§7.5), its usage over 30 days (§16.6), and the permissions its
+  installation is missing.
+  Changing settings re-parses its queued jobs.
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Jobs, Repos, Scope, Sizes, Sizing}
-  alias CrewWeb.SizingComponents
+  alias Crew.{Jobs, Repos, Scope, Sizes, Sizing, Usage}
+  alias CrewWeb.{SizingComponents, UsageComponents}
+
+  @usage_days 30
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -22,7 +25,20 @@ defmodule CrewWeb.RepoLive.Show do
      socket
      |> assign(:page_title, repo.full_name)
      |> assign(:sizes, Sizes.list())
-     |> assign_repo(repo)}
+     |> assign_repo(repo)
+     |> assign_usage(repo)}
+  end
+
+  defp assign_usage(socket, repo) do
+    scope = socket.assigns.current_scope
+    today = Date.utc_today()
+
+    socket
+    |> assign(
+      :usage,
+      Usage.summary(scope, Date.add(today, 1 - @usage_days), today, repo_id: repo.id)
+    )
+    |> assign(:top_jobs, Usage.top_jobs(scope, repo, @usage_days))
   end
 
   defp assign_repo(socket, repo) do
@@ -51,6 +67,29 @@ defmodule CrewWeb.RepoLive.Show do
       {:error, :unauthorized} ->
         {:noreply, put_flash(socket, :error, "Only admins change repo settings.")}
     end
+  end
+
+  # The -spare examples (§7.2) that would run here: crew-spare when the
+  # default size is allowed, and the largest allowed size's. A size named
+  # before the rule (`spare`, `l-spare`) keeps the label it hides.
+  defp spare_examples(allowed, sizes) do
+    names = MapSet.new(sizes, & &1.name)
+    hidden? = &MapSet.member?(names, &1)
+
+    default =
+      if Enum.any?(allowed, & &1.is_default) and not hidden?.("spare"),
+        do: ["crew-spare"],
+        else: []
+
+    sized =
+      allowed
+      |> Enum.map(&"#{&1.name}-spare")
+      |> Enum.reject(hidden?)
+      |> List.last()
+      |> List.wrap()
+      |> Enum.map(&("crew-" <> &1))
+
+    default ++ sized
   end
 
   defp allowed(repo, sizes) do
@@ -99,6 +138,18 @@ defmodule CrewWeb.RepoLive.Show do
               </span>
             </li>
           </ul>
+          <p
+            :if={(examples = spare_examples(allowed(@repo, @sizes), @sizes)) != []}
+            id="spare-hint"
+            class="mt-3 text-xs text-ink-3"
+          >
+            Add <code class="font-mono text-ink-2">-spare</code>
+            for background work that only gets room regular jobs aren't using:
+            <%= for {label, i} <- Enum.with_index(examples) do %>
+              <span :if={i > 0}>or</span>
+              <code class="font-mono text-ink-2">runs-on: {label}</code>
+            <% end %>.
+          </p>
         </.panel>
 
         <.panel :if={Scope.admin?(@current_scope)} id="settings" title="Settings">
@@ -174,6 +225,8 @@ defmodule CrewWeb.RepoLive.Show do
           </li>
         </ul>
       </.panel>
+
+      <UsageComponents.repo_panel summary={@usage} top_jobs={@top_jobs} />
     </Layouts.app>
     """
   end

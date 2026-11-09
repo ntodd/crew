@@ -511,6 +511,52 @@ defmodule Crew.JobsTest do
     end
   end
 
+  describe "spare jobs (§7.2)" do
+    test "a -spare label makes a spare job; without it, a regular one", %{repo: repo} do
+      {:ok, spare} =
+        Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-l-arm64-spare"]))
+
+      assert spare.classification == "ours"
+      assert spare.spare
+      assert spare.label_key == ["crew-l-arm64-spare"]
+      assert spare.arch == "arm64"
+      assert Crew.Sizes.get!(spare.size_id).name == "l"
+
+      {:ok, regular} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-l"]))
+      refute regular.spare
+    end
+
+    test "re-parsing keeps it right: renaming a size that ends in -spare hands its label over",
+         %{repo: repo} do
+      # A size named before the rule; the changeset wouldn't take it now.
+      old =
+        Repo.insert!(%Crew.Sizes.Size{
+          name: "l-spare",
+          vcpus: 8,
+          memory_mib: 16_384,
+          disk_gib: 100
+        })
+
+      Repo.delete_all(from s in Crew.Sizes.Size, where: s.name == "l")
+
+      {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo, labels: ["crew-l-spare"]))
+      assert job.size_id == old.id
+      refute job.spare
+
+      renamed = Repo.update!(Ecto.Changeset.change(old, name: "l"))
+      :ok = Jobs.reclassify_open(repo_id: repo.id)
+
+      job = Repo.reload!(job)
+      assert job.spare
+      assert job.size_id == old.id
+      assert job.label_key == ["crew-l-spare"]
+
+      Repo.update!(Ecto.Changeset.change(renamed, name: "l-spare"))
+      :ok = Jobs.reclassify_open(repo_id: repo.id)
+      refute Repo.reload!(job).spare
+    end
+  end
+
   test "changes are broadcast with ids only", %{repo: repo} do
     Phoenix.PubSub.subscribe(Crew.PubSub, "jobs")
     {:ok, job} = Jobs.handle_workflow_job(workflow_job_payload(repo))

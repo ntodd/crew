@@ -450,7 +450,20 @@ doesn't run in releases) and edited on the admin page Sizes & labels.
 
 **Rules:**
 - **Names:** a lowercase DNS label of 1–12 characters. They can't be `x64`
-  or `arm64`, end in `-x64` or `-arm64`, or contain `crew`.
+  or `arm64`, end in `-x64` or `-arm64`, be `spare`, end in `-spare`, or
+  contain `crew`.
+  - **A size named before the `spare` rule** keeps working: its label
+    parses as it always did (§7.2) and it can still be edited, but it
+    hides the spare form of that label. The Sizes page shows the name error on its row and says to
+    rename it.
+  - **Renaming it hands the label over.** Say size `l-spare` has regular
+    VMs registered with `[crew-l-spare]`. After the rename to `l`, the
+    re-parse (§7.4) makes queued `crew-l-spare` jobs spare jobs on `l`, in
+    the same class. The old VMs are still regular, and still the class's
+    supply, so they can take the now-spare jobs until they finish or are
+    reaped, the way edits to a size's shape apply only to VMs started
+    afterwards. Crew doesn't drain on rename: runners already started
+    for the label finish their jobs first.
 - **`vcpus`:** 1 or an even number up to 32. That's Firecracker's rule, and
   the `vz` driver follows it too for consistency.
 - **`memory_mib`:** at least 1024, a multiple of 256.
@@ -469,30 +482,60 @@ doesn't run in releases) and edited on the admin page Sizes & labels.
 A job opts into Crew with a `runs-on` containing exactly one Crew label:
 
 ```
-crew                 default size, any arch
-crew-<size>          that size, any arch
-crew-<arch>          default size, that arch
-crew-<size>-<arch>   that size and arch            <arch> ∈ { x64, arm64 }
+crew                       default size, any arch
+crew-<size>                that size, any arch
+crew-<arch>                default size, that arch
+crew-<size>-<arch>         that size and arch            <arch> ∈ { x64, arm64 }
+
+crew-spare                 default size, any arch, spare
+crew-<size>-spare          that size, any arch, spare
+crew-<arch>-spare          default size, that arch, spare
+crew-<size>-<arch>-spare   that size and arch, spare
 ```
 
 Other labels may appear next to it, from the **generic** set
 `{self-hosted, linux, x64, arm64}`. `x64` or `arm64` fixes the arch, and
 contradicting the Crew label's arch is unsatisfiable.
 
+**The `-spare` suffix** is optional and always last. It asks for spare
+capacity: room regular jobs aren't using (below). A label that parsed
+before the suffix existed parses the same way, so the parse goes in this
+order:
+
+1. **Parse the label as without the suffix.** Any `{:ours, _}` from that
+   is regular. A size already named `spare` or `x-spare` keeps meaning
+   what it meant.
+2. **Only when that fails with an unknown size and the Crew label ends in
+   `-spare`,** parse again with the suffix removed (`crew-spare` becomes
+   `crew`, `crew-l-arm64-spare` becomes `crew-l-arm64`). That result
+   stands: `{:ours, _}`, spare; or its own reason (`crew-nope-spare` is
+   "unknown size nope", `crew-l-spare` with `l` retired is "size l
+   retired").
+3. **When it fails on an unknown size that ends in `-spare`,** and the
+   name without it is a size (`crew-l-spare-arm64`), the reason is
+   "-spare goes last: crew-l-arm64-spare". `crew-spare-arm64` is told
+   `crew-arm64-spare` the same way.
+
+Aliases (§7.3) are never spare.
+
 `CrewProtocol.Labels.parse(labels, sizes, aliases)` lowercases,
 deduplicates and sorts the labels into the **label key**, then returns:
 
 | Result | When |
 |---|---|
-| `{:ours, %{size_id, arch: :any \| :x64 \| :arm64, key}}` | Exactly one Crew label plus generic labels only, a known size, no contradiction; or an exact alias match (§7.3) |
+| `{:ours, %{size_id, arch: :any \| :x64 \| :arm64, key, alias, spare}}` | Exactly one Crew label plus generic labels only, a known size, no contradiction; or an exact alias match (§7.3) |
 | `:not_ours` | No Crew label and no alias match |
-| `{:unsatisfiable, reason}` | More than one Crew label, a Crew label next to a non-generic label, an unknown or retired size, or contradictory arch labels |
+| `{:unsatisfiable, reason}` | More than one Crew label, a Crew label next to a non-generic label, an unknown or retired size, `-spare` before the arch, or contradictory arch labels |
+
+`spare` is true only for a Crew label that parsed through step 2. The
+label key keeps the suffix.
 
 **Classes:**
 - **A class is `(repo, label key)`.** A runner for a class is registered
   with exactly the label key as its labels:
   - `runs-on: crew-m` → runner labels `[crew-m]`
   - `runs-on: [self-hosted, crew-m]` → `[crew-m, self-hosted]`
+  - `runs-on: crew-l-spare` → `[crew-l-spare]`
 - **Jobs can be taken across classes.** GitHub gives a runner any queued
   job whose labels are all among the runner's. So a
   `[crew-m, self-hosted]` runner can also take a `[crew-m]` job, or a bare
@@ -501,9 +544,51 @@ deduplicates and sorts the labels into the **label key**, then returns:
   - The class it was booted for keeps its deficit, so the next pass places
     another VM.
   - The job page notes "taken by a runner started for `<key>`".
-- **The docs recommend `runs-on: crew-<size>` alone.** Only runners with
+  - **Tiers don't mix through the Crew label.** A runner without
+    `crew-l-spare` can't take a `crew-l-spare` job, and a `[crew-l-spare]`
+    runner only takes jobs that ask for `crew-l-spare`. Generic labels are
+    the exception: a `[crew-l-spare, self-hosted]` runner can take a job
+    that asks only for `[self-hosted]`, which is regular if it matches an
+    alias. A VM keeps the tier it was placed for (`vms.spare`), and the
+    job keeps its own.
+- **The docs recommend `runs-on: crew-<size>` alone,** and
+  `runs-on: crew-<size>-spare` alone for spare jobs. Only runners with
   exactly that key can take such a job, and Crew's runners never take jobs
   outside Crew unless a workflow uses only generic labels.
+
+**Spare jobs** are background work (flake hunts, mutation testing, long
+fuzz runs) that should only get room regular jobs aren't using. "Spare",
+not "idle": an idle VM is one whose runner is listening (§8.5). A
+**regular unit** below is an uncovered unit of a regular class's deficit
+(§8.1, §8.3); jobs covered by supply already have a VM booting for them.
+Without preemption, spare VMs already running can delay regular jobs, so
+what Crew promises is about admission:
+
+- In every pass, every regular unit is tried before any spare unit (§8.4).
+- Each new spare placement leaves the box's spare VMs within all three of
+  its current limits: `spare_pct`% of its allocatable memory, of its
+  allocatable vCPUs and of its `max_vms` slots (§8.3). Spare VMs that
+  already exist can stay over those limits after an admin lowers
+  `spare_pct`, a capacity override or `max_vms`, until they finish.
+- No new spare VM goes on a box that a regular unit could have used, when
+  that unit looked for a box in the same pass and found none with room.
+  Units held back by `max_concurrent` or class backoff don't look, so they
+  keep nothing free.
+- While a box's spare VMs are within its limits, a regular job that fits
+  in the rest (after the other regular VMs) never waits on spare VMs for
+  memory, vCPUs or a VM slot. It can still wait on disk, images or box
+  state, as any job can.
+- A regular job bigger than what spare VMs leave, or one that needs
+  clone-area disk spare VMs are using, can wait for spare VMs to finish.
+  Disk isn't reserved.
+- Spare jobs can starve while regular jobs keep the fleet busy. That's
+  intended.
+
+**No preemption:** a running spare job keeps running until it finishes.
+**Long waits:** spare jobs may sit queued for hours. The reconciler
+(§8.8) re-checks queued jobs per run attempt, not per job, so a 50-job
+matrix costs no more calls than it does regular. GitHub fails a job
+that's been queued for 24 hours.
 
 ### 7.3 Label aliases (migration aid)
 
@@ -523,7 +608,7 @@ deduplicates and sorts the labels into the **label key**, then returns:
 | `enabled` | true | Disabled repos' jobs are `not_ours` |
 | `allowed_sizes` | all | Other sizes are `unsatisfiable` ("size not allowed for this repo") |
 | `allowed_boxes` | all | Restricts placement to these boxes, e.g. pin a sensitive repo to `linux-metal` |
-| `max_concurrent` | none | A cap on the repo's VMs in `requested` through `busy` |
+| `max_concurrent` | none | A cap on the repo's VMs in `requested` through `busy`. A regular job counts only the repo's regular VMs, a spare one counts all of them, so a repo's spare jobs never block its regular ones and it can go over the cap by the spare VMs it already had |
 | `fork_prs` | `refuse` | `refuse` or `allow` (§19.5) |
 | `priority` | 0 | Higher is placed first (§8.4) |
 
@@ -533,7 +618,9 @@ the repo's jobs that GitHub still has queued or waiting.
 ### 7.5 Helping people choose
 
 - **Snippets:** the repo page shows a copy-ready `runs-on:` line for each
-  allowed size.
+  allowed size, and under them one line explaining `-spare` (§7.2), with
+  `crew-spare` (when the default size is allowed) and the largest allowed
+  size as examples.
 - **Hints** (`Crew.Sizing`, display only): the job page shows one once
   the job finishes, and the repo page lists its jobs' hints. They come
   from the last 10 finished runs of the same `(repo, workflow, job name)`
@@ -587,6 +674,15 @@ So Crew schedules **per class**:
   `booted` or `idle`, with no job linked, **on a box that is online**.
 - **`deficit = demand − supply`** and **`excess = supply − demand`**.
 
+Demand, supply, deficit and excess are per class whatever the tier: a
+spare class (§7.2) is a class like any other. A class's queued jobs are
+normally all one tier, but `Jobs.reclassify_open/1` updates jobs one at a
+time, so a pass during a size rename (§7.1) can see some of a class's
+jobs spare and the rest still regular. Supply covers the class's first
+`supply(class)` jobs in the order (tier, regular first; `queued_at`;
+GitHub id), so regular jobs get the class's supply before spare ones.
+The Queue page shows such a class as "mixed".
+
 The scheduler places VMs to close deficits (§8.3) and reaps idle VMs to
 close excess (§8.5). When `in_progress` names a Crew VM, that VM is linked
 to that job and leaves supply, whichever job it was booted for.
@@ -618,7 +714,10 @@ Each job has two independent fields:
   reason in the UI.
 - The reasons are dynamic:
   - "checking fork status" (the run fetch hasn't finished)
-  - "no box could ever hold this size"
+  - "no box could ever hold this size"; for a spare job, "no box's spare
+    share could ever hold this size", when no box passes both
+    `Plan.could_hold?/2` (so the driver's per-VM limits still apply) and
+    the three limits of its spare share (§8.3) when empty
   - "no boxes enrolled"
   - "no `arm64` box"
   - "the only boxes that fit are offline / draining / quarantined /
@@ -626,6 +725,14 @@ Each job has two independent fields:
   - "class stalled" (§8.5)
   - "repo at max_concurrent"
 - These are recomputed on every pass, so a box joining unblocks them.
+
+**Wait reasons for a spare unit** that isn't placed (§8.3):
+- with no box it would fit on as a regular unit, the reason a regular unit
+  gets;
+- otherwise every box it fits failed a spare rule. If any failed rule 2:
+  "waiting for spare room: regular jobs are waiting for the boxes that
+  fit". Otherwise: "waiting for spare room: spare jobs are at their share
+  of every box that fits".
 
 **What each webhook does:**
 - **`waiting`** (an environment approval) is recorded and shown, and the
@@ -656,8 +763,8 @@ the latest box metrics. The GenServer applies the actions.
 
 1. **Compute blocked reasons** (§8.2) and each class's `deficit`.
 2. **Order the queued, unblocked jobs** by §8.4. In each class, the first
-   `supply(class)` jobs in that order count as covered, and each remaining
-   job is one **unit** to place.
+   `supply(class)` jobs (regular ones first, §8.1) count as covered, and
+   each remaining job is one **unit** to place.
 3. **For each unit, in order:** pick a box (below), and add the placement
    to the snapshot before the next unit. So fairness (§8.4), capacity and
    disk are recomputed after every placement within the pass.
@@ -674,8 +781,33 @@ the latest box metrics. The GenServer applies the actions.
 - have the right `guest_arch` (any arch for `:any`);
 - **have a usable image** (below);
 - **fit the size** (below);
-- keep the repo under `max_concurrent`;
+- keep the repo under `max_concurrent` (§7.4);
 - are not in the class's backoff (§8.6).
+
+Call the boxes that pass all of that a unit's **ordinary fits**. A spare
+unit (§7.2) needs an ordinary fit that also passes two rules:
+
+1. **The box's spare share.** Each box has `spare_pct`, an integer from 0
+   to 100, nullable, meaning 50 when null. The box's spare VMs are its
+   spare VMs that aren't `destroyed` plus this pass's spare placements on
+   it. With this placement they stay within:
+   - `spare_pct`% of `allocatable_memory_mib`, counting each VM's
+     `memory_mib + vmm_overhead_mib` as the memory rule below does (the
+     overhead includes the guest reserve);
+   - `spare_pct`% of `allocatable_vcpus` (overcommit included);
+   - `⌊spare_pct × max_vms / 100⌋` VMs, when `max_vms` is set.
+
+   0 keeps spare jobs off the box, and 100 lets them fill it. Regular
+   units ignore `spare_pct`.
+2. **No regular unit waiting for the box.** When a regular unit in this
+   pass has no ordinary fit, Crew records the boxes it could have used:
+   those that pass its `allowed_boxes`, arch, state and usable-image
+   checks and could ever hold its size (`Plan.could_hold?/2`). No spare
+   unit later in the pass goes on any of them. A regular unit held back
+   by `max_concurrent` or class backoff records nothing, since it never
+   looked for a box.
+
+Spare units rank their remaining boxes the way regular units do (below).
 
 **Usable image:**
 - **`usable_image(box, arch)`** is the arch's **default image** (pinned,
@@ -703,8 +835,9 @@ box's allocation, whatever state it's in.
   `starting` and `booted`, and over placements earlier in this pass.
   That's an expected-use estimate for sparse clones. Real exhaustion is
   handled by the disk watchdog (§12.5).
-- **`vmm_overhead_mib`** is reported by the driver: 64 for Firecracker, 128
-  for vz.
+- **`vmm_overhead_mib`** is the driver's VMM overhead (64 for Firecracker,
+  128 for vz) plus what the guest kernel keeps on top of the VM's memory
+  (`CrewProtocol.GuestMemory`, 199 MiB for an 8 GiB VM).
 - **`vm_area_mib`** is the size of the clone area (§12.5).
 
 **Ranking eligible boxes** (the first difference wins):
@@ -729,6 +862,7 @@ with 16 GiB free (largest free: 12 GiB on m3max)".
 | `allocatable_memory_mib` | `memory_mib − reserve_memory_mib`, where `reserve_memory_mib` defaults to `2048 + ⌊0.05 × memory_mib⌋` |
 | `cpu_overcommit` | 1.5 |
 | `max_vms` | unset |
+| `spare_pct` | unset (50): the share spare jobs may use (above) |
 
 - **Capabilities are pinned at enrollment** (§19.2 #6). A later report that
   changes `guest_arch` or `driver`, or moves `vcpus`, `memory_mib` or
@@ -740,28 +874,38 @@ with 16 GiB free (largest free: 12 GiB on m3max)".
 
 | Box | Reported | Allocatable | Fits m |
 |---|---|---|---|
-| linux-a (`linux-metal`, fc) | 24 vCPU; 65,536 MiB; vm area 768 GiB, all free | vCPU 23 × 1.5 = 34.5; memory 65,536 − (2,048 + 3,276) = 60,212 MiB | vCPU ⌊34.5/4⌋ = 8; memory ⌊60,212 / 8,256⌋ = 7; disk: with k VMs, 786,432 − 30,720k − 30,720 ≥ 117,965 → k ≤ 20 → **7** |
-| m3max (`mac-vm`, fc) | 14 vCPU; 36,864 MiB; vm area 200 GiB | vCPU 13 × 1.5 = 19.5; memory 36,864 − (2,048 + 1,843) = 32,973 | vCPU 4; memory ⌊32,973 / 8,256⌋ = 3; disk: 204,800 − 30,720k − 30,720 ≥ 30,720 → k ≤ 4 → **3** |
-| m1ultra (`mac-vz`) | 18 vCPU; 110,592 MiB; vm area 400 GiB | vCPU 17 × 1.5 = 25.5; memory 110,592 − (2,048 + 5,529) = 103,015 | vCPU ⌊25.5/4⌋ = 6; memory ⌊103,015 / 8,320⌋ = 12; disk: 409,600 − 30,720k − 30,720 ≥ 61,440 → k ≤ 10 → **6** |
+| linux-a (`linux-metal`, fc) | 24 vCPU; 65,536 MiB; vm area 768 GiB, all free | vCPU 23 × 1.5 = 34.5; memory 65,536 − (2,048 + 3,276) = 60,212 MiB | vCPU ⌊34.5/4⌋ = 8; memory ⌊60,212 / 8,455⌋ = 7; disk: with k VMs, 786,432 − 30,720k − 30,720 ≥ 117,965 → k ≤ 20 → **7** |
+| m3max (`mac-vm`, fc) | 14 vCPU; 36,864 MiB; vm area 200 GiB | vCPU 13 × 1.5 = 19.5; memory 36,864 − (2,048 + 1,843) = 32,973 | vCPU 4; memory ⌊32,973 / 8,455⌋ = 3; disk: 204,800 − 30,720k − 30,720 ≥ 30,720 → k ≤ 4 → **3** |
+| m1ultra (`mac-vz`) | 18 vCPU; 110,592 MiB; vm area 400 GiB | vCPU 17 × 1.5 = 25.5; memory 110,592 − (2,048 + 5,529) = 103,015 | vCPU ⌊25.5/4⌋ = 6; memory ⌊103,015 / 8,519⌋ = 12; disk: 409,600 − 30,720k − 30,720 ≥ 61,440 → k ≤ 10 → **6** |
 
 **Result:** 16 run at once and 14 wait. Each completion frees a slot that
 the next pass fills. (The Macs' figures follow §11.4 for the M1 and the
 vfkit settings for the M3. The RAM numbers are examples, not
-measurements.)
+measurements. Each m VM holds 8,192 + 64 (Firecracker) + 199 (guest
+reserve) = 8,455 MiB, or 8,519 MiB on vz.)
+
+**Spare worked example** (in `Crew.Scheduler.PlanSpareTest`): linux-a,
+empty, with `spare_pct` 50, holds 3 spare `m` VMs. Memory allows
+⌊30,106 / 8,455⌋ = 3 (half of 60,212 is 30,106), and vCPUs allow
+⌊17.25 / 4⌋ = 4 (half of 34.5). Regular jobs can still use the other 4
+slots the box has for `m`.
 
 ### 8.4 Ordering and fairness
 
 Waiting units are ordered by, in turn:
 
-1. The repo's `priority`, highest first.
-2. The repo's **active VM count** (VMs in `requested` through `busy`),
-   lowest first. This is recomputed after each placement in the pass, for
-   fair share.
-3. `queued_at`, oldest first.
-4. GitHub job id, lowest first.
+1. The tier (§7.2), regular first.
+2. The repo's `priority`, highest first.
+3. The repo's **active VM count of the unit's tier** (VMs in `requested`
+   through `busy`), lowest first. This is recomputed after each placement
+   in the pass, for fair share.
+4. `queued_at`, oldest first.
+5. GitHub job id, lowest first.
 
 So one repo with 30 jobs gets the whole fleet when nobody else is waiting,
-and two waiting repos alternate.
+and two waiting repos alternate. Every regular unit is tried before any
+spare unit, and a repo running a flake hunt on spare VMs doesn't fall
+behind other repos for its PR jobs.
 
 ### 8.5 Reaping excess
 
@@ -941,6 +1085,7 @@ migrations, Unix-second timestamps for metrics. `RELEASE_DISTRIBUTION=none`.
 | `Crew.Caches` | Cache config, tokens, stats |
 | `Crew.Logs` | Log files, segments, gap handling, final-log fetch |
 | `Crew.Metrics` | Box, VM and job metrics; pruning; bucketed reads (copy Foreman's) |
+| `Crew.Usage` | Job and VM minutes per box, repo and shape by UTC day; the daily rollup (§16.6) |
 | `Crew.Activity`, `Crew.Audit`, `Crew.Updates`, `Crew.Settings` | Copy Foreman's |
 
 ### 9.3 Processes
@@ -959,7 +1104,7 @@ migrations, Unix-second timestamps for metrics. `RELEASE_DISTRIBUTION=none`.
 | `hooks` | 10 | webhook processing |
 | `github` | 5 | final job fetch, log fetch, runner GC, enrichment |
 | `reconcile` | 1 | reconciler, redelivery |
-| `maintenance` | 1 | pruning |
+| `maintenance` | 1 | pruning; the usage rollup (`Crew.Usage.Rollup`, hourly at :53, §16.6) |
 | `default` | 5 | everything else |
 
 **PubSub topics:**
@@ -978,8 +1123,27 @@ what it may show (§18.3).
 | Jobs, run attempts, VM rows, job and VM events | 90 days (`CREW_JOB_RETENTION_DAYS`). Each job keeps at most 500 guest-sourced `job_events`. |
 | Logs | 30 days (`CREW_LOG_RETENTION_DAYS`), and at most `CREW_LOG_MAX_GIB` in total, oldest deleted first |
 | `box_metrics`, `vm_metrics`, `cache_stats` | 7 days (copy Foreman's `PruneMetrics`) |
+| `usage_days`, `usage_box_days`, `usage_rollups` | Forever: tens of rows a day, and they outlive the job and VM rows they add up (§16.6) |
 | Webhook deliveries | 7 days |
 | Audit log | Forever |
+
+`Crew.Jobs.Prune` (hourly at :27, on `maintenance`) deletes run
+attempts, jobs and VM rows a batch at a time, and their events with
+them:
+
+- A job's age is when it completed, or for one that never did, its last
+  event. A run attempt goes with its jobs, once every one of them is
+  past the retention and the attempt hasn't changed for it either: a
+  run never shows only some of its jobs, and while one of them is open
+  the reconciler, which upserts every job it lists for an attempt
+  (§8.8), has none to add back. A job with no run attempt goes on its
+  own.
+- A VM's age is when it was destroyed. One that isn't destroyed stays,
+  and so does one a job that's kept ran on.
+- Nothing goes that the usage rollup may still read (§16.6): nothing
+  from today or the last 2 closed days, and nothing at all while it has
+  older days to fill in, since the oldest rows decide where it fills in
+  from.
 
 ## 10. Agent and protocol
 
@@ -2556,6 +2720,107 @@ spike S5 confirms that for pages. Access control (§18.3) protects logs.
 - **Right-sizing hints** come from the last 10 completed runs of the same
   `(repo, workflow, job name)` (§7.5).
 
+### 16.6 Usage
+
+Minutes for jobs, for each box and for the fleet: how much went to
+running jobs, how much to boot and idle overhead, and how full each box
+was over a day. Display only: nothing here changes placement, labels,
+sizes, the agent, the guest or the protocol.
+
+Days are UTC days, `[00:00, 24:00)`, and the UI says UTC wherever it
+shows one. Every timestamp is floored to whole Unix seconds before any
+arithmetic, so the sums are exact integers.
+
+**VM time** is time held. A VM is held from `requested_at` until
+`destroyed_at`, or until the end of the window while it isn't destroyed
+(the span `Crew.VMs.provisioned_series/3` uses). Within it the VM is in
+one of four phases, each running from its mark to the next later mark
+that's present, the last to the end of the held span:
+
+| Phase | Starts at |
+|---|---|
+| boot | `requested_at` |
+| idle | `idle_at` |
+| busy | `busy_at` |
+| teardown | the earlier of `finished_at` and `failed_at` |
+
+- A missing mark is skipped: a VM that failed while booting is boot,
+  then teardown; one reaped while idle has no busy phase.
+- A mark earlier than the one before it, or outside the held span, is
+  ignored, so clock skew can't make a phase negative. A VM that isn't
+  destroyed yet has no end to its span for this check, so where a
+  window stops doesn't change which marks count.
+- Only the part of each phase inside the day counts for it: a VM held
+  across midnight splits across both days. The four phases add up to
+  the VM's held seconds inside the window, exactly.
+- `vcpu_s` is vCPUs × held seconds; `mem_mib_s` is (`memory_mib` +
+  `vmm_overhead_mib`) × held seconds, the memory `allocation_of/1`
+  counts.
+- `vm_count` counts VMs on the day of their `requested_at`;
+  `unused_count` the ones among them destroyed without a `busy_at`. A VM
+  with no `requested_at` is skipped.
+
+**Job time** counts finished work: jobs with `classification == "ours"`,
+`gh_state == "completed"`, both `started_at` and `completed_at`, and a
+`runner_name`. GitHub stamps `started_at` on a job cancelled in the
+queue too, with no runner, and without that last test its wait would
+count as work.
+
+- `job_s` is `completed_at - started_at`. A negative duration counts
+  nothing; zero counts as a job of 0 s.
+- `job_billable_min` is `ceil(job_s / 60)` per job, summed: GitHub
+  rounds each job up to a whole minute when it bills hosted runners, so
+  this is the number to compare against GitHub.
+- A job counts whole on the UTC day of its `completed_at`, never split
+  across midnight.
+- `job_count`, `success_count` (conclusion `success`) and
+  `failure_count` (conclusion `failure`).
+- The box and shape come from the job's VM (`jobs.vm_id`). A job with no
+  VM counts under no box, with its own `vcpus` and `memory_mib` if set
+  and its size's otherwise.
+
+**Box time**, per box and day:
+
+- `online_s` comes from the day's `box_metrics` samples, weighted as job
+  coverage weighs VM samples (§16.5): 5 s for the first, then the gap
+  since the one before, at most 15 s. Samples are pruned after 7 days,
+  so `online_s` is nil for older days rolled up the first time.
+- `allocatable_vcpus` and `allocatable_memory_mib` are
+  `Crew.Scheduler.capacity(box)` when the day is rolled up, or nil.
+- Memory use is Σ `mem_mib_s` / (`allocatable_memory_mib` × `online_s`),
+  shown capped at 100%; vCPU use is the same with `vcpu_s`. A dash when
+  an input is nil or zero.
+
+**Storage** (§22): `usage_days` has one row per (day, box, repo, vCPUs,
+memory) with any activity. It keeps the shape, not the size, so editing
+or deleting a size leaves history alone; the UI names a shape after the
+size that matches it. `usage_box_days` has a box's online time and
+capacity, and `usage_rollups` marks a day done, even one with no rows.
+All three are kept forever (§9.4).
+
+**`Crew.Usage.compute(day)`** reads one day from the raw rows, on the
+indexes that exist: VMs overlapping the day (`Crew.VMs.overlapping/2`),
+jobs on `(classification, gh_state, completed_at)`, samples on
+`(box_id, t)`.
+
+**`Crew.Usage.Rollup`** (Oban, `:maintenance`, hourly at :53, unique for
+30 minutes):
+
+- Each day is written in one transaction: its rows deleted from all
+  three tables, the computed ones inserted, `usage_rollups` upserted.
+  Running it twice gives the same rows.
+- Every run recomputes the last 2 closed days: a job that finished at
+  23:59 on GitHub's clock can arrive after midnight.
+- Then it fills in the oldest days with no `usage_rollups` row, from the
+  first VM requested or job completed: at most 31 a run, so a fresh
+  deploy's history fills in over a few hours rather than in one long
+  job on a queue the prunes share.
+- It never rolls up today.
+- A closed day older than the last 2 isn't computed again: a job whose
+  webhook comes more than 2 days late, or a VM destroyed more than 2
+  days after the day it was requested on, leaves that day as it was
+  stored.
+
 ## 17. UI
 
 ### 17.1 Foundations
@@ -2594,6 +2859,8 @@ The sidebar has:
 - **Queue**
 - **Repos**
 - **Boxes**
+- **Right-sizing**
+- **Usage**
 - **Admin** (admins only): Images, Sizes & labels, Caches, People, Audit,
   Deployment, Oban
 
@@ -2608,8 +2875,12 @@ The sidebar has:
     offline, plus a "reboot needed" badge;
   - firewall and virtualisation badges.
 - **Counters:** running, waiting and booting jobs, each linking to a
-  filtered Runs page.
-- **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3).
+  filtered Runs page, and job minutes today (UTC, §16.6) with
+  yesterday's in its note, linking to Usage. Waiting counts regular jobs,
+  and its note gives the spare jobs waiting when there are any
+  ("+ 42 spare", §7.2). Running and booting count both tiers.
+- **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3);
+  regular jobs first, then spare ones, tagged (§7.2).
 - **Recent:** the last 20 completed jobs.
 - **Charts (24 hours):** jobs started per 5 minutes, stacked by conclusion;
   p50 and p95 wait and boot times.
@@ -2641,10 +2912,34 @@ The sidebar has:
 **Job (`/jobs/:id`):** §17.6.
 
 **Queue (`/queue`)**
-- **Waiting units** in placement order (§8.4), with class, wait and reason.
-- **Per class:** demand, supply, deficit, and stalled or backoff state.
+- **Waiting units** in placement order (§8.4), with class, wait and reason,
+  and a "spare" tag on spare ones (§7.2), which list after the regular
+  ones because of the order.
+- **Per class:** demand, supply, deficit, its tier ("spare", or "mixed"
+  while a rename hands its label over, §7.1), and stalled or backoff
+  state.
 - **A 6-hour chart** of queue depth and booting VMs.
 - **Admins can change a repo's priority** from here (audit-logged).
+
+**Usage (`/usage`)** (§16.6)
+- **The range:** the last 7, 30 or 90 UTC days (`?days=`, 30 by
+  default); the subtitle says the days are UTC.
+- **Tiles:** job minutes, with the rounded-up minutes GitHub would bill;
+  VM minutes; overhead (boot, idle and teardown as a share of VM time,
+  with each one's minutes); and what was reserved, in GiB-hours and
+  vCPU-hours.
+- **A chart** of VM minutes per day stacked by phase, with job minutes
+  as a line.
+- **By box:** VM minutes, busy share, job minutes, memory and vCPU use,
+  reserved GiB-hours. Every box, for members too; a revoked one says so.
+- **By repo:** jobs, job minutes, rounded-up minutes, VM minutes and
+  overhead. Members see the repos they can read, and the rest as one
+  "Other repos" row with no name or link.
+- **By size:** each shape, named after the size that matches it, with
+  jobs, job minutes and VM minutes.
+- Closed days come from the rollup; today is counted live. Older days
+  it hasn't stored yet are named as not counted. On a phone the tables
+  drop their secondary columns.
 
 **Repos (`/repos`)**
 - **The repo list:** enabled, jobs over 7 days, success rate, p50 wait and
@@ -2658,6 +2953,9 @@ The sidebar has:
   - flaky jobs (failed, then passed on a re-run of the same SHA within 7
     days);
   - right-sizing hints;
+  - **Usage** over 30 days (§16.6): jobs, job minutes and the rounded-up
+    minutes, VM minutes and overhead, a chart per day, and the jobs with
+    the most minutes, linking to Usage;
   - permissions the installation is missing;
   - for public repos: a warning when fork-PR approval isn't set to
     "require approval for all outside collaborators" (§19.5).
@@ -2681,8 +2979,15 @@ The sidebar has:
     against cores, and cache hit rate.
   - **Running VMs:** job, repo, size, uptime, live CPU and memory. Admins
     can kill one (audit-logged).
-  - **Capacity overrides** (§8.3), drain and undrain, and clearing a
-    quarantine.
+  - **Usage** over 30 days (§16.6): VM minutes by phase, job minutes,
+    memory and vCPU use, a chart per day, and the box's repos by VM
+    minutes, each repo a member can't read named "a private repo" as the
+    running VMs' are; linking to Usage.
+  - **Capacity overrides** (§8.3), `spare_pct` among them (audited with
+    the others), drain and undrain, and clearing a quarantine. The
+    capacity panel shows what all VMs hold and, next to it, what the
+    spare VMs hold (count, vCPUs, memory) against the spare share. Spare
+    VMs are tagged in the VM list.
   - **Reboot** (copy Foreman's banner for a box waiting on a Flatcar
     update): the pending versions with links to their release notes,
     **Reboot** (drain, then reboot) and **Reboot now** (§12.1). While
@@ -2702,8 +3007,12 @@ The sidebar has:
   versions, the runner freshness warning (§13.1), rollout state per box,
   and pin and unpin.
 - **Sizes & labels:** the sizes (§7.1) and aliases (§7.3), and a
-  **label tester**: paste a `runs-on` value and see how it parses and which
-  boxes could hold it.
+  **label tester**: paste a `runs-on` value and see how it parses, whether
+  it's spare, and which boxes could hold it (for a spare label, which
+  boxes' spare shares could, §8.2). A size named before the `spare` rule
+  shows its name error with "rename it to use `crew-spare`" (or
+  `crew-<name>`), and that runners already started for the label finish
+  their jobs first (§7.1).
 - **Caches:**
   - per box: hit rate, bytes saved, store size, top images;
   - the enabled hosts, the allowlist (with the public check), the parent
@@ -2749,7 +3058,9 @@ The sidebar has:
 - **Right, collapsible:**
   - live charts of the VM's CPU and memory against its size, disk and
     network;
-  - placement (box, size, image, VM name);
+  - placement (box, size, image, VM name), with a "spare" tag next to the
+    size for a spare job (§7.2), whose wait reasons (§8.2) show with its
+    status while it waits;
   - after the job finishes, the resource summary and a right-sizing hint.
 - **Main: the log.** A toggle switches between GitHub's log (once it
   exists) and "reported by the VM".
@@ -3232,6 +3543,7 @@ jobs(id, repo_id, run_attempt_id null, github_id unique, github_run_id, run_atte
      classification enum(ours, not_ours, unsatisfiable), unsatisfiable_reason null,
      gh_state enum(waiting, queued, in_progress, completed), blocked_reason null,
      conclusion null, runner_name null, vm_id null, taken_cross_class bool,
+     spare bool,                                      -- from the labels (§7.2)
      queued_at, seen_at, started_at, completed_at,
      steps map, log_source enum(github, live) null,
      peak_mem_mib, peak_cpu_pct, avg_cpu_pct, peak_disk_mib, net_bytes, oom bool)
@@ -3242,6 +3554,7 @@ boxes(id, name unique, type enum(linux-metal, linux-vm, mac-vm, mac-vz), driver,
       capabilities map, pinned_capabilities map, needs_approval bool,
       allocatable_vcpus_override null, allocatable_memory_mib_override null,
       reserve_vcpus, reserve_memory_mib null, cpu_overcommit, max_vms null,
+      spare_pct int null,                             -- 0–100; null is 50 (§8.3)
       draining bool, drain_reason enum(admin, reboot) null,
       reboot_required bool, reboot_packages list, boot_id null, os_version null,
       can_restart bool, reboot_requested_at null, cache_vm_reboot map null,
@@ -3251,7 +3564,8 @@ boxes(id, name unique, type enum(linux-metal, linux-vm, mac-vm, mac-vz), driver,
       update fields …)                                -- Foreman keeps agent keys on boxes too
 operations(...)                                       -- copy Foreman; args never include jit_config
 vms(id, box_id, name unique, repo_id, class_key [string], size_id, vcpus, memory_mib,
-    disk_gib, image_id, lease_index, start_op_id null,
+    disk_gib, spare bool,                            -- the tier it was placed for; never changes
+    image_id, lease_index, start_op_id null,
     state enum(requested, starting, booted, idle, busy, finished, failed, destroyed),
     fail_reason null, job_id null, runner_id null, deadline, log_epoch null,
     last_log_seq, last_log_n,
@@ -3274,6 +3588,14 @@ vm_metrics(vm_id, box_id, job_id null, t, cpu_pct, mem_used_mib, mem_total_mib,
            disk_used_mib, net_rx_bps, net_tx_bps, host_cpu_pct, host_rss_mib)
 cache_stats(box_id, t, host, hits, misses, bytes_served, bytes_stored, mismatches)
 
+usage_days(day date, box_id null, repo_id, vcpus, memory_mib, vm_count, unused_count,
+           boot_s, idle_s, busy_s, teardown_s, vcpu_s, mem_mib_s,
+           job_count, success_count, failure_count, job_s, job_billable_min)
+                                                      -- seconds and MiB-seconds are bigint
+usage_box_days(day date, box_id, online_s null, allocatable_vcpus null,
+               allocatable_memory_mib null)           unique(box_id, day)
+usage_rollups(day date pk, computed_at)
+
 webhook_deliveries(github_delivery_id unique, event, action, received_at,
                    processed_at null, error null)              -- no payload column
 cache_config(singleton: enabled_hosts [string], allowlist [string], parent_enabled bool)
@@ -3289,6 +3611,7 @@ cache_tokens(id, box_id, kind enum(parent, mgmt), token_hash, expires_at)
 - `vm_metrics(vm_id, t)`
 - `box_metrics(box_id, t)`
 - `job_events(job_id, at)`
+- `usage_days(day)`, `usage_days(repo_id, day)`, `usage_days(box_id, day)`
 
 ## 23. Testing
 

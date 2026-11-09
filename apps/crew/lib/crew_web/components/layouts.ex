@@ -63,6 +63,9 @@ defmodule CrewWeb.Layouts do
           >
             Right-sizing
           </.sidebar_link>
+          <.sidebar_link navigate={~p"/usage"} icon="hero-clock" current_path={@current_path}>
+            Usage
+          </.sidebar_link>
         </.sidebar_group>
 
         <.sidebar_group :if={Crew.Scope.admin?(@current_scope)} label="Admin">

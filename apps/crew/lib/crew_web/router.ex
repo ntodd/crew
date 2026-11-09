@@ -109,6 +109,7 @@ defmodule CrewWeb.Router do
       live "/runs/:run_id/attempts/:n/jobs/:job_id", JobLive.Show, :show
       live "/queue", QueueLive, :index
       live "/sizing", SizingLive, :index
+      live "/usage", UsageLive, :index
       live "/repos", RepoLive.Index, :index
       live "/repos/:id", RepoLive.Show, :show
       live "/boxes", BoxLive.Index, :index

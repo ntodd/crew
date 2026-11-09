@@ -61,6 +61,30 @@ defmodule CrewWeb.BoxControlsTest do
     assert audited?("box.overrides")
   end
 
+  test "the spare share: set with the overrides, and what spare VMs hold", %{
+    conn: conn,
+    box: box
+  } do
+    vm_fixture(box, spare: true)
+    vm_fixture(box)
+
+    {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+    # 25.5 vCPUs and 101 GiB in all; half of each for spare VMs.
+    assert has_element?(view, "#capacity-all", "2 VMs · 8 of 25 vCPUs · 16.3 of 101 GiB")
+    assert has_element?(view, "#capacity-spare", "1 VM · 4 of 12 vCPUs · 8.1 of 50.3 GiB")
+    assert has_element?(view, "#capacity-spare", "50%")
+    assert has_element?(view, "#vms [data-tier]", "spare")
+
+    view |> form("#overrides", box: %{spare_pct: "101"}) |> render_submit()
+    assert render(view) =~ "must be less than or equal to 100"
+
+    view |> form("#overrides", box: %{spare_pct: "20", max_vms: "10"}) |> render_submit()
+    assert Boxes.get!(box.id).spare_pct == 20
+    assert audited?("box.overrides")
+    assert has_element?(view, "#capacity-spare", "1 of 2 VMs")
+    assert has_element?(view, "#capacity-spare", "20%")
+  end
+
   test "killing a VM sends a forced stop, audited", %{conn: conn, box: box} do
     repo = repo_fixture(name: "web")
     {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})

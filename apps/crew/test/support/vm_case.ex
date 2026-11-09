@@ -25,6 +25,7 @@ defmodule Crew.VMCase do
   setup tags do
     Crew.DataCase.setup_sandbox(tags)
     Req.Test.set_req_test_to_shared(tags)
+    restart_vm_supervisor()
 
     key = :public_key.generate_key({:rsa, 2048, 65_537})
     pem = :public_key.pem_encode([:public_key.pem_entry_encode(:RSAPrivateKey, key)])
@@ -55,6 +56,15 @@ defmodule Crew.VMCase do
     Crew.Images.put_box_state(box.id, image.id, "ready")
 
     %{repo: repo, box: box, image: image, inst: repo.installation.github_id}
+  end
+
+  @doc """
+  A new VM supervisor, with its own restart budget: the servers earlier
+  tests crashed don't count against this test's.
+  """
+  def restart_vm_supervisor do
+    :ok = Supervisor.terminate_child(Crew.Supervisor, Crew.VMs.Supervisor)
+    {:ok, _} = Supervisor.restart_child(Crew.Supervisor, Crew.VMs.Supervisor)
   end
 
   @doc "Stops every VM server (their timers would outlive the test's sandbox)."
@@ -140,15 +150,40 @@ defmodule Crew.VMCase do
     end
   end
 
-  @doc "Waits for the VM to reach `state`."
+  @doc """
+  Waits for the VM to reach `state`, then for its server to finish the
+  event that took it there. The server commits the new state before it
+  runs that event's effects (the DeleteRunner job, failure accounting),
+  so the row alone doesn't mean they've happened. Effects the server
+  hands to another process, like the GitHub delete, still need their own
+  wait.
+  """
   def await_state(vm_id, state, timeout \\ 2_000) do
-    eventually(
-      fn ->
-        vm = Repo.get!(Crew.VMs.VM, vm_id)
-        vm.state == state && vm
-      end,
-      timeout
-    )
+    vm =
+      eventually(
+        fn ->
+          vm = Repo.get!(Crew.VMs.VM, vm_id)
+          vm.state == state && vm
+        end,
+        timeout
+      )
+
+    settle(vm_id)
+    vm
+  end
+
+  # A call returns only after the server has handled everything before it.
+  # A destroyed VM's server stops itself, which settles it too.
+  defp settle(vm_id) do
+    if pid = Crew.VMs.Server.whereis(vm_id) do
+      try do
+        :sys.get_state(pid)
+      catch
+        :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> :ok
+      end
+    end
+
+    :ok
   end
 
   @doc "A queued Crew job that's past the fork check (its run attempt is known)."
@@ -172,7 +207,13 @@ defmodule Crew.VMCase do
 
     [vm] =
       Crew.VMs.create_placements([
-        %{class: {repo.id, key}, box: box, size: size, image_id: image.id}
+        %{
+          class: {repo.id, key},
+          box: box,
+          size: size,
+          image_id: image.id,
+          spare: Keyword.get(opts, :spare, false)
+        }
       ])
 
     vm.id
