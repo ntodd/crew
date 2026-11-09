@@ -141,6 +141,9 @@ defmodule CrewWeb.DashboardLive do
         >
           <p class="text-xs text-ink-3">Waiting</p>
           <p class="text-2xl font-semibold tabular-nums text-ink">{@counts.waiting}</p>
+          <p :if={@counts.waiting_spare > 0} id="waiting-spare" class="text-xs text-ink-3">
+            + {@counts.waiting_spare} spare
+          </p>
         </.link>
         <.link
           navigate={~p"/queue"}
@@ -166,10 +169,19 @@ defmodule CrewWeb.DashboardLive do
       <div class="mb-4 grid gap-4 lg:grid-cols-2">
         <.panel id="waiting" title="Waiting longest" padded={false}>
           <ul class="divide-y divide-line text-sm">
-            <li :for={job <- @waiting} class="flex items-start justify-between gap-3 px-5 py-2.5">
+            <li
+              :for={job <- @waiting}
+              id={"waiting-#{job.id}"}
+              class="flex items-start justify-between gap-3 px-5 py-2.5"
+            >
               <span class="min-w-0">
                 <%= if readable?(@readable, job.repo_id) do %>
-                  <span class="block truncate text-ink">{job.name}</span>
+                  <span class="block truncate text-ink">
+                    {job.name}
+                    <.badge :if={job.spare} size="sm" data-tier="spare" class="ml-1 align-middle">
+                      spare
+                    </.badge>
+                  </span>
                   <span class="block truncate text-xs text-ink-3">{job.repo.full_name}</span>
                 <% else %>
                   <span class="block truncate text-ink-2">a job in another repo</span>

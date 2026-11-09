@@ -118,7 +118,8 @@ defmodule Crew.Scheduler do
 
   @doc """
   The label tester (§17.3): how a `runs-on` value parses (`crew-m`,
-  `[self-hosted, crew-m]` or a YAML list), and which boxes could hold it.
+  `[self-hosted, crew-m]` or a YAML list), and which boxes could hold it:
+  for a spare label (§7.2), which boxes' spare shares could.
   """
   def label_test(text) do
     labels = CrewProtocol.Labels.parse_runs_on(text)
@@ -132,10 +133,11 @@ defmodule Crew.Scheduler do
 
     boxes =
       case result do
-        {:ours, %{size_id: size_id, arch: arch}} ->
+        {:ours, %{size_id: size_id, arch: arch} = parsed} ->
           size = Enum.find(sizes, &(&1.id == size_id))
+          holds? = if parsed.spare, do: &Plan.spare_could_hold?/2, else: &Plan.could_hold?/2
 
-          for b <- snapshot().boxes, Plan.arch_ok?(b, arch), Plan.could_hold?(b, size), do: b.name
+          for b <- snapshot().boxes, Plan.arch_ok?(b, arch), holds?.(b, size), do: b.name
 
         _ ->
           []
@@ -155,6 +157,28 @@ defmodule Crew.Scheduler do
     case snapshot_box(box) do
       [b] -> %{vcpus: Plan.allocatable_vcpus(b), memory_mib: Plan.allocatable_memory_mib(b)}
       [] -> nil
+    end
+  end
+
+  @doc """
+  The share of what a box offers that spare VMs may hold (§8.3), with
+  its `max_vms`, or nil before it reports.
+  """
+  def spare_capacity(box) do
+    case snapshot_box(box) do
+      [b] ->
+        pct = Plan.spare_pct(b)
+
+        %{
+          pct: pct,
+          vcpus: pct * Plan.allocatable_vcpus(b) / 100,
+          memory_mib: pct * Plan.allocatable_memory_mib(b) / 100,
+          max_vms: b.max_vms && div(pct * b.max_vms, 100),
+          box_max_vms: b.max_vms
+        }
+
+      [] ->
+        nil
     end
   end
 

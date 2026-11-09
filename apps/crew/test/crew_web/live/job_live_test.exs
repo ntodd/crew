@@ -2,6 +2,8 @@ defmodule CrewWeb.JobLiveTest do
   @moduledoc "The job page (§17.6): steps, timing, placement, and the log viewer's server side."
   use CrewWeb.ConnCase
 
+  import Ecto.Query
+
   alias Crew.{Jobs, Logs, Repo}
   alias Crew.VMs.VM
 
@@ -167,6 +169,33 @@ defmodule CrewWeb.JobLiveTest do
     assert viewer =~ "abc1234def"
     # The index goes with the page: groups and annotations before the lines.
     assert viewer =~ "Install"
+  end
+
+  test "a spare job is tagged next to its size", %{conn: conn, path: path, job: job} do
+    {:ok, view, _} = live(conn, path)
+    refute has_element?(view, "#placement [data-tier]")
+
+    Repo.update!(Ecto.Changeset.change(job, spare: true))
+    {:ok, view, _} = live(conn, path)
+    assert has_element?(view, "#placement [data-tier]", "spare")
+  end
+
+  test "a waiting spare job: its size, the tag and why it waits", %{conn: conn, repo: repo} do
+    {:ok, _} =
+      Jobs.handle_workflow_job(
+        workflow_job_payload(repo, id: 78, run_id: 4242, name: "fuzz", labels: ["crew-l-spare"])
+      )
+
+    reason = "waiting for spare room: regular jobs are waiting for the boxes that fit"
+
+    Repo.update_all(from(j in Crew.Jobs.Job, where: j.github_id == 78),
+      set: [wait_reason: reason]
+    )
+
+    {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/78")
+    assert has_element?(view, "#placement", "l")
+    assert has_element?(view, "#placement [data-tier]", "spare")
+    assert render(view) =~ reason
   end
 
   test "lines: a range from the file, clamped", %{conn: conn, path: path, vm: vm} do

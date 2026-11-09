@@ -618,7 +618,9 @@ the repo's jobs that GitHub still has queued or waiting.
 ### 7.5 Helping people choose
 
 - **Snippets:** the repo page shows a copy-ready `runs-on:` line for each
-  allowed size.
+  allowed size, and under them one line explaining `-spare` (§7.2), with
+  `crew-spare` (when the default size is allowed) and the largest allowed
+  size as examples.
 - **Hints** (`Crew.Sizing`, display only): the job page shows one once
   the job finishes, and the repo page lists its jobs' hints. They come
   from the last 10 finished runs of the same `(repo, workflow, job name)`
@@ -2856,8 +2858,11 @@ The sidebar has:
   - firewall and virtualisation badges.
 - **Counters:** running, waiting and booting jobs, each linking to a
   filtered Runs page, and job minutes today (UTC, §16.6) with
-  yesterday's in its note, linking to Usage.
-- **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3).
+  yesterday's in its note, linking to Usage. Waiting counts regular jobs,
+  and its note gives the spare jobs waiting when there are any
+  ("+ 42 spare", §7.2). Running and booting count both tiers.
+- **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3);
+  regular jobs first, then spare ones, tagged (§7.2).
 - **Recent:** the last 20 completed jobs.
 - **Charts (24 hours):** jobs started per 5 minutes, stacked by conclusion;
   p50 and p95 wait and boot times.
@@ -2889,8 +2894,12 @@ The sidebar has:
 **Job (`/jobs/:id`):** §17.6.
 
 **Queue (`/queue`)**
-- **Waiting units** in placement order (§8.4), with class, wait and reason.
-- **Per class:** demand, supply, deficit, and stalled or backoff state.
+- **Waiting units** in placement order (§8.4), with class, wait and reason,
+  and a "spare" tag on spare ones (§7.2), which list after the regular
+  ones because of the order.
+- **Per class:** demand, supply, deficit, its tier ("spare", or "mixed"
+  while a rename hands its label over, §7.1), and stalled or backoff
+  state.
 - **A 6-hour chart** of queue depth and booting VMs.
 - **Admins can change a repo's priority** from here (audit-logged).
 
@@ -2956,8 +2965,11 @@ The sidebar has:
     memory and vCPU use, a chart per day, and the box's repos by VM
     minutes, each repo a member can't read named "a private repo" as the
     running VMs' are; linking to Usage.
-  - **Capacity overrides** (§8.3), drain and undrain, and clearing a
-    quarantine.
+  - **Capacity overrides** (§8.3), `spare_pct` among them (audited with
+    the others), drain and undrain, and clearing a quarantine. The
+    capacity panel shows what all VMs hold and, next to it, what the
+    spare VMs hold (count, vCPUs, memory) against the spare share. Spare
+    VMs are tagged in the VM list.
   - **Reboot** (copy Foreman's banner for a box waiting on a Flatcar
     update): the pending versions with links to their release notes,
     **Reboot** (drain, then reboot) and **Reboot now** (§12.1). While
@@ -2977,8 +2989,12 @@ The sidebar has:
   versions, the runner freshness warning (§13.1), rollout state per box,
   and pin and unpin.
 - **Sizes & labels:** the sizes (§7.1) and aliases (§7.3), and a
-  **label tester**: paste a `runs-on` value and see how it parses and which
-  boxes could hold it.
+  **label tester**: paste a `runs-on` value and see how it parses, whether
+  it's spare, and which boxes could hold it (for a spare label, which
+  boxes' spare shares could, §8.2). A size named before the `spare` rule
+  shows its name error with "rename it to use `crew-spare`" (or
+  `crew-<name>`), and that runners already started for the label finish
+  their jobs first (§7.1).
 - **Caches:**
   - per box: hit rate, bytes saved, store size, top images;
   - the enabled hosts, the allowlist (with the public check), the parent
@@ -3024,7 +3040,9 @@ The sidebar has:
 - **Right, collapsible:**
   - live charts of the VM's CPU and memory against its size, disk and
     network;
-  - placement (box, size, image, VM name);
+  - placement (box, size, image, VM name), with a "spare" tag next to the
+    size for a spare job (§7.2), whose wait reasons (§8.2) show with its
+    status while it waits;
   - after the job finishes, the resource summary and a right-sizing hint.
 - **Main: the log.** A toggle switches between GitHub's log (once it
   exists) and "reported by the VM".

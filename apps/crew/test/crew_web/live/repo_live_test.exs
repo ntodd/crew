@@ -130,6 +130,18 @@ defmodule CrewWeb.RepoLiveTest do
     refute has_element?(view, "#snippets", "runs-on: crew-m")
   end
 
+  test "a line under the snippets explains -spare", %{conn: conn, repo: repo} do
+    {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+    assert has_element?(view, "#spare-hint", "runs-on: crew-spare")
+    assert has_element?(view, "#spare-hint", "runs-on: crew-xl-spare")
+
+    Crew.Repo.update!(Ecto.Changeset.change(repo, allowed_sizes: ["s"]))
+    {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+    assert has_element?(view, "#spare-hint", "runs-on: crew-s-spare")
+    # The default size (m) isn't allowed, so crew-spare wouldn't run.
+    refute has_element?(view, "#spare-hint", "runs-on: crew-spare")
+  end
+
   describe "right-sizing (§7.5)" do
     test "lists each job with a change to suggest, linked to its newest run", %{
       conn: conn,

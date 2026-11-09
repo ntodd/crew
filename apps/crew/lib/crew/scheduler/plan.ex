@@ -71,9 +71,11 @@ defmodule Crew.Scheduler.Plan do
 
   @doc """
   The Queue page's view of a pass (§17.3): the units in the order they'd
-  be placed, each placed or with its wait reason; the covered jobs; the
-  blocked ones with their reasons; and per class its demand, supply,
-  deficit, and whether it's stalled or backing off.
+  be placed, each placed or with its wait reason and its tier; the
+  covered jobs; the blocked ones with their reasons; and per class its
+  demand, supply, deficit, tier (`:regular`, `:spare`, or `:mixed` while
+  a rename hands its label over, §7.1), and whether it's stalled or
+  backing off.
   """
   def queue(snap) do
     snap = Map.put(snap, :placements, [])
@@ -105,6 +107,7 @@ defmodule Crew.Scheduler.Plan do
         %{
           job_id: id,
           class: unit.class,
+          spare: spare?(unit),
           placed: MapSet.member?(placed, id),
           wait_reason: wait,
           blocked_reason: blocked_reason
@@ -113,6 +116,11 @@ defmodule Crew.Scheduler.Plan do
 
     demand = Enum.frequencies_by(open, & &1.class)
     blocked_by_class = Enum.frequencies_by(blocked, fn {job, _} -> job.class end)
+
+    tiers =
+      (open ++ Enum.map(blocked, &elem(&1, 0)))
+      |> Enum.group_by(& &1.class, &spare?/1)
+      |> Map.new(fn {class, tiers} -> {class, class_tier(Enum.uniq(tiers))} end)
 
     classes =
       for class <- Enum.uniq(Map.keys(demand) ++ Map.keys(blocked_by_class)), into: %{} do
@@ -126,6 +134,7 @@ defmodule Crew.Scheduler.Plan do
            blocked: Map.get(blocked_by_class, class, 0),
            supply: sup,
            deficit: max(n - sup, 0),
+           tier: tiers[class],
            stalled: is_integer(cs[:stalled_until]) and cs[:stalled_until] > snap.now,
            backoff: is_integer(cs[:backoff_until]) and cs[:backoff_until] > snap.now,
            last_error: cs[:last_error]
@@ -139,6 +148,10 @@ defmodule Crew.Scheduler.Plan do
       classes: classes
     }
   end
+
+  defp class_tier([true]), do: :spare
+  defp class_tier([false]), do: :regular
+  defp class_tier(_both), do: :mixed
 
   # -- capacity (§8.3) -------------------------------------------------------------
 

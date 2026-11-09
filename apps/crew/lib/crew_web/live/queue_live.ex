@@ -1,8 +1,9 @@
 defmodule CrewWeb.QueueLive do
   @moduledoc """
   The queue (§17.3): waiting units in placement order (§8.4) with their
-  class, wait and reason; each class's demand, supply and deficit, and
-  whether it's stalled or backing off; and six hours of queue depth and
+  class, tier, wait and reason; each class's demand, supply and deficit,
+  its tier when it isn't regular, and whether it's stalled or backing
+  off; and six hours of queue depth and
   booting VMs. Admins change a repo's priority here. Members see jobs of
   repos they can't read as "a job in another repo" (§18.3).
 
@@ -110,10 +111,13 @@ defmodule CrewWeb.QueueLive do
                   <span class="block truncate text-xs text-ink-3">
                     {repo_label(assigns, job.repo_id)} ·
                     <span class="font-mono">{Enum.join(job.label_key || [], ", ")}</span>
+                    <.tier_tag spare={job.spare} />
                   </span>
                 <% else %>
                   <span class="block truncate text-ink-2">a job in another repo</span>
-                  <span class="block text-xs text-ink-3">{job.size && job.size.name}</span>
+                  <span class="block text-xs text-ink-3">
+                    {job.size && job.size.name} <.tier_tag spare={job.spare} />
+                  </span>
                 <% end %>
                 <span :if={unit.wait_reason || unit.blocked_reason} class="block text-xs text-warning">
                   {reason(assigns, job, unit.blocked_reason || unit.wait_reason)}
@@ -135,9 +139,12 @@ defmodule CrewWeb.QueueLive do
                   <span class="block truncate text-xs text-ink-3">
                     {repo_label(assigns, job.repo_id)} ·
                     <span class="font-mono">{Enum.join(job.label_key || [], ", ")}</span>
+                    <.tier_tag spare={job.spare} />
                   </span>
                 <% else %>
-                  <span class="block truncate text-ink-2">a job in another repo</span>
+                  <span class="block truncate text-ink-2">
+                    a job in another repo <.tier_tag spare={job.spare} />
+                  </span>
                 <% end %>
                 <span class="block text-xs text-warning">Blocked: {reason(assigns, job, reason)}</span>
               </span>
@@ -203,6 +210,19 @@ defmodule CrewWeb.QueueLive do
                     <span :if={readable?(@readable, repo_id)} class="font-mono text-xs text-ink-3">
                       {Enum.join(key, ", ")}
                     </span>
+                    <.badge
+                      :if={c.tier in [:spare, :mixed]}
+                      size="sm"
+                      color={if c.tier == :mixed, do: "amber", else: "zinc"}
+                      data-tier={c.tier}
+                      title={
+                        if c.tier == :mixed,
+                          do:
+                            "Some of these jobs are spare and some regular while a size rename hands the label over"
+                      }
+                    >
+                      {c.tier}
+                    </.badge>
                     <span :if={c.blocked > 0} class="block text-xs text-ink-3">
                       {c.blocked} blocked
                     </span>
@@ -277,6 +297,15 @@ defmodule CrewWeb.QueueLive do
         />
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :spare, :boolean, required: true
+
+  # A spare job's tag (§7.2); regular jobs go untagged.
+  defp tier_tag(assigns) do
+    ~H"""
+    <.badge :if={@spare} size="sm" data-tier="spare" class="ml-1 align-middle">spare</.badge>
     """
   end
 

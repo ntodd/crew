@@ -2,7 +2,8 @@ defmodule CrewWeb.AdminLive.Sizes do
   @moduledoc """
   Sizes & labels (§17.3): the sizes (§7.1) with the one default, the
   label aliases (§7.3), and a label tester: paste a `runs-on` value and
-  see how it parses and which boxes could hold it. Admins only; every
+  see how it parses, whether it's spare, and which boxes (or, for a spare
+  label, which boxes' spare shares) could hold it. Admins only; every
   change is audited by `Crew.Sizes`.
   """
   use CrewWeb, :live_view
@@ -145,11 +146,22 @@ defmodule CrewWeb.AdminLive.Sizes do
                 Crew job: size <span class="font-medium">{@tested.sizes[parsed.size_id] && @tested.sizes[parsed.size_id].name}</span>,
                 arch <span class="font-medium">{parsed.arch}</span>{if parsed.alias,
                   do: " (by an alias)"}
+                <.badge :if={parsed.spare} size="sm" data-tier="spare">spare</.badge>
               </p>
-              <p :if={@tested.boxes != []} class="text-ink-2">
-                Boxes that could hold it: {Enum.join(@tested.boxes, ", ")}
-              </p>
-              <p :if={@tested.boxes == []} class="text-warning">No box could hold it.</p>
+              <%= cond do %>
+                <% @tested.boxes != [] and parsed.spare -> %>
+                  <p class="text-ink-2">
+                    Boxes whose spare share could hold it: {Enum.join(@tested.boxes, ", ")}
+                  </p>
+                <% @tested.boxes != [] -> %>
+                  <p class="text-ink-2">
+                    Boxes that could hold it: {Enum.join(@tested.boxes, ", ")}
+                  </p>
+                <% parsed.spare -> %>
+                  <p class="text-warning">No box's spare share could hold it.</p>
+                <% true -> %>
+                  <p class="text-warning">No box could hold it.</p>
+              <% end %>
             <% :not_ours -> %>
               <p class="text-ink-2">
                 Not a Crew job: GitHub's runners, or another self-hosted pool, take it.
@@ -176,6 +188,9 @@ defmodule CrewWeb.AdminLive.Sizes do
                 <.badge :if={size.is_default} color="brand" size="sm">default</.badge>
                 <.badge :if={Size.retired?(size)} size="sm">retired</.badge>
               </div>
+              <p :if={warning = spare_warning(size)} class="mt-0.5 text-xs text-warning">
+                {warning}
+              </p>
               <p class="mt-0.5 tabular-nums text-ink-2">
                 {size.vcpus} vCPUs · {gib(size.memory_mib)} GiB · {size.disk_gib} GiB disk
               </p>
@@ -193,27 +208,32 @@ defmodule CrewWeb.AdminLive.Sizes do
               </tr>
             </thead>
             <tbody class="divide-y divide-line">
-              <tr
-                :for={size <- @sizes}
-                id={"size-#{size.name}"}
-                class={Size.retired?(size) && "text-ink-3"}
-              >
-                <td class="px-5 py-2">
-                  <span class="font-mono">crew-{size.name}</span>
-                  <.badge :if={size.is_default} color="brand" size="sm">default</.badge>
-                  <.badge :if={Size.retired?(size)} size="sm">retired</.badge>
-                </td>
-                <td class="px-2 py-2 text-right tabular-nums">{size.vcpus}</td>
-                <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums">
-                  {gib(size.memory_mib)} GiB
-                </td>
-                <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums">
-                  {size.disk_gib} GiB
-                </td>
-                <td class="space-x-2 whitespace-nowrap px-5 py-2 text-right text-xs">
-                  <.size_actions size={size} />
-                </td>
-              </tr>
+              <%= for size <- @sizes do %>
+                <% warning = spare_warning(size) %>
+                <tr
+                  id={"size-#{size.name}"}
+                  class={[Size.retired?(size) && "text-ink-3", warning && "!border-b-0 [&>td]:pb-0"]}
+                >
+                  <td class="px-5 py-2">
+                    <span class="font-mono">crew-{size.name}</span>
+                    <.badge :if={size.is_default} color="brand" size="sm">default</.badge>
+                    <.badge :if={Size.retired?(size)} size="sm">retired</.badge>
+                  </td>
+                  <td class="px-2 py-2 text-right tabular-nums">{size.vcpus}</td>
+                  <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                    {gib(size.memory_mib)} GiB
+                  </td>
+                  <td class="whitespace-nowrap px-2 py-2 text-right tabular-nums">
+                    {size.disk_gib} GiB
+                  </td>
+                  <td class="space-x-2 whitespace-nowrap px-5 py-2 text-right text-xs">
+                    <.size_actions size={size} />
+                  </td>
+                </tr>
+                <tr :if={warning} id={"size-#{size.name}-warning"}>
+                  <td colspan="5" class="px-5 pb-2 pt-0.5 text-xs text-warning">{warning}</td>
+                </tr>
+              <% end %>
             </tbody>
           </table>
           <.form
@@ -316,6 +336,22 @@ defmodule CrewWeb.AdminLive.Sizes do
       class="underline-offset-2 hover:underline"
     >Unretire</button>
     """
+  end
+
+  # A size named before the -spare rule (§7.1) hides its label's spare
+  # form; renaming it hands the label over.
+  defp spare_warning(%Size{name: name}) do
+    label =
+      cond do
+        name == "spare" -> "crew-spare"
+        String.ends_with?(name, "-spare") -> "crew-#{name}"
+        true -> nil
+      end
+
+    if label do
+      "#{CrewProtocol.Sizes.name_error(name)}: rename it to use #{label}. " <>
+        "Runners already started for this label finish their jobs first."
+    end
   end
 
   defp labels_value(list) when is_list(list), do: Enum.join(list, ", ")

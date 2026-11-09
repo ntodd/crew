@@ -359,6 +359,10 @@ defmodule Crew.VMs do
   @doc "What a box's VMs hold of it: every VM that isn't destroyed counts (§8.6)."
   def allocation(box_id), do: box_id |> for_box() |> allocation_of()
 
+  @doc "What a box's spare VMs hold of it (§8.3), counted as `allocation/1` counts."
+  def spare_allocation(box_id),
+    do: box_id |> for_box() |> Enum.filter(& &1.spare) |> allocation_of()
+
   @doc """
   What each box's VMs held over `since..until` (Unix seconds), counted as
   `allocation_of/1` counts it: `%{box_id => [{t, vcpus, memory_mib}]}`,
