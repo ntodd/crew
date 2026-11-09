@@ -352,6 +352,24 @@ defmodule Crew.UsageTest do
       :ok = Usage.roll_up(@day)
       assert rolled() == [Date.add(@day, -2), Date.add(@day, -1)]
     end
+
+    test "rows are needed from the first day until every day is stored, then from the oldest recomputed",
+         %{box: box} do
+      today = Date.add(@day, 70)
+      vm_fixture(box, requested_at: at(0), destroyed_at: at(10))
+      assert Usage.rows_needed_from(today) == @day
+
+      :ok = Usage.roll_up(today)
+      :ok = Usage.roll_up(today)
+      assert Usage.rows_needed_from(today) == @day
+
+      :ok = Usage.roll_up(today)
+      assert Usage.rows_needed_from(today) == Date.add(today, -2)
+
+      # Yesterday before the day's first run: it's recomputed anyway.
+      Repo.delete_all(from r in RolledDay, where: r.day == ^Date.add(today, -1))
+      assert Usage.rows_needed_from(today) == Date.add(today, -2)
+    end
   end
 
   test "the worker rolls up through yesterday" do

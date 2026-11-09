@@ -194,6 +194,22 @@ defmodule Crew.Usage do
       end)
   end
 
+  @doc """
+  The first UTC day whose job and VM rows the rollup may still read: the
+  oldest it recomputes, or while it has older days to fill in, the first
+  VM's or job's. That one too, because the rows decide where it fills in
+  from: pruning them would skip the days it hasn't reached. Rows from
+  before it are in stored days, so pruning them changes no total (§9.4).
+  """
+  def rows_needed_from(today \\ Date.utc_today()) do
+    recomputed = Date.add(today, -@recompute_days)
+
+    case missing_days(today) do
+      [day | _] -> if Date.before?(day, recomputed), do: first_day(), else: recomputed
+      [] -> recomputed
+    end
+  end
+
   # The oldest closed days with no rollup, at most @backfill_days.
   defp missing_days(today) do
     case first_day() do

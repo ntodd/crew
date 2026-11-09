@@ -59,6 +59,8 @@ config :crew, Oban,
        {"*/10 * * * *", Crew.GitHub.RunnerGC},
        # §9.4: log retention and the total cap.
        {"17 * * * *", Crew.Logs.Prune},
+       # §9.4: jobs, run attempts and VMs, 90 days.
+       {"27 * * * *", Crew.Jobs.Prune},
        # §9.4: box, VM and cache samples, 7 days.
        {"47 * * * *", Crew.Metrics.Prune},
        # §16.6: closed days' usage, kept forever.
