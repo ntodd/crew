@@ -150,15 +150,40 @@ defmodule Crew.VMCase do
     end
   end
 
-  @doc "Waits for the VM to reach `state`."
+  @doc """
+  Waits for the VM to reach `state`, then for its server to finish the
+  event that took it there. The server commits the new state before it
+  runs that event's effects (the DeleteRunner job, failure accounting),
+  so the row alone doesn't mean they've happened. Effects the server
+  hands to another process, like the GitHub delete, still need their own
+  wait.
+  """
   def await_state(vm_id, state, timeout \\ 2_000) do
-    eventually(
-      fn ->
-        vm = Repo.get!(Crew.VMs.VM, vm_id)
-        vm.state == state && vm
-      end,
-      timeout
-    )
+    vm =
+      eventually(
+        fn ->
+          vm = Repo.get!(Crew.VMs.VM, vm_id)
+          vm.state == state && vm
+        end,
+        timeout
+      )
+
+    settle(vm_id)
+    vm
+  end
+
+  # A call returns only after the server has handled everything before it.
+  # A destroyed VM's server stops itself, which settles it too.
+  defp settle(vm_id) do
+    if pid = Crew.VMs.Server.whereis(vm_id) do
+      try do
+        :sys.get_state(pid)
+      catch
+        :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> :ok
+      end
+    end
+
+    :ok
   end
 
   @doc "A queued Crew job that's past the fork check (its run attempt is known)."
