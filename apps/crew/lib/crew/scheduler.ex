@@ -182,6 +182,7 @@ defmodule Crew.Scheduler do
         reserve_memory_mib: box.reserve_memory_mib,
         cpu_overcommit: box.cpu_overcommit,
         max_vms: box.max_vms,
+        spare_pct: box.spare_pct,
         vm_area_free_mib: free || caps.vm_area_mib,
         last_repo_ran_at: box.last_repo_ran_at || %{},
         record: box

@@ -172,7 +172,13 @@ defmodule Crew.VMCase do
 
     [vm] =
       Crew.VMs.create_placements([
-        %{class: {repo.id, key}, box: box, size: size, image_id: image.id}
+        %{
+          class: {repo.id, key},
+          box: box,
+          size: size,
+          image_id: image.id,
+          spare: Keyword.get(opts, :spare, false)
+        }
       ])
 
     vm.id

@@ -58,6 +58,12 @@ defmodule Crew.SchedulerTest do
       assert snap.vms |> Enum.map(& &1.spare) |> Enum.sort() == [false, true]
     end
 
+    test "carries the box's spare_pct, unset by default", %{box: box} do
+      assert [%{spare_pct: nil}] = Scheduler.snapshot().boxes
+      Repo.update!(Ecto.Changeset.change(box, spare_pct: 20))
+      assert [%{spare_pct: 20}] = Scheduler.snapshot().boxes
+    end
+
     test "uses the box's latest free VM area", %{box: box} do
       online(box)
 

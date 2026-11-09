@@ -43,6 +43,7 @@ defmodule Crew.PlanFixtures do
       reserve_memory_mib: Map.get(attrs, :reserve_memory_mib),
       cpu_overcommit: Map.get(attrs, :cpu_overcommit, 1.5),
       max_vms: Map.get(attrs, :max_vms),
+      spare_pct: Map.get(attrs, :spare_pct),
       vm_area_free_mib: Map.get(attrs, :vm_area_free_mib, area),
       last_repo_ran_at: Map.get(attrs, :last_repo_ran_at, %{})
     }

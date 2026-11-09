@@ -9,11 +9,15 @@ defmodule Crew.Scheduler.Plan do
      ever hold its size, only ineligible boxes, a stalled class, its repo
      at `max_concurrent`) is blocked, and isn't demand.
   2. **Demand and supply per class** (§8.1). The first `supply(class)`
-     jobs of a class, in order, are covered; each other one is a unit.
-  3. **Units in order** (§8.4): priority, the repo's active VMs
-     (recomputed after each placement, so repos alternate), `queued_at`,
-     GitHub id. Each is placed on the best eligible box, and the
-     placement is added to the snapshot before the next.
+     jobs of a class, regular ones first, are covered; each other one is
+     a unit.
+  3. **Units in order** (§8.4): the tier (regular first), priority, the
+     repo's active VMs of the unit's tier (recomputed after each
+     placement, so repos alternate), `queued_at`, GitHub id. Each is
+     placed on the best eligible box, and the placement is added to the
+     snapshot before the next. A spare unit (§7.2) also has to stay
+     within the box's spare share, and keeps off the boxes a regular unit
+     in this pass found no room on and could have used.
   4. **Reaping** (§8.5): excess idle VMs once the excess has lasted
      `idle_grace`, newest first; any VM idle for `idle_max`; draining
      boxes' idle VMs.
@@ -163,14 +167,14 @@ defmodule Crew.Scheduler.Plan do
   def overhead_mib(box, memory_mib),
     do: box.caps.vmm_overhead_mib + GuestMemory.reserve_mib(memory_mib)
 
+  # What a VM holds of its box's memory.
+  defp vm_memory(box, vm),
+    do: vm.memory_mib + (vm.vmm_overhead_mib || overhead_mib(box, vm.memory_mib))
+
   defp fit(snap, box, size) do
     vms = vms_on(snap, box.id)
     overhead = overhead_mib(box, size.memory_mib)
-
-    mem_used =
-      Enum.reduce(vms, 0, fn vm, acc ->
-        acc + vm.memory_mib + (vm.vmm_overhead_mib || overhead_mib(box, vm.memory_mib))
-      end)
+    mem_used = Enum.reduce(vms, 0, &(vm_memory(box, &1) + &2))
 
     vcpus_used = Enum.reduce(vms, 0, &(&1.vcpus + &2))
 
@@ -207,6 +211,44 @@ defmodule Crew.Scheduler.Plan do
     per_vm_ok?(box, size) and
       size.memory_mib + overhead_mib(box, size.memory_mib) <= allocatable_memory_mib(box) and
       size.vcpus <= allocatable_vcpus(box)
+  end
+
+  # -- the spare share (§8.3 rule 1) ---------------------------------------------
+
+  @doc "The share of a box spare jobs may use, in percent (unset is 50)."
+  def spare_pct(box), do: Map.get(box, :spare_pct) || 50
+
+  # Whether the box's spare VMs, with one more of `size`, stay within
+  # spare_pct% of its memory, its vCPUs and its max_vms.
+  defp spare_share_ok?(snap, box, size) do
+    spare = snap |> vms_on(box.id) |> Enum.filter(&spare?/1)
+
+    within_spare_share?(
+      box,
+      Enum.reduce(spare, 0, &(vm_memory(box, &1) + &2)) + size.memory_mib +
+        overhead_mib(box, size.memory_mib),
+      Enum.reduce(spare, 0, &(&1.vcpus + &2)) + size.vcpus,
+      length(spare) + 1
+    )
+  end
+
+  @doc "Whether the box's spare share could ever hold a VM of `size` (§8.2)."
+  def spare_could_hold?(box, size) do
+    could_hold?(box, size) and
+      within_spare_share?(
+        box,
+        size.memory_mib + overhead_mib(box, size.memory_mib),
+        size.vcpus,
+        1
+      )
+  end
+
+  defp within_spare_share?(box, memory_mib, vcpus, count) do
+    pct = spare_pct(box)
+
+    memory_mib * 100 <= pct * allocatable_memory_mib(box) and
+      vcpus * 100 <= pct * allocatable_vcpus(box) and
+      (is_nil(box.max_vms) or count <= div(pct * box.max_vms, 100))
   end
 
   # The driver's per-VM maxima, against what the VM boots with.
@@ -250,7 +292,7 @@ defmodule Crew.Scheduler.Plan do
     cs = snap.class_state[class] || %{}
     boxes = Enum.filter(snap.boxes, &allowed?(snap, job, &1))
     arch_boxes = Enum.filter(boxes, &arch_ok?(&1, job.arch))
-    holding = Enum.filter(arch_boxes, &could_hold?(&1, size))
+    holding = Enum.filter(arch_boxes, &holds?(job, &1, size))
 
     cond do
       cs[:stalled_until] && cs[:stalled_until] > snap.now ->
@@ -268,6 +310,9 @@ defmodule Crew.Scheduler.Plan do
       arch_boxes == [] ->
         "no #{job.arch} box"
 
+      holding == [] and spare?(job) ->
+        "no box's spare share could ever hold this size"
+
       holding == [] ->
         "no box could ever hold this size"
 
@@ -280,6 +325,10 @@ defmodule Crew.Scheduler.Plan do
       true ->
         nil
     end
+  end
+
+  defp holds?(job, box, size) do
+    if spare?(job), do: spare_could_hold?(box, size), else: could_hold?(box, size)
   end
 
   # -- demand, supply and units (§8.1) ----------------------------------------------
@@ -296,7 +345,9 @@ defmodule Crew.Scheduler.Plan do
     open
     |> Enum.group_by(& &1.class)
     |> Enum.reduce({[], []}, fn {class, jobs}, {covered, units} ->
-      {c, u} = Enum.split(jobs, supply(snap, class))
+      # The jobs are in queued order; a class mid-reclassify may hold
+      # both tiers, and its supply covers the regular ones first.
+      {c, u} = jobs |> Enum.sort_by(&spare?/1) |> Enum.split(supply(snap, class))
       {covered ++ c, units ++ u}
     end)
   end
@@ -304,33 +355,36 @@ defmodule Crew.Scheduler.Plan do
   # -- placement (§8.3, §8.4) ---------------------------------------------------------
 
   defp place_all(snap, units) do
+    # Active VMs per repo and tier.
     active =
       Enum.reduce(snap.vms, %{}, fn vm, acc ->
-        if vm.state in @active, do: Map.update(acc, vm.repo_id, 1, &(&1 + 1)), else: acc
+        if vm.state in @active,
+          do: Map.update(acc, {vm.repo_id, spare?(vm)}, 1, &(&1 + 1)),
+          else: acc
       end)
 
-    do_place(snap, units, active, [])
+    do_place(snap, units, %{active: active, kept: MapSet.new()}, [])
   end
 
-  defp do_place(snap, [], _active, acc), do: {snap, Enum.reverse(acc)}
+  defp do_place(snap, [], _pass, acc), do: {snap, Enum.reverse(acc)}
 
-  defp do_place(snap, units, active, acc) do
-    unit = Enum.min_by(units, &order_key(snap, &1, active))
+  defp do_place(snap, units, pass, acc) do
+    unit = Enum.min_by(units, &order_key(snap, &1, pass.active))
     rest = List.delete(units, unit)
     repo = snap.repos[unit.repo_id] || %{}
 
     cond do
-      repo[:max_concurrent] && Map.get(active, unit.repo_id, 0) >= repo[:max_concurrent] ->
-        do_place(snap, rest, active, [{:reasons, unit.id, "repo at max_concurrent", nil} | acc])
+      repo[:max_concurrent] && counted(pass.active, unit) >= repo[:max_concurrent] ->
+        do_place(snap, rest, pass, [{:reasons, unit.id, "repo at max_concurrent", nil} | acc])
 
       backoff = in_backoff(snap, unit.class) ->
         msg =
           "Crew can't start runners for this class: #{backoff[:last_error] || "repeated failures"}"
 
-        do_place(snap, rest, active, [{:reasons, unit.id, nil, msg} | acc])
+        do_place(snap, rest, pass, [{:reasons, unit.id, nil, msg} | acc])
 
       true ->
-        case best_box(snap, unit) do
+        case best_box(snap, unit, pass.kept) do
           {:ok, box, image_id} ->
             size = size(snap, unit)
 
@@ -359,11 +413,12 @@ defmodule Crew.Scheduler.Plan do
             }
 
             snap = %{snap | placements: snap.placements ++ [vm]}
-            active = Map.update(active, unit.repo_id, 1, &(&1 + 1))
-            do_place(snap, rest, active, [{:reasons, unit.id, nil, nil}, {:place, placed} | acc])
+            pass = %{pass | active: Map.update(pass.active, tier(unit), 1, &(&1 + 1))}
+            do_place(snap, rest, pass, [{:reasons, unit.id, nil, nil}, {:place, placed} | acc])
 
-          {:no, reason} ->
-            do_place(snap, rest, active, [{:reasons, unit.id, nil, reason} | acc])
+          {:no, reason, kept} ->
+            pass = %{pass | kept: MapSet.union(pass.kept, kept)}
+            do_place(snap, rest, pass, [{:reasons, unit.id, nil, reason} | acc])
         end
     end
   end
@@ -371,9 +426,20 @@ defmodule Crew.Scheduler.Plan do
   # A job's or VM's tier (§7.2). Snapshots without it are regular.
   defp spare?(x), do: Map.get(x, :spare, false)
 
+  defp tier(job), do: {job.repo_id, spare?(job)}
+
+  # A regular unit counts the repo's regular VMs toward max_concurrent; a
+  # spare one counts all of them (§7.4).
+  defp counted(active, unit) do
+    regular = Map.get(active, {unit.repo_id, false}, 0)
+    if spare?(unit), do: regular + Map.get(active, {unit.repo_id, true}, 0), else: regular
+  end
+
   defp order_key(snap, job, active) do
     priority = (snap.repos[job.repo_id] || %{})[:priority] || 0
-    {-priority, Map.get(active, job.repo_id, 0), job.queued_at, job.github_id}
+
+    {if(spare?(job), do: 1, else: 0), -priority, Map.get(active, tier(job), 0), job.queued_at,
+     job.github_id}
   end
 
   defp in_backoff(snap, class) do
@@ -383,7 +449,9 @@ defmodule Crew.Scheduler.Plan do
     end
   end
 
-  defp best_box(snap, unit) do
+  # The box for a unit, or why there's none and, for a regular unit that
+  # found no room, the boxes it could have used (§8.3 rule 2).
+  defp best_box(snap, unit, kept) do
     size = size(snap, unit)
 
     candidates =
@@ -399,10 +467,46 @@ defmodule Crew.Scheduler.Plan do
           {:ok, fraction} <- [fit(snap, box, size)],
           do: {box, image_id, default?, fraction}
 
-    case Enum.sort_by(fits, &rank_key(&1, unit)) do
-      [{box, image_id, _, _} | _] -> {:ok, box, image_id}
-      [] -> {:no, why_not(snap, candidates, size)}
+    cond do
+      fits == [] and spare?(unit) ->
+        {:no, why_not(snap, candidates, size), MapSet.new()}
+
+      fits == [] ->
+        could_use =
+          for {box, {image_id, _}} <- candidates,
+              image_id != nil,
+              could_hold?(box, size),
+              into: MapSet.new(),
+              do: box.id
+
+        {:no, why_not(snap, candidates, size), could_use}
+
+      spare?(unit) ->
+        spare_fits =
+          Enum.filter(fits, fn {box, _, _, _} ->
+            not MapSet.member?(kept, box.id) and spare_share_ok?(snap, box, size)
+          end)
+
+        case spare_fits do
+          [] -> {:no, no_spare_room(fits, kept), MapSet.new()}
+          _ -> best(spare_fits, unit)
+        end
+
+      true ->
+        best(fits, unit)
     end
+  end
+
+  defp best(fits, unit) do
+    [{box, image_id, _, _} | _] = Enum.sort_by(fits, &rank_key(&1, unit))
+    {:ok, box, image_id}
+  end
+
+  # Every box that fits failed a spare rule (§8.2).
+  defp no_spare_room(fits, kept) do
+    if Enum.any?(fits, fn {box, _, _, _} -> MapSet.member?(kept, box.id) end),
+      do: "waiting for spare room: regular jobs are waiting for the boxes that fit",
+      else: "waiting for spare room: spare jobs are at their share of every box that fits"
   end
 
   defp rank_key({box, _image, default?, fraction}, unit) do

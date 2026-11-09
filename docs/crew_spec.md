@@ -551,9 +551,44 @@ label key keeps the suffix.
     that asks only for `[self-hosted]`, which is regular if it matches an
     alias. A VM keeps the tier it was placed for (`vms.spare`), and the
     job keeps its own.
-- **The docs recommend `runs-on: crew-<size>` alone.** Only runners with
+- **The docs recommend `runs-on: crew-<size>` alone,** and
+  `runs-on: crew-<size>-spare` alone for spare jobs. Only runners with
   exactly that key can take such a job, and Crew's runners never take jobs
   outside Crew unless a workflow uses only generic labels.
+
+**Spare jobs** are background work (flake hunts, mutation testing, long
+fuzz runs) that should only get room regular jobs aren't using. "Spare",
+not "idle": an idle VM is one whose runner is listening (§8.5). A
+**regular unit** below is an uncovered unit of a regular class's deficit
+(§8.1, §8.3); jobs covered by supply already have a VM booting for them.
+Without preemption, spare VMs already running can delay regular jobs, so
+what Crew promises is about admission:
+
+- In every pass, every regular unit is tried before any spare unit (§8.4).
+- Each new spare placement leaves the box's spare VMs within all three of
+  its current limits: `spare_pct`% of its allocatable memory, of its
+  allocatable vCPUs and of its `max_vms` slots (§8.3). Spare VMs that
+  already exist can stay over those limits after an admin lowers
+  `spare_pct`, a capacity override or `max_vms`, until they finish.
+- No new spare VM goes on a box that a regular unit could have used, when
+  that unit looked for a box in the same pass and found none with room.
+  Units held back by `max_concurrent` or class backoff don't look, so they
+  keep nothing free.
+- While a box's spare VMs are within its limits, a regular job that fits
+  in the rest (after the other regular VMs) never waits on spare VMs for
+  memory, vCPUs or a VM slot. It can still wait on disk, images or box
+  state, as any job can.
+- A regular job bigger than what spare VMs leave, or one that needs
+  clone-area disk spare VMs are using, can wait for spare VMs to finish.
+  Disk isn't reserved.
+- Spare jobs can starve while regular jobs keep the fleet busy. That's
+  intended.
+
+**No preemption:** a running spare job keeps running until it finishes.
+**Long waits:** spare jobs may sit queued for hours. The reconciler
+(§8.8) re-checks queued jobs per run attempt, not per job, so a 50-job
+matrix costs no more calls than it does regular. GitHub fails a job
+that's been queued for 24 hours.
 
 ### 7.3 Label aliases (migration aid)
 
@@ -573,7 +608,7 @@ label key keeps the suffix.
 | `enabled` | true | Disabled repos' jobs are `not_ours` |
 | `allowed_sizes` | all | Other sizes are `unsatisfiable` ("size not allowed for this repo") |
 | `allowed_boxes` | all | Restricts placement to these boxes, e.g. pin a sensitive repo to `linux-metal` |
-| `max_concurrent` | none | A cap on the repo's VMs in `requested` through `busy` |
+| `max_concurrent` | none | A cap on the repo's VMs in `requested` through `busy`. A regular job counts only the repo's regular VMs, a spare one counts all of them, so a repo's spare jobs never block its regular ones and it can go over the cap by the spare VMs it already had |
 | `fork_prs` | `refuse` | `refuse` or `allow` (§19.5) |
 | `priority` | 0 | Higher is placed first (§8.4) |
 
@@ -637,6 +672,15 @@ So Crew schedules **per class**:
   `booted` or `idle`, with no job linked, **on a box that is online**.
 - **`deficit = demand − supply`** and **`excess = supply − demand`**.
 
+Demand, supply, deficit and excess are per class whatever the tier: a
+spare class (§7.2) is a class like any other. A class's queued jobs are
+normally all one tier, but `Jobs.reclassify_open/1` updates jobs one at a
+time, so a pass during a size rename (§7.1) can see some of a class's
+jobs spare and the rest still regular. Supply covers the class's first
+`supply(class)` jobs in the order (tier, regular first; `queued_at`;
+GitHub id), so regular jobs get the class's supply before spare ones.
+The Queue page shows such a class as "mixed".
+
 The scheduler places VMs to close deficits (§8.3) and reaps idle VMs to
 close excess (§8.5). When `in_progress` names a Crew VM, that VM is linked
 to that job and leaves supply, whichever job it was booted for.
@@ -668,7 +712,10 @@ Each job has two independent fields:
   reason in the UI.
 - The reasons are dynamic:
   - "checking fork status" (the run fetch hasn't finished)
-  - "no box could ever hold this size"
+  - "no box could ever hold this size"; for a spare job, "no box's spare
+    share could ever hold this size", when no box passes both
+    `Plan.could_hold?/2` (so the driver's per-VM limits still apply) and
+    the three limits of its spare share (§8.3) when empty
   - "no boxes enrolled"
   - "no `arm64` box"
   - "the only boxes that fit are offline / draining / quarantined /
@@ -676,6 +723,14 @@ Each job has two independent fields:
   - "class stalled" (§8.5)
   - "repo at max_concurrent"
 - These are recomputed on every pass, so a box joining unblocks them.
+
+**Wait reasons for a spare unit** that isn't placed (§8.3):
+- with no box it would fit on as a regular unit, the reason a regular unit
+  gets;
+- otherwise every box it fits failed a spare rule. If any failed rule 2:
+  "waiting for spare room: regular jobs are waiting for the boxes that
+  fit". Otherwise: "waiting for spare room: spare jobs are at their share
+  of every box that fits".
 
 **What each webhook does:**
 - **`waiting`** (an environment approval) is recorded and shown, and the
@@ -706,8 +761,8 @@ the latest box metrics. The GenServer applies the actions.
 
 1. **Compute blocked reasons** (§8.2) and each class's `deficit`.
 2. **Order the queued, unblocked jobs** by §8.4. In each class, the first
-   `supply(class)` jobs in that order count as covered, and each remaining
-   job is one **unit** to place.
+   `supply(class)` jobs (regular ones first, §8.1) count as covered, and
+   each remaining job is one **unit** to place.
 3. **For each unit, in order:** pick a box (below), and add the placement
    to the snapshot before the next unit. So fairness (§8.4), capacity and
    disk are recomputed after every placement within the pass.
@@ -724,8 +779,33 @@ the latest box metrics. The GenServer applies the actions.
 - have the right `guest_arch` (any arch for `:any`);
 - **have a usable image** (below);
 - **fit the size** (below);
-- keep the repo under `max_concurrent`;
+- keep the repo under `max_concurrent` (§7.4);
 - are not in the class's backoff (§8.6).
+
+Call the boxes that pass all of that a unit's **ordinary fits**. A spare
+unit (§7.2) needs an ordinary fit that also passes two rules:
+
+1. **The box's spare share.** Each box has `spare_pct`, an integer from 0
+   to 100, nullable, meaning 50 when null. The box's spare VMs are its
+   spare VMs that aren't `destroyed` plus this pass's spare placements on
+   it. With this placement they stay within:
+   - `spare_pct`% of `allocatable_memory_mib`, counting each VM's
+     `memory_mib + vmm_overhead_mib` as the memory rule below does (the
+     overhead includes the guest reserve);
+   - `spare_pct`% of `allocatable_vcpus` (overcommit included);
+   - `⌊spare_pct × max_vms / 100⌋` VMs, when `max_vms` is set.
+
+   0 keeps spare jobs off the box, and 100 lets them fill it. Regular
+   units ignore `spare_pct`.
+2. **No regular unit waiting for the box.** When a regular unit in this
+   pass has no ordinary fit, Crew records the boxes it could have used:
+   those that pass its `allowed_boxes`, arch, state and usable-image
+   checks and could ever hold its size (`Plan.could_hold?/2`). No spare
+   unit later in the pass goes on any of them. A regular unit held back
+   by `max_concurrent` or class backoff records nothing, since it never
+   looked for a box.
+
+Spare units rank their remaining boxes the way regular units do (below).
 
 **Usable image:**
 - **`usable_image(box, arch)`** is the arch's **default image** (pinned,
@@ -753,8 +833,9 @@ box's allocation, whatever state it's in.
   `starting` and `booted`, and over placements earlier in this pass.
   That's an expected-use estimate for sparse clones. Real exhaustion is
   handled by the disk watchdog (§12.5).
-- **`vmm_overhead_mib`** is reported by the driver: 64 for Firecracker, 128
-  for vz.
+- **`vmm_overhead_mib`** is the driver's VMM overhead (64 for Firecracker,
+  128 for vz) plus what the guest kernel keeps on top of the VM's memory
+  (`CrewProtocol.GuestMemory`, 199 MiB for an 8 GiB VM).
 - **`vm_area_mib`** is the size of the clone area (§12.5).
 
 **Ranking eligible boxes** (the first difference wins):
@@ -779,6 +860,7 @@ with 16 GiB free (largest free: 12 GiB on m3max)".
 | `allocatable_memory_mib` | `memory_mib − reserve_memory_mib`, where `reserve_memory_mib` defaults to `2048 + ⌊0.05 × memory_mib⌋` |
 | `cpu_overcommit` | 1.5 |
 | `max_vms` | unset |
+| `spare_pct` | unset (50): the share spare jobs may use (above) |
 
 - **Capabilities are pinned at enrollment** (§19.2 #6). A later report that
   changes `guest_arch` or `driver`, or moves `vcpus`, `memory_mib` or
@@ -790,28 +872,38 @@ with 16 GiB free (largest free: 12 GiB on m3max)".
 
 | Box | Reported | Allocatable | Fits m |
 |---|---|---|---|
-| linux-a (`linux-metal`, fc) | 24 vCPU; 65,536 MiB; vm area 768 GiB, all free | vCPU 23 × 1.5 = 34.5; memory 65,536 − (2,048 + 3,276) = 60,212 MiB | vCPU ⌊34.5/4⌋ = 8; memory ⌊60,212 / 8,256⌋ = 7; disk: with k VMs, 786,432 − 30,720k − 30,720 ≥ 117,965 → k ≤ 20 → **7** |
-| m3max (`mac-vm`, fc) | 14 vCPU; 36,864 MiB; vm area 200 GiB | vCPU 13 × 1.5 = 19.5; memory 36,864 − (2,048 + 1,843) = 32,973 | vCPU 4; memory ⌊32,973 / 8,256⌋ = 3; disk: 204,800 − 30,720k − 30,720 ≥ 30,720 → k ≤ 4 → **3** |
-| m1ultra (`mac-vz`) | 18 vCPU; 110,592 MiB; vm area 400 GiB | vCPU 17 × 1.5 = 25.5; memory 110,592 − (2,048 + 5,529) = 103,015 | vCPU ⌊25.5/4⌋ = 6; memory ⌊103,015 / 8,320⌋ = 12; disk: 409,600 − 30,720k − 30,720 ≥ 61,440 → k ≤ 10 → **6** |
+| linux-a (`linux-metal`, fc) | 24 vCPU; 65,536 MiB; vm area 768 GiB, all free | vCPU 23 × 1.5 = 34.5; memory 65,536 − (2,048 + 3,276) = 60,212 MiB | vCPU ⌊34.5/4⌋ = 8; memory ⌊60,212 / 8,455⌋ = 7; disk: with k VMs, 786,432 − 30,720k − 30,720 ≥ 117,965 → k ≤ 20 → **7** |
+| m3max (`mac-vm`, fc) | 14 vCPU; 36,864 MiB; vm area 200 GiB | vCPU 13 × 1.5 = 19.5; memory 36,864 − (2,048 + 1,843) = 32,973 | vCPU 4; memory ⌊32,973 / 8,455⌋ = 3; disk: 204,800 − 30,720k − 30,720 ≥ 30,720 → k ≤ 4 → **3** |
+| m1ultra (`mac-vz`) | 18 vCPU; 110,592 MiB; vm area 400 GiB | vCPU 17 × 1.5 = 25.5; memory 110,592 − (2,048 + 5,529) = 103,015 | vCPU ⌊25.5/4⌋ = 6; memory ⌊103,015 / 8,519⌋ = 12; disk: 409,600 − 30,720k − 30,720 ≥ 61,440 → k ≤ 10 → **6** |
 
 **Result:** 16 run at once and 14 wait. Each completion frees a slot that
 the next pass fills. (The Macs' figures follow §11.4 for the M1 and the
 vfkit settings for the M3. The RAM numbers are examples, not
-measurements.)
+measurements. Each m VM holds 8,192 + 64 (Firecracker) + 199 (guest
+reserve) = 8,455 MiB, or 8,519 MiB on vz.)
+
+**Spare worked example** (in `Crew.Scheduler.PlanSpareTest`): linux-a,
+empty, with `spare_pct` 50, holds 3 spare `m` VMs. Memory allows
+⌊30,106 / 8,455⌋ = 3 (half of 60,212 is 30,106), and vCPUs allow
+⌊17.25 / 4⌋ = 4 (half of 34.5). Regular jobs can still use the other 4
+slots the box has for `m`.
 
 ### 8.4 Ordering and fairness
 
 Waiting units are ordered by, in turn:
 
-1. The repo's `priority`, highest first.
-2. The repo's **active VM count** (VMs in `requested` through `busy`),
-   lowest first. This is recomputed after each placement in the pass, for
-   fair share.
-3. `queued_at`, oldest first.
-4. GitHub job id, lowest first.
+1. The tier (§7.2), regular first.
+2. The repo's `priority`, highest first.
+3. The repo's **active VM count of the unit's tier** (VMs in `requested`
+   through `busy`), lowest first. This is recomputed after each placement
+   in the pass, for fair share.
+4. `queued_at`, oldest first.
+5. GitHub job id, lowest first.
 
 So one repo with 30 jobs gets the whole fleet when nobody else is waiting,
-and two waiting repos alternate.
+and two waiting repos alternate. Every regular unit is tried before any
+spare unit, and a repo running a flake hunt on spare VMs doesn't fall
+behind other repos for its PR jobs.
 
 ### 8.5 Reaping excess
 
@@ -3426,6 +3518,7 @@ boxes(id, name unique, type enum(linux-metal, linux-vm, mac-vm, mac-vz), driver,
       capabilities map, pinned_capabilities map, needs_approval bool,
       allocatable_vcpus_override null, allocatable_memory_mib_override null,
       reserve_vcpus, reserve_memory_mib null, cpu_overcommit, max_vms null,
+      spare_pct int null,                             -- 0–100; null is 50 (§8.3)
       draining bool, drain_reason enum(admin, reboot) null,
       reboot_required bool, reboot_packages list, boot_id null, os_version null,
       can_restart bool, reboot_requested_at null, cache_vm_reboot map null,
