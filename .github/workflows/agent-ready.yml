@@ -8,37 +8,69 @@ name: agent-ready
 # An effort:<level> label (low, medium, high, xhigh, max) or an
 # "/effort <level>" comment changes the effort from medium.
 #
+# It also keeps its pull requests mergeable. After a push to main, a
+# sweep starts a resolve run on each of them that now conflicts, and a
+# "/resolve" comment asks for one on a pull request, yours included.
+#
 # Unlike CI (§23), this runs on Crew. It gates nothing: it opens draft
 # PRs that CI then checks on GitHub's runners.
+
+# The sweep reads these names to see which pull requests already have a
+# resolve run queued.
+run-name: "${{ inputs.mode == 'resolve' && format('agent-ready: resolve #{0}', inputs.pr) || 'agent-ready' }}"
 
 on:
   issues:
     types: [labeled]
   # flake-hunt starts a run on each flaky test it files. A run can be
-  # started by hand too, on an open issue labeled agent-ready.
+  # started by hand too, on an open issue labeled agent-ready. The jobs
+  # below dispatch the resolve runs.
   workflow_dispatch:
     inputs:
+      # Strings, so one that's left out arrives empty and not as 0.
       issue:
-        description: The issue to work. It has to be labeled agent-ready.
-        type: number
-        required: true
+        description: The issue to work. A build needs it labeled agent-ready.
+        type: string
+      mode:
+        description: Leave empty to build. "resolve" merges main into a pull request that conflicts with it.
+        type: string
+      pr:
+        description: "For resolve: the pull request."
+        type: string
+      head:
+        description: "For resolve: the pull request's head SHA when it was checked."
+        type: string
+      comment:
+        description: "For resolve on a pull request of your own, with no issue: the ID of your /resolve comment."
+        type: string
+  issue_comment:
+    types: [created]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 9 * * *"
 
 permissions: {}
 
 jobs:
   agent:
     # The reusable workflow's gate checks all this again, and checks the
-    # issue a dispatched run names.
+    # issue or pull request a dispatched run names.
     if: >-
       (github.event_name == 'workflow_dispatch' &&
       (contains(fromJSON('["ntodd"]'), github.event.sender.login) ||
       github.event.sender.login == 'github-actions[bot]')) ||
-      (github.event.label.name == 'agent-ready' &&
+      (github.event_name == 'issues' &&
+      github.event.label.name == 'agent-ready' &&
       contains(fromJSON('["ntodd"]'), github.event.sender.login) &&
       (contains(fromJSON('["ntodd"]'), github.event.issue.user.login) ||
       github.event.issue.user.login == 'github-actions[bot]'))
+    # One run at a time for an issue, or for a pull request with no issue.
+    # The two share a number sequence, so the groups never collide. Other
+    # events skip this job, and get a group of their own so they can't
+    # displace a run that's waiting.
     concurrency:
-      group: agent-ready-${{ github.event.issue.number || inputs.issue }}
+      group: agent-ready-${{ (github.event_name == 'issues' && github.event.issue.number) || inputs.issue || inputs.pr || github.run_id }}
     uses: ntodd/github-actions/.github/workflows/agent-ready.yml@main
     permissions:
       contents: read
@@ -57,3 +89,68 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       AGENT_ATTACH_TOKEN: ${{ secrets.AGENT_ATTACH_TOKEN }}
+
+  # "/resolve" on a pull request, like "@dependabot rebase": if it
+  # conflicts with main, start a resolve run on it. It runs
+  # agent-ready's own tooling and never checks out the pull request.
+  resolve-comment:
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+      github.event.comment.body == '/resolve' &&
+      contains(fromJSON('["ntodd"]'), github.event.sender.login) &&
+      contains(fromJSON('["ntodd"]'), github.event.comment.user.login)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ntodd/github-actions
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: node agent-ready/resolve/index.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_TRUSTED_USERS: ntodd
+          AGENT_APP_BOT: "ntodd-agent[bot]"
+
+  # After a push to main, and once a day: start a resolve run on each
+  # of the App's pull requests that now conflicts. It waits five minutes
+  # first and a newer push cancels it, so merging a few in a row sweeps
+  # once.
+  sweep:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    concurrency:
+      group: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && 'agent-ready-sweep' || format('agent-ready-sweep-{0}', github.run_id) }}
+      cancel-in-progress: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      actions: write
+    steps:
+      - name: Wait for the merges to finish
+        if: github.event_name == 'push'
+        run: sleep 300
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ntodd/github-actions
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: node agent-ready/resolve/index.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_TRUSTED_USERS: ntodd
+          AGENT_APP_BOT: "ntodd-agent[bot]"
