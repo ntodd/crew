@@ -173,6 +173,18 @@ defmodule CrewWeb.RepoLiveTest do
                "Copy as Markdown"
              )
 
+      # Or one issue for all of them.
+      assert has_element?(
+               view,
+               ~s(#sizing-repo-issue a[href^="https://github.com/#{repo.full_name}/issues/new?"]),
+               "File one issue"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#sizing-repo-issue button[data-copy^="# Right-size 1 job in #{repo.full_name}"])
+             )
+
       # e2e fits m.
       refute has_element?(view, "#sizing", "e2e")
     end
@@ -180,6 +192,7 @@ defmodule CrewWeb.RepoLiveTest do
     test "says when there's nothing to change", %{conn: conn, repo: repo} do
       {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
       assert has_element?(view, "#sizing-empty")
+      refute has_element?(view, "#sizing-repo-issue")
 
       summarized_jobs_fixture(repo, 5, name: "e2e", peak_mem_mib: 5000)
       {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")

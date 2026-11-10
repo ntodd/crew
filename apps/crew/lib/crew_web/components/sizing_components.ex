@@ -28,6 +28,10 @@ defmodule CrewWeb.SizingComponents do
     if s[:name], do: "#{s.name} (#{base})", else: base
   end
 
+  @doc "GiB-hours as the pages write them: one decimal, whole past 100."
+  def gib_h(x) when x >= 100, do: x |> round() |> Integer.to_string()
+  def gib_h(x), do: :erlang.float_to_binary(x * 1.0, decimals: 1)
+
   @doc ~s(What a run would free, or take, in GiB: "frees 6.0 GiB a run", "takes 8.0 GiB more a run".)
   def saving(%Hint{saved_mib: 0}), do: nil
   def saving(%Hint{saved_mib: m}) when m > 0, do: "frees #{gib(m)} GiB a run"
@@ -170,10 +174,19 @@ defmodule CrewWeb.SizingComponents do
   attr :id, :string, required: true
   attr :issue, :map, required: true, doc: "from `CrewWeb.SizingIssue.for_hint/2`"
   attr :compact, :boolean, default: false, doc: "text links, for a row in a list of hints"
+  attr :label, :string, default: "File issue"
+
+  attr :align, :string,
+    default: "end",
+    values: ~w(start end),
+    doc: "where compact links sit from sm up"
+
+  attr :class, :any, default: nil
 
   @doc """
-  A hint's issue: a link to GitHub's new-issue form, filled in, and a
-  button that copies the same title and body as Markdown.
+  An issue for a hint or a repo's hints: a link to GitHub's new-issue
+  form, filled in, and a button that copies the same title and body as
+  Markdown.
   """
   def issue_actions(assigns) do
     assigns = assign(assigns, markdown: SizingIssue.markdown(assigns.issue))
@@ -182,20 +195,24 @@ defmodule CrewWeb.SizingComponents do
     <div
       :if={@compact}
       id={@id}
-      class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:justify-end"
+      class={[
+        "flex flex-wrap items-center gap-x-3 gap-y-1 text-xs",
+        @align == "end" && "sm:justify-end",
+        @class
+      ]}
     >
-      <.gh_link href={@issue.url} class="text-ink-2">File issue</.gh_link>
+      <.gh_link href={@issue.url} class="whitespace-nowrap text-ink-2">{@label}</.gh_link>
       <button
         type="button"
         id={"#{@id}-copy"}
         phx-hook="Copy"
         data-copy={@markdown}
-        class="text-ink-2 underline-offset-2 transition-colors hover:text-ink hover:underline"
+        class="text-left text-ink-2 underline-offset-2 transition-colors hover:text-ink hover:underline"
       >
         <span data-copy-label>Copy as Markdown</span>
       </button>
     </div>
-    <div :if={!@compact} id={@id} class="flex flex-wrap items-center gap-2">
+    <div :if={!@compact} id={@id} class={["flex flex-wrap items-center gap-2", @class]}>
       <.button
         size="sm"
         href={@issue.url}
@@ -203,7 +220,7 @@ defmodule CrewWeb.SizingComponents do
         rel="noopener noreferrer"
         icon="hero-arrow-top-right-on-square-micro"
       >
-        File issue
+        {@label}
       </.button>
       <.button
         size="sm"

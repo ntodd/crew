@@ -18,15 +18,28 @@ defmodule CrewWeb.SizingLive do
      |> assign(:fleet, fleet(socket.assigns.current_scope))}
   end
 
-  # The fleet, each hint with its issue (`CrewWeb.SizingIssue`).
+  # The fleet, each hint with its issue (`CrewWeb.SizingIssue`), and each
+  # repo with one for its hints.
   defp fleet(scope) do
+    crew = Crew.Config.base_url()
     fleet = Sizing.fleet(scope)
-    %{fleet | hints: SizingIssue.put_issues(fleet.hints)}
+    by_repo = Enum.group_by(fleet.hints, & &1.repo.id)
+
+    %{
+      fleet
+      | hints: SizingIssue.put_issues(fleet.hints, crew),
+        repos:
+          Enum.map(fleet.repos, fn r ->
+            Map.put(
+              r,
+              :issue,
+              SizingIssue.for_repo(r.repo, Map.get(by_repo, r.repo.id, []), crew)
+            )
+          end)
+    }
   end
 
-  @doc "GiB-hours as the page writes them: one decimal, whole past 100."
-  def gib_h(x) when x >= 100, do: x |> round() |> Integer.to_string()
-  def gib_h(x), do: :erlang.float_to_binary(x * 1.0, decimals: 1)
+  defdelegate gib_h(x), to: SizingComponents
 
   # A net change in words: what applying the hints frees or takes.
   defp net(x) when x < 0, do: "takes #{gib_h(-x)}"
@@ -148,6 +161,14 @@ defmodule CrewWeb.SizingLive do
             >
               {r.repo.full_name}
             </.link>
+            <SizingComponents.issue_actions
+              :if={r.issue}
+              id={"sizing-repo-#{r.repo.id}-issue"}
+              issue={r.issue}
+              compact
+              align="start"
+              class="mt-1 flex-col items-start sm:flex-row sm:items-center"
+            />
           </:col>
           <:col :let={r} label="Runs" align="right" class="hidden tabular-nums sm:table-cell">
             {r.runs}

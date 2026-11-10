@@ -66,6 +66,16 @@ test("the repo page lists its jobs' hints, the most memory freed first", async (
   await expect(rows.nth(0).getByRole("link", {name: "File issue"})).toHaveCount(0)
   await expect(rows.nth(1).getByRole("link", {name: "File issue"})).toHaveAttribute("href", /^https:\/\/github\.com\/mona\/storefront\/issues\/new\?/)
   await expect(rows.nth(1).getByRole("button", {name: "Copy as Markdown"})).toBeVisible()
+
+  // Or one issue for them all, by workflow file.
+  const all = new URL(await page.locator("#sizing-repo-issue").getByRole("link", {name: "File one issue"}).getAttribute("href"))
+  expect(all.searchParams.get("title")).toBe("Right-size 3 jobs in mona/storefront")
+  const checklist = all.searchParams.get("body")
+  expect(checklist).toContain("### [`.github/workflows/ci.yml`](https://github.com/mona/storefront/blob/main/.github/workflows/ci.yml)")
+  expect(checklist).toContain("- [ ] **CI · test**: `crew-m` → `crew-xs`.")
+  expect(checklist).toContain("- [ ] **CI · e2e**: `crew-l` → `crew-xl`.")
+  expect(checklist).toContain("### [`.github/workflows/nightly.yml`]")
+  expect(checklist).not.toContain("CI · build")
   expect(await rowOverflows(page)).toEqual([])
 
   await shot(page, layer, "repo")
@@ -170,6 +180,10 @@ test("the right-sizing page: the week's memory, each repo's share, every hint", 
   await expect(hints.nth(0)).toContainText("mona/storefront")
   await expect(page.locator("#sizing-hints").getByRole("link", {name: "File issue"})).toHaveCount(3)
   await expect(page.locator("#sizing-repo-rows")).toContainText("mona/storefront")
+  // One issue per repo, from its row, with what its changes do in a week.
+  const repoIssue = new URL(await page.locator("#sizing-repo-rows").getByRole("link", {name: "File issue"}).getAttribute("href"))
+  expect(repoIssue.searchParams.get("title")).toMatch(/^Right-size 3 jobs in mona\/storefront: takes [0-9.]+ GiB-hours a week$/)
+  expect(repoIssue.searchParams.get("body")).toMatch(/Over the last 7 days, the changes would have freed [0-9.]+ GiB-hours of reserved memory and taken [0-9.]+\./)
   expect(await rowOverflows(page)).toEqual([])
   await shot(page, layer, "fleet")
   await setTheme(page, "dark")

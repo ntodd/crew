@@ -689,6 +689,17 @@ the repo's jobs that GitHub still has queued or waiting.
   (the size doesn't exist yet), larger ones without a size, and fits get
   neither. Both are on the job page's hint and on each hint row of the
   repo page and `/sizing`.
+- **One issue per repo:** "File one issue" on the repo page's Right-sizing
+  panel, and "File issue" on each row of `/sizing`'s By repo table, file
+  one issue for all of a repo's hints that have a size to move to. It's
+  a checklist with one item per job (its `runs-on` change, its first
+  reason and its page on Crew), grouped under each workflow file, or the
+  workflow's name without one, in the hints' order. The title counts the
+  jobs. On `/sizing` it also says what the changes would free or take
+  over the week, and the body's first line gives both. GitHub refuses
+  links much past 8,000 characters, so the link's body leaves jobs off
+  the end and ends with how many more there are and the repo's page on
+  Crew. Copy as Markdown always has every job.
 - **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
   days, for the repos the viewer can read: the memory the runs reserved
   and the most they used, in GiB-hours (a VM's memory times how long it

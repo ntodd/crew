@@ -89,15 +89,22 @@ defmodule CrewWeb.RepoLive.Show do
 
     socket
     |> assign(:repo, repo)
-    |> assign(
-      :hints,
+    |> assign_hints(repo)
+    |> assign(:missing, Repos.missing_permissions(repo.installation))
+    |> assign(:form, to_form(Repos.change_settings(repo), as: :repo))
+  end
+
+  # The repo's hints, each with its issue, and one issue for them all.
+  defp assign_hints(socket, repo) do
+    crew = Crew.Config.base_url()
+
+    hints =
       socket.assigns.current_scope
       |> Sizing.for_repo(repo)
       |> Enum.map(&Map.put(&1, :repo, repo))
-      |> SizingIssue.put_issues()
-    )
-    |> assign(:missing, Repos.missing_permissions(repo.installation))
-    |> assign(:form, to_form(Repos.change_settings(repo), as: :repo))
+      |> SizingIssue.put_issues(crew)
+
+    assign(socket, hints: hints, repo_issue: SizingIssue.for_repo(repo, hints, crew))
   end
 
   # Admins only (§7.6): the panel isn't rendered for members, so nothing is loaded.
@@ -539,6 +546,14 @@ defmodule CrewWeb.RepoLive.Show do
             <:subtitle>
               From each job's last runs over 30 days. Memory is what limits how many jobs a box takes at once.
             </:subtitle>
+            <:actions :if={@repo_issue}>
+              <SizingComponents.issue_actions
+                id="sizing-repo-issue"
+                issue={@repo_issue}
+                label="File one issue"
+                compact
+              />
+            </:actions>
             <p :if={@hints == []} id="sizing-empty" class="text-sm text-ink-3">
               Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
             </p>

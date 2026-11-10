@@ -56,6 +56,18 @@ defmodule CrewWeb.SizingLiveTest do
              "Copy as Markdown"
            )
 
+    # One issue per repo, from its row.
+    assert has_element?(
+             view,
+             ~s(#sizing-repo-#{other.id}-issue a[href^="https://github.com/#{other.full_name}/issues/new?"]),
+             "File issue"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#sizing-repo-#{repo.id}-issue button[data-copy^="# Right-size 2 jobs in #{repo.full_name}"])
+           )
+
     assert has_element?(view, ~s(#sizing-repos a[href="/repos/#{other.id}"]), other.full_name)
     assert has_element?(view, ~s(#sizing-repos a[href="/repos/#{repo.id}"]), repo.full_name)
   end
