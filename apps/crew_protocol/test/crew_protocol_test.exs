@@ -75,10 +75,10 @@ defmodule CrewProtocolTest do
 
     check all(
             {type, payload} <- member_of(examples),
+            key <- member_of(Map.keys(payload)),
             value <- junk(),
             max_runs: 500
           ) do
-      key = payload |> Map.keys() |> Enum.random()
       mutated = Map.put(payload, key, value)
 
       for fun <- [&Command.new/2, &Event.new/2] do
@@ -102,7 +102,11 @@ defmodule CrewProtocolTest do
     tree(leaf, fn child ->
       one_of([
         list_of(child, max_length: 5),
-        map_of(string(:alphanumeric, max_length: 10), child, max_length: 5)
+        # Pairs, not map_of/3: map_of needs unique keys, and at small sizes
+        # the key generator gives "" often enough to run out of retries.
+        {string(:alphanumeric, max_length: 10), child}
+        |> list_of(max_length: 5)
+        |> map(&Map.new/1)
       ])
     end)
   end
