@@ -11,6 +11,9 @@ name: agent-ready
 # It also keeps its pull requests mergeable. After a push to main, a
 # sweep starts a resolve run on each of them that now conflicts, and a
 # "/resolve" comment asks for one on a pull request, yours included.
+#
+# Unlike CI (§23), this runs on Crew. It gates nothing: it opens draft
+# PRs that CI then checks on GitHub's runners.
 
 # The sweep reads these names to see which pull requests already have a
 # resolve run queued.
