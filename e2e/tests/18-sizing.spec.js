@@ -201,6 +201,68 @@ test("the right-sizing page: the week's memory, each repo's share, every hint", 
   await page.setViewportSize({width: 1440, height: 900})
 })
 
+test("an admin dismisses a hint, with why, and restores it", async ({page}) => {
+  await signIn(page)
+  await page.goto("/sizing")
+  await connected(page)
+
+  const row = page.locator("#sizing-hints > li", {hasText: "Nightly · integration"})
+  const needsMore = await page.locator("#sizing-needs-more").textContent()
+  await row.getByRole("button", {name: "Dismiss"}).click()
+  const reason = row.getByRole("textbox", {name: "Why dismiss it (optional)"})
+  await expect(reason).toBeFocused()
+  await reason.fill("integration is slow on purpose")
+  await shot(page, layer, "dismiss-form")
+  await row.getByRole("button", {name: "Dismiss"}).click()
+
+  await expect(page.locator("#sizing-hints > li")).toHaveCount(3)
+  await expect(page.locator("#sizing-hints")).not.toContainText("Nightly · integration")
+  await expect(page.locator("#sizing-needs-more")).toHaveText(needsMore)
+  await page.locator("#sizing-dismissed-toggle").click()
+  const dismissed = page.locator("#sizing-dismissed > li")
+  await expect(dismissed).toHaveCount(1)
+  await expect(dismissed).toContainText("Nightly · integration")
+  await expect(dismissed).toContainText("mona/storefront")
+  await expect(dismissed).toContainText(/Dismissed by mona on \w+ \d+: integration is slow on purpose/)
+  expect(await rowOverflows(page)).toEqual([])
+  await shot(page, layer, "dismissed")
+  await setTheme(page, "dark")
+  await shot(page, layer, "dismissed-dark")
+  await setTheme(page, "light")
+  await page.setViewportSize({width: 390, height: 844})
+  await page.reload()
+  await connected(page)
+  await page.locator("#sizing-dismissed-toggle").click()
+  await expect(page.locator("#sizing-dismissed > li")).toHaveCount(1)
+  expect(await rowOverflows(page)).toEqual([])
+  await shot(page, layer, "dismissed-mobile")
+  await page.setViewportSize({width: 1440, height: 900})
+
+  // The repo page lists it apart too, and its issue leaves it out.
+  await openRepo(page)
+  const all = new URL(await page.locator("#sizing-repo-issue").getByRole("link", {name: "File one issue"}).getAttribute("href"))
+  expect(all.searchParams.get("title")).toBe("Right-size 2 jobs in mona/storefront")
+  await page.locator("#sizing-dismissed-toggle").click()
+  await expect(page.locator("#sizing-dismissed > li")).toContainText("integration is slow on purpose")
+  await shot(page, layer, "repo-dismissed")
+
+  // Its job page says so, with no issue to file.
+  await page.locator("#sizing-dismissed").getByRole("link", {name: "Nightly · integration"}).click()
+  await connected(page)
+  await expect(page.locator("#sizing-dismissed")).toContainText("integration is slow on purpose")
+  await expect(page.locator("#sizing").getByRole("link", {name: "File issue"})).toHaveCount(0)
+  await shot(page, layer, "job-dismissed")
+
+  await page.locator("#sizing-dismissed").getByRole("button", {name: "Restore"}).click()
+  await expect(page.locator("#sizing-dismissed")).toHaveCount(0)
+  await expect(page.locator("#sizing").getByRole("link", {name: "File issue"})).toBeVisible()
+
+  await page.goto("/sizing")
+  await connected(page)
+  await expect(page.locator("#sizing-hints > li")).toHaveCount(4)
+  await expect(page.locator("#sizing-dismissed-toggle")).toHaveCount(0)
+})
+
 test("more vCPUs for a starved job on its runs' critical path, and why not for one off it", async ({page}) => {
   await signIn(page)
   await openRepo(page)

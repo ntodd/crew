@@ -15,7 +15,17 @@ defmodule CrewWeb.RepoLive.Show do
   alias Crew.{Jobs, Repos, Schedules, Scope, Sizes, Sizing, Usage}
   alias Crew.Jobs.Insights
   alias Crew.Schedules.Schedule
-  alias CrewWeb.{Charts, GitHub, JobStatus, SizingComponents, SizingIssue, UsageComponents}
+
+  alias CrewWeb.{
+    Charts,
+    GitHub,
+    JobStatus,
+    SizingActions,
+    SizingComponents,
+    SizingIssue,
+    UsageComponents
+  }
+
   alias CrewWeb.Charts.Geometry
 
   import CrewWeb.UsageComponents, only: [minutes: 1, delimit: 1, pct: 1]
@@ -24,6 +34,8 @@ defmodule CrewWeb.RepoLive.Show do
   @default_window 30
   @recent_runs 8
   @flush_ms 5_000
+
+  @sizing_events SizingActions.events()
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -44,6 +56,7 @@ defmodule CrewWeb.RepoLive.Show do
      |> assign(:sizes, Sizes.list())
      |> assign(:windows, @windows)
      |> assign(:flush_pending, false)
+     |> SizingActions.mount()
      |> assign_repo(repo)
      |> assign_schedules()}
   end
@@ -98,13 +111,19 @@ defmodule CrewWeb.RepoLive.Show do
   defp assign_hints(socket, repo) do
     crew = Crew.Config.base_url()
 
-    hints =
+    {dismissed, hints} =
       socket.assigns.current_scope
       |> Sizing.for_repo(repo)
       |> Enum.map(&Map.put(&1, :repo, repo))
-      |> SizingIssue.put_issues(crew)
+      |> Enum.split_with(& &1.dismissal)
 
-    assign(socket, hints: hints, repo_issue: SizingIssue.for_repo(repo, hints, crew))
+    hints = SizingIssue.put_issues(hints, crew)
+
+    assign(socket,
+      hints: hints,
+      dismissed_hints: dismissed,
+      repo_issue: SizingIssue.for_repo(repo, hints, crew)
+    )
   end
 
   # Admins only (§7.6): the panel isn't rendered for members, so nothing is loaded.
@@ -126,6 +145,12 @@ defmodule CrewWeb.RepoLive.Show do
   defp schedule_form(changeset), do: to_form(changeset, as: :schedule)
 
   @impl true
+  def handle_event(event, params, socket) when event in @sizing_events,
+    do:
+      SizingActions.handle(event, params, socket, fn socket ->
+        assign_hints(socket, socket.assigns.repo)
+      end)
+
   def handle_event("save", %{"repo" => params}, socket) do
     params =
       Map.update(params, "allowed_sizes", [], &Enum.reject(List.wrap(&1), fn v -> v == "" end))
@@ -555,7 +580,11 @@ defmodule CrewWeb.RepoLive.Show do
               />
             </:actions>
             <p :if={@hints == []} id="sizing-empty" class="text-sm text-ink-3">
-              Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
+              <%= if @dismissed_hints == [] do %>
+                Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
+              <% else %>
+                Nothing left to change: every hint is dismissed.
+              <% end %>
             </p>
             <ul :if={@hints != []} id="sizing-hints" class="-my-3 divide-y divide-line">
               <li
@@ -584,15 +613,33 @@ defmodule CrewWeb.RepoLive.Show do
                   <p class="whitespace-nowrap text-xs text-ink-2">
                     {SizingComponents.saving(h.hint)}
                   </p>
-                  <SizingComponents.issue_actions
-                    :if={h.issue}
-                    id={"sizing-#{h.job.id}-issue"}
-                    issue={h.issue}
-                    compact
-                  />
+                  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
+                    <SizingComponents.issue_actions
+                      :if={h.issue}
+                      id={"sizing-#{h.job.id}-issue"}
+                      issue={h.issue}
+                      compact
+                    />
+                    <SizingComponents.dismiss_button
+                      :if={Scope.admin?(@current_scope) and @dismissing != h.job.id}
+                      job_id={h.job.id}
+                    />
+                  </div>
                 </div>
+                <SizingComponents.dismiss_form
+                  :if={Scope.admin?(@current_scope) and @dismissing == h.job.id}
+                  id={"sizing-#{h.job.id}-dismiss"}
+                  job_id={h.job.id}
+                  hint={h.hint}
+                  class="sm:col-span-3 sm:justify-end"
+                />
               </li>
             </ul>
+            <SizingComponents.dismissed_list
+              hints={@dismissed_hints}
+              open={@show_dismissed}
+              admin={Scope.admin?(@current_scope)}
+            />
           </.panel>
 
           <UsageComponents.repo_panel summary={@usage} days={@days} />

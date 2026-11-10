@@ -7,6 +7,7 @@ defmodule CrewWeb.SizingLiveTest do
 
     %{
       conn: log_in(conn, admin),
+      admin: admin,
       repo: repo_fixture(name: "app"),
       other: repo_fixture(name: "api")
     }
@@ -103,6 +104,91 @@ defmodule CrewWeb.SizingLiveTest do
     assert has_element?(view, "#sizing-hints-empty")
     assert has_element?(view, "#sizing-repos-empty")
     assert has_element?(view, "#sizing-reserved", "0")
+  end
+
+  describe "dismissing a hint" do
+    test "an admin dismisses one, with why: it leaves the hints and the totals, and comes back",
+         %{conn: conn, admin: admin, repo: repo} do
+      newest = repo |> summarized_jobs_fixture(5) |> List.last()
+      row = "#sizing-#{newest.id}"
+
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      assert has_element?(view, "#sizing-hints #{row}", "Try xs")
+      refute has_element?(view, "#sizing-dismissed-toggle")
+
+      view |> element("#{row} button", "Dismiss") |> render_click()
+
+      view
+      |> form("#{row}-dismiss", %{"reason" => "xs made the tests flaky"})
+      |> render_submit()
+
+      refute has_element?(view, "#sizing-hints #{row}")
+      assert has_element?(view, "#sizing-hints-empty", "every hint is dismissed")
+      assert has_element?(view, "#sizing-net", "0.0")
+      assert has_element?(view, "#sizing-repo-rows", "frees 0.0")
+      refute has_element?(view, "#sizing-repo-rows a[href*='/issues/new']")
+
+      view |> element("#sizing-dismissed-toggle", "1 dismissed") |> render_click()
+      dismissed = "#sizing-dismissed-#{newest.id}"
+      assert has_element?(view, dismissed, "CI · test")
+      assert has_element?(view, dismissed, "Try xs")
+      assert has_element?(view, dismissed, "Dismissed by #{admin.login}")
+      assert has_element?(view, dismissed, "xs made the tests flaky")
+
+      view |> element("#{dismissed} button", "Restore") |> render_click()
+      assert has_element?(view, "#sizing-hints #{row}", "Try xs")
+      refute has_element?(view, "#sizing-dismissed-toggle")
+    end
+
+    test "dismissing can be called off", %{conn: conn, repo: repo} do
+      newest = repo |> summarized_jobs_fixture(5) |> List.last()
+      row = "#sizing-#{newest.id}"
+
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      view |> element("#{row} button", "Dismiss") |> render_click()
+      assert has_element?(view, "#{row}-dismiss")
+      view |> element("#{row}-dismiss button", "Cancel") |> render_click()
+      refute has_element?(view, "#{row}-dismiss")
+      assert has_element?(view, "#sizing-hints #{row}")
+    end
+
+    test "a member sees what's dismissed, but can't dismiss or restore", %{
+      admin: admin,
+      repo: repo
+    } do
+      newest = repo |> summarized_jobs_fixture(5) |> List.last()
+      summarized_job_fixture(repo, name: "e2e", oom: true, conclusion: "failure")
+      %{kind: kind, from: from} = Crew.Sizing.for_job(newest)
+
+      {:ok, _} =
+        Crew.Sizing.dismiss(Crew.Scope.for_user(admin), newest.id, %{
+          "kind" => to_string(kind),
+          "vcpus" => to_string(from.vcpus),
+          "memory_mib" => to_string(from.memory_mib),
+          "reason" => "flaky"
+        })
+
+      member = user_fixture()
+
+      Crew.Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+      refute has_element?(view, "#sizing-hints button", "Dismiss")
+      view |> element("#sizing-dismissed-toggle") |> render_click()
+      assert has_element?(view, "#sizing-dismissed-#{newest.id}", "flaky")
+      refute has_element?(view, "#sizing-dismissed button", "Restore")
+
+      # Nor by sending the events.
+      render_hook(view, "dismiss_hint", %{"job_id" => newest.id, "reason" => ""})
+      assert has_element?(view, "#sizing-hints", "Needs more memory")
+      d = Crew.Sizing.dismissal(newest, Crew.Sizing.for_job(newest))
+      assert render_hook(view, "restore_hint", %{"id" => d.id}) =~ "Only admins"
+      assert Crew.Sizing.dismissal(newest, Crew.Sizing.for_job(newest))
+    end
   end
 
   test "the sidebar links to it", %{conn: conn} do

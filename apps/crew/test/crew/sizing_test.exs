@@ -301,6 +301,162 @@ defmodule Crew.SizingTest do
     end
   end
 
+  describe "dismissals" do
+    alias Crew.Sizing.Dismissal
+
+    setup %{repo: repo} do
+      %{newest: repo |> finished_n(5) |> List.last()}
+    end
+
+    # What a page's dismiss form sends for the hint it shows.
+    defp shown(job, reason \\ nil), do: shown_hint(Sizing.for_job(job), reason)
+
+    defp shown_hint(%Hint{kind: kind, from: from}, reason),
+      do: %{
+        "kind" => to_string(kind),
+        "vcpus" => to_string(from.vcpus),
+        "memory_mib" => to_string(from.memory_mib),
+        "reason" => reason
+      }
+
+    defp logged(action) do
+      import Ecto.Query
+      Repo.all(from e in Crew.Audit.Event, where: e.action == ^action)
+    end
+
+    test "an admin dismisses a hint: it stays on the repo, marked, and leaves the fleet's totals",
+         %{repo: repo, newest: newest} do
+      admin = admin()
+
+      {:ok, %Dismissal{} = d} =
+        Sizing.dismiss(admin, newest.id, shown(newest, "  xs made the tests flaky "))
+
+      assert {d.workflow_name, d.job_name, d.kind} == {"CI", "test", "smaller"}
+      assert {d.vcpus, d.memory_mib} == {4, 8192}
+      assert d.reason == "xs made the tests flaky"
+      assert d.user_login == admin.user.login
+
+      assert [%{name: "test", dismissal: %Dismissal{id: id}}] = Sizing.for_repo(admin, repo)
+      assert id == d.id
+
+      fleet = Sizing.fleet(admin)
+      assert fleet.hints == []
+      assert [%{name: "test", repo: %{id: repo_id}, dismissal: %Dismissal{}}] = fleet.dismissed
+      assert repo_id == repo.id
+      assert fleet.freed_gib_h == 0.0
+      assert [%{net_gib_h: +0.0}] = fleet.repos
+
+      assert [%{metadata: %{"repo" => _, "job" => "CI · test", "kind" => "smaller"}}] =
+               logged("sizing_hint.dismiss")
+    end
+
+    test "a blank reason is none, and dismissing again keeps one with the newer reason", %{
+      newest: newest
+    } do
+      {:ok, first} = Sizing.dismiss(admin(), newest.id, shown(newest, "  "))
+      assert first.reason == nil
+      {:ok, again} = Sizing.dismiss(admin(), newest.id, shown(newest, "on second thought"))
+      assert again.id == first.id
+      assert Repo.get!(Dismissal, first.id).reason == "on second thought"
+    end
+
+    test "it's for the job's size and the kind of hint, so a new kind brings it back", %{
+      repo: repo,
+      newest: newest
+    } do
+      {:ok, _} = Sizing.dismiss(admin(), newest.id, shown(newest))
+      assert [%{dismissal: %Dismissal{}}] = Sizing.for_repo(admin(), repo)
+
+      finished(repo, oom: true, conclusion: "failure", started_at: hours_ago(1))
+      assert [%{hint: %Hint{kind: :larger}, dismissal: nil}] = Sizing.for_repo(admin(), repo)
+      assert [%{name: "test"}] = Sizing.fleet(admin()).hints
+    end
+
+    test "and a new size brings it back", %{repo: repo, newest: newest} do
+      {:ok, _} = Sizing.dismiss(admin(), newest.id, shown(newest))
+
+      l = [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+      for i <- 1..5, do: finished(repo, [started_at: hours_ago(6 - i)] ++ l)
+
+      assert [%{hint: %Hint{kind: :smaller, from: %{vcpus: 8}}, dismissal: nil}] =
+               Sizing.for_repo(admin(), repo)
+    end
+
+    test "restoring puts it back; both are logged", %{repo: repo, newest: newest} do
+      {:ok, d} = Sizing.dismiss(admin(), newest.id, shown(newest))
+      {:ok, _} = Sizing.restore(admin(), d.id)
+
+      assert [%{dismissal: nil}] = Sizing.for_repo(admin(), repo)
+      assert [_] = Sizing.fleet(admin()).hints
+      assert [%{metadata: %{"job" => "CI · test"}}] = logged("sizing_hint.restore")
+      assert Sizing.restore(admin(), d.id) == {:error, :not_found}
+    end
+
+    test "only admins dismiss and restore", %{newest: newest} do
+      member = Scope.for_user(user_fixture())
+      assert Sizing.dismiss(member, newest.id, shown(newest)) == {:error, :unauthorized}
+
+      {:ok, d} = Sizing.dismiss(admin(), newest.id, shown(newest))
+      assert Sizing.restore(member, d.id) == {:error, :unauthorized}
+      assert logged("sizing_hint.restore") == []
+    end
+
+    test "nothing to dismiss when the job's hint isn't the one shown, or the job isn't there", %{
+      repo: repo
+    } do
+      fits = repo |> finished_n(5, name: "e2e", peak_mem_mib: 5000) |> List.last()
+      smaller = shown(List.last(finished_n(repo, 5, name: "lint")))
+      assert Sizing.dismiss(admin(), fits.id, smaller) == {:error, :changed}
+      assert Sizing.dismiss(admin(), Ecto.UUID.generate(), smaller) == {:error, :not_found}
+    end
+
+    test "a form left open while the hint changed dismisses nothing", %{
+      repo: repo,
+      newest: newest
+    } do
+      form = shown(newest)
+      finished(repo, oom: true, conclusion: "failure", started_at: hours_ago(1))
+
+      assert Sizing.dismiss(admin(), newest.id, form) == {:error, :changed}
+      assert [%{hint: %Hint{kind: :larger}, dismissal: nil}] = Sizing.for_repo(admin(), repo)
+      assert Repo.aggregate(Dismissal, :count) == 0
+    end
+
+    test "the hint a list shows, from the last 30 days, can be dismissed", %{
+      repo: repo,
+      newest: newest
+    } do
+      # Killed for memory 31 days ago: the job's page still counts that
+      # run, the lists don't.
+      finished(repo, oom: true, conclusion: "failure", started_at: hours_ago(31 * 24))
+      assert %Hint{kind: :larger} = Sizing.for_job(newest)
+      [%{hint: listed}] = Sizing.for_repo(admin(), repo)
+      assert listed.kind == :smaller
+
+      assert {:ok, _} = Sizing.dismiss(admin(), newest.id, shown_hint(listed, nil))
+      assert [%{dismissal: %Dismissal{kind: "smaller"}}] = Sizing.for_repo(admin(), repo)
+    end
+
+    test "a job without a workflow name has its hint, and it can be dismissed", %{repo: repo} do
+      nameless = repo |> finished_n(5, name: "solo", workflow_name: nil) |> List.last()
+      assert %Hint{kind: :smaller} = Sizing.for_job(nameless)
+
+      assert {:ok, %Dismissal{workflow_name: ""}} =
+               Sizing.dismiss(admin(), nameless.id, shown(nameless))
+
+      assert Enum.find(Sizing.for_repo(admin(), repo), &(&1.name == "solo")).dismissal
+    end
+
+    test "dismissal/2: a job's hint's dismissal, for its page", %{newest: newest} do
+      hint = Sizing.for_job(newest)
+      assert Sizing.dismissal(newest, hint) == nil
+      {:ok, d} = Sizing.dismiss(admin(), newest.id, shown(newest, "flaky"))
+      assert %Dismissal{reason: "flaky"} = Sizing.dismissal(newest, hint)
+      assert Sizing.dismissal(newest, nil) == nil
+      assert d.id == Sizing.dismissal(newest, hint).id
+    end
+  end
+
   describe "durations/1" do
     defp ran(repo, minutes, attrs) do
       started = hours_ago(attrs[:hours] || 1)

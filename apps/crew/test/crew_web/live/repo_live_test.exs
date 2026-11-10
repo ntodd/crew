@@ -189,6 +189,29 @@ defmodule CrewWeb.RepoLiveTest do
       refute has_element?(view, "#sizing", "e2e")
     end
 
+    test "an admin dismisses a hint: it moves under the list, out of the repo's issue", %{
+      conn: conn,
+      repo: repo
+    } do
+      newest = repo |> summarized_jobs_fixture(5, name: "test") |> List.last()
+      row = "#sizing-#{newest.id}"
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#sizing-repo-issue")
+
+      view |> element("#{row} button", "Dismiss") |> render_click()
+      view |> form("#{row}-dismiss", %{"reason" => "kept on m"}) |> render_submit()
+
+      refute has_element?(view, "#sizing-hints #{row}")
+      refute has_element?(view, "#sizing-repo-issue")
+      view |> element("#sizing-dismissed-toggle", "1 dismissed") |> render_click()
+      assert has_element?(view, "#sizing-dismissed-#{newest.id}", "kept on m")
+
+      view |> element("#sizing-dismissed-#{newest.id} button", "Restore") |> render_click()
+      assert has_element?(view, "#sizing-hints #{row}", "Try xs")
+      assert has_element?(view, "#sizing-repo-issue")
+    end
+
     test "says when there's nothing to change", %{conn: conn, repo: repo} do
       {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
       assert has_element?(view, "#sizing-empty")

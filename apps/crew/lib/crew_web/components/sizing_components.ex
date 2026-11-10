@@ -4,12 +4,14 @@ defmodule CrewWeb.SizingComponents do
   move to, why, the `runs-on` line that does it, and an issue to file.
   """
   use Phoenix.Component
+  use CrewWeb, :verified_routes
 
-  import CrewWeb.CoreComponents, only: [button: 1]
+  import CrewWeb.CoreComponents, only: [button: 1, icon: 1]
   import CrewWeb.CrewComponents, only: [gib: 1, gh_link: 1]
 
   alias Crew.Sizing.Rules.Hint
   alias CrewWeb.{GitHub, SizingIssue}
+  alias Phoenix.LiveView.JS
 
   @doc "A hint's headline."
   def title(%Hint{kind: :smaller, to: to}), do: "Try #{to.name}"
@@ -130,6 +132,12 @@ defmodule CrewWeb.SizingComponents do
 
   attr :issue, :map, default: nil, doc: "the hint's issue (`CrewWeb.SizingIssue`), if it has one"
 
+  attr :dismissal, :any,
+    default: nil,
+    doc: "the hint's `Crew.Sizing.Dismissal`, if it's dismissed"
+
+  attr :dismissing, :boolean, default: false, doc: "an admin has the dismiss form open"
+
   @doc """
   A hint in full: the headline, the move, why, and how: the `runs-on`
   line, its file, and an issue to file for it.
@@ -159,7 +167,19 @@ defmodule CrewWeb.SizingComponents do
           in <.gh_link href={@file_url} class="break-all font-mono text-ink-2">{@file}</.gh_link>
         </p>
       </div>
-      <.issue_actions :if={@issue} id="sizing-issue" issue={@issue} />
+      <.issue_actions :if={@issue && !@dismissal} id="sizing-issue" issue={@issue} />
+      <div
+        :if={@dismissal}
+        id="sizing-dismissed"
+        class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-lg bg-subtle px-3 py-2 text-xs text-ink-2"
+      >
+        <p class="min-w-0">{dismissed_by(@dismissal)}</p>
+        <.restore_button :if={@admin} dismissal={@dismissal} />
+      </div>
+      <div :if={@admin && !@dismissal && @hint.kind != :fits && @job}>
+        <.dismiss_button :if={!@dismissing} job_id={@job.id} />
+        <.dismiss_form :if={@dismissing} id="sizing-dismiss" job_id={@job.id} hint={@hint} />
+      </div>
       <p :if={@hint.kind == :custom} class="text-xs text-ink-3">
         <%= if @admin do %>
           Add it on <.link navigate="/admin/sizes" class="underline underline-offset-2 hover:text-ink">Sizes & labels</.link>, then use it in the job's <code class="font-mono">runs-on</code>.
@@ -232,6 +252,127 @@ defmodule CrewWeb.SizingComponents do
       >
         <span data-copy-label>Copy as Markdown</span>
       </.button>
+    </div>
+    """
+  end
+
+  @doc "Who dismissed a hint, when, and why."
+  def dismissed_by(%{user_login: login, updated_at: at, reason: reason}) do
+    base = "Dismissed by #{login || "someone"} on #{Calendar.strftime(at, "%b %-d")}"
+    if reason, do: "#{base}: #{reason}", else: base <> "."
+  end
+
+  attr :job_id, :string, required: true
+
+  @doc "Opens the form to dismiss the hint of a job (admins)."
+  def dismiss_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      phx-click="dismissing"
+      phx-value-job={@job_id}
+      class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 transition-colors hover:text-ink hover:underline"
+    >
+      Dismiss
+    </button>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :job_id, :string, required: true
+  attr :hint, Hint, required: true, doc: "the hint it dismisses, so a changed one isn't"
+  attr :class, :any, default: nil
+
+  @doc "Dismisses a job's hint, with an optional reason, or calls it off."
+  def dismiss_form(assigns) do
+    ~H"""
+    <form id={@id} phx-submit="dismiss_hint" class={["flex flex-wrap items-center gap-2", @class]}>
+      <input type="hidden" name="job_id" value={@job_id} />
+      <input type="hidden" name="kind" value={@hint.kind} />
+      <input type="hidden" name="vcpus" value={@hint.from.vcpus} />
+      <input type="hidden" name="memory_mib" value={@hint.from.memory_mib} />
+      <input
+        type="text"
+        name="reason"
+        maxlength="500"
+        placeholder="Why? (optional)"
+        aria-label="Why dismiss it (optional)"
+        phx-mounted={JS.focus()}
+        class="input h-8 min-w-0 flex-1 basis-48 text-xs sm:max-w-sm"
+      />
+      <div class="flex gap-2">
+        <.button type="submit" size="sm">Dismiss</.button>
+        <.button type="button" size="sm" variant="ghost" phx-click="dismissing">Cancel</.button>
+      </div>
+    </form>
+    """
+  end
+
+  attr :dismissal, :any, required: true
+
+  def restore_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      phx-click="restore_hint"
+      phx-value-id={@dismissal.id}
+      class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 transition-colors hover:text-ink hover:underline"
+    >
+      Restore
+    </button>
+    """
+  end
+
+  attr :id, :string, default: "sizing-dismissed"
+  attr :hints, :list, required: true, doc: "dismissed hints, each with its `dismissal`"
+  attr :open, :boolean, default: false
+  attr :admin, :boolean, default: false
+  attr :repo, :boolean, default: false, doc: "name each hint's repo"
+
+  @doc """
+  The hints an admin dismissed, under a page's list: how many, and when
+  opened, each with who dismissed it, when and why, and Restore for
+  admins.
+  """
+  def dismissed_list(assigns) do
+    ~H"""
+    <div :if={@hints != []} class="mt-3 border-t border-line pt-3">
+      <button
+        type="button"
+        id={"#{@id}-toggle"}
+        phx-click="toggle_dismissed"
+        aria-expanded={to_string(@open)}
+        aria-controls={@id}
+        class="inline-flex items-center gap-1 text-xs font-medium text-ink-2 transition-colors hover:text-ink"
+      >
+        <.icon
+          name={if @open, do: "hero-chevron-down-micro", else: "hero-chevron-right-micro"}
+          class="size-3.5"
+        />
+        {length(@hints)} dismissed
+      </button>
+      <ul :if={@open} id={@id} class="mt-1 divide-y divide-line">
+        <li
+          :for={h <- @hints}
+          id={"#{@id}-#{h.job.id}"}
+          class="flex flex-wrap items-start justify-between gap-x-6 gap-y-1 py-2.5"
+        >
+          <div class="min-w-0">
+            <.link
+              navigate={
+                ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
+              }
+              class="text-sm font-medium text-ink underline-offset-2 hover:underline"
+            >
+              {h.workflow_name} · {h.name}
+            </.link>
+            <span :if={@repo} class="ml-1 text-xs text-ink-3">{h.repo.full_name}</span>
+            <p class="mt-0.5 text-xs text-ink-2">{title(h.hint)}, from {shape(h.hint.from)}</p>
+            <p class="mt-0.5 text-xs text-ink-3">{dismissed_by(h.dismissal)}</p>
+          </div>
+          <.restore_button :if={@admin} dismissal={h.dismissal} />
+        </li>
+      </ul>
     </div>
     """
   end

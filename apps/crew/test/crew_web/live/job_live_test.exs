@@ -429,6 +429,70 @@ defmodule CrewWeb.JobLiveTest do
              )
     end
 
+    test "an admin dismisses the hint here; the page says so, with no issue, until it's restored",
+         %{conn: conn, repo: repo} do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 94)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/94")
+      view |> element("#sizing button", "Dismiss") |> render_click()
+      view |> form("#sizing-dismiss", %{"reason" => "lint stays on m"}) |> render_submit()
+
+      assert has_element?(view, "#sizing", "Try xs")
+      assert has_element?(view, "#sizing-dismissed", "Dismissed by")
+      assert has_element?(view, "#sizing-dismissed", "lint stays on m")
+      refute has_element?(view, "#sizing a", "File issue")
+      refute has_element?(view, "#sizing button", "Dismiss")
+
+      view |> element("#sizing-dismissed button", "Restore") |> render_click()
+      refute has_element?(view, "#sizing-dismissed")
+      assert has_element?(view, "#sizing a", "File issue")
+    end
+
+    test "a member sees it's dismissed, without the buttons", %{repo: repo} do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      job = summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 95)
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+      %{kind: kind, from: from} = Crew.Sizing.for_job(job)
+
+      {:ok, _} =
+        Crew.Sizing.dismiss(admin, job.id, %{
+          "kind" => to_string(kind),
+          "vcpus" => to_string(from.vcpus),
+          "memory_mib" => to_string(from.memory_mib)
+        })
+
+      member = user_fixture()
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/95")
+      assert has_element?(view, "#sizing-dismissed", "Dismissed by #{admin.user.login}")
+      refute has_element?(view, "#sizing button", "Restore")
+      refute has_element?(view, "#sizing button", "Dismiss")
+    end
+
+    test "a member whose access lapsed is sent away, not shown the hint again", %{repo: repo} do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 96)
+      member = user_fixture()
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/96")
+      Repo.delete_all(Crew.Repos.Access)
+      render_hook(view, "dismissing", %{"job" => "x"})
+      assert_redirect(view, ~p"/runs")
+    end
+
     test "a spare job keeps its tier, and its other labels stay", %{conn: conn, repo: repo} do
       spare = [name: "fuzz", labels: ["self-hosted", "crew-m-spare"]]
       summarized_jobs_fixture(repo, 4, spare)

@@ -700,6 +700,21 @@ the repo's jobs that GitHub still has queued or waiting.
   links much past 8,000 characters, so the link's body leaves jobs off
   the end and ends with how many more there are and the repo's page on
   Crew. Copy as Markdown always has every job.
+- **Dismissing a hint:** an admin can dismiss a hint nobody will apply,
+  with an optional reason (up to 500 characters), from its row on the
+  repo page or `/sizing`, or from its job's page. Repo settings and
+  schedules are admin-only too (§7.4, §7.6). A dismissal is keyed on the
+  repo, the workflow, the job name, the shape the job's newest run had
+  and the hint's kind, so the hint comes back when the job changes size
+  or the hint changes kind: a dismissed "Try xs" can't hide a later
+  "Needs more memory". Dismissing again keeps one, with the newer
+  reason. A dismissed hint leaves `/sizing`'s hints and totals (what the
+  hints would free and take, the jobs that need more memory, each
+  repo's net) and both kinds of issue. The repo page and `/sizing` say
+  how many are dismissed and can list them, each with who dismissed it,
+  when and why, and Restore for admins. The job page still shows its
+  hint, marked dismissed, without its issue. Both are audit-logged
+  (`sizing_hint.dismiss`, `sizing_hint.restore`).
 - **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
   days, for the repos the viewer can read: the memory the runs reserved
   and the most they used, in GiB-hours (a VM's memory times how long it
@@ -3673,6 +3688,9 @@ repos(id, installation_id, github_id unique, full_name, private, default_branch,
       allowed_sizes [string] null, allowed_boxes [uuid] null, max_concurrent int null,
       fork_prs enum(refuse, allow), priority int, archived_at)
 user_repo_access(user_id, repo_id, can_push, checked_at)            pk(user_id, repo_id)
+sizing_dismissals(id, repo_id, workflow_name, job_name, vcpus, memory_mib, kind,
+                  reason null, user_id null, user_login null)  -- §7.5
+                  unique(repo_id, workflow_name, job_name, vcpus, memory_mib, kind)
 schedules(id, repo_id, workflow, ref, cron, enabled, last_due_at, last_dispatched_at,
           last_error null)                   unique(repo_id, workflow, ref, cron)  -- §7.6
 

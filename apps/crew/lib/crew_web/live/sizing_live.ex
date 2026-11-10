@@ -8,15 +8,26 @@ defmodule CrewWeb.SizingLive do
   use CrewWeb, :live_view
 
   alias Crew.Sizing
-  alias CrewWeb.{SizingComponents, SizingIssue}
+  alias CrewWeb.{SizingActions, SizingComponents, SizingIssue}
+
+  @sizing_events SizingActions.events()
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:page_title, "Right-sizing")
-     |> assign(:fleet, fleet(socket.assigns.current_scope))}
+     |> assign(:admin, Crew.Scope.admin?(socket.assigns.current_scope))
+     |> assign(:fleet, fleet(socket.assigns.current_scope))
+     |> SizingActions.mount()}
   end
+
+  @impl true
+  def handle_event(event, params, socket) when event in @sizing_events,
+    do:
+      SizingActions.handle(event, params, socket, fn socket ->
+        assign(socket, :fleet, fleet(socket.assigns.current_scope))
+      end)
 
   # The fleet, each hint with its issue (`CrewWeb.SizingIssue`), and each
   # repo with one for its hints.
@@ -111,7 +122,11 @@ defmodule CrewWeb.SizingLive do
           Each job's suggestion from its last runs, the most memory it would free in a week first.
         </:subtitle>
         <p :if={@fleet.hints == []} id="sizing-hints-empty" class="text-sm text-ink-3">
-          Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
+          <%= if @fleet.dismissed == [] do %>
+            Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
+          <% else %>
+            Nothing left to change: every hint is dismissed.
+          <% end %>
         </p>
         <ul :if={@fleet.hints != []} id="sizing-hints" class="-my-3 divide-y divide-line">
           <li
@@ -137,15 +152,34 @@ defmodule CrewWeb.SizingLive do
             </div>
             <div class="space-y-1 sm:text-right">
               <p class="whitespace-nowrap text-xs text-ink-2">{week(h)}</p>
-              <SizingComponents.issue_actions
-                :if={h.issue}
-                id={"sizing-#{h.job.id}-issue"}
-                issue={h.issue}
-                compact
-              />
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
+                <SizingComponents.issue_actions
+                  :if={h.issue}
+                  id={"sizing-#{h.job.id}-issue"}
+                  issue={h.issue}
+                  compact
+                />
+                <SizingComponents.dismiss_button
+                  :if={@admin and @dismissing != h.job.id}
+                  job_id={h.job.id}
+                />
+              </div>
             </div>
+            <SizingComponents.dismiss_form
+              :if={@admin and @dismissing == h.job.id}
+              id={"sizing-#{h.job.id}-dismiss"}
+              job_id={h.job.id}
+              hint={h.hint}
+              class="sm:col-span-3 sm:justify-end"
+            />
           </li>
         </ul>
+        <SizingComponents.dismissed_list
+          hints={@fleet.dismissed}
+          open={@show_dismissed}
+          admin={@admin}
+          repo
+        />
       </.panel>
 
       <.panel id="sizing-repos" title="By repo">

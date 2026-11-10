@@ -16,7 +16,9 @@ defmodule CrewWeb.JobLive.Show do
 
   alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Scope, Sizes, Sizing, VMs}
   alias Crew.Jobs.CacheMisses
-  alias CrewWeb.{JobStatus, SizingComponents, SizingIssue}
+  alias CrewWeb.{JobStatus, SizingActions, SizingComponents, SizingIssue}
+
+  @sizing_events SizingActions.events()
 
   @flush_ms 250
   @steps_poll_ms 10_000
@@ -37,6 +39,7 @@ defmodule CrewWeb.JobLive.Show do
      |> assign(:page_title, job.name)
      |> assign(attempt: attempt, pending: [], flush: nil, reload: false, index_due: false)
      |> assign(now: DateTime.utc_now(), shown: nil, polling: false)
+     |> SizingActions.mount()
      |> load(job)
      |> start_polling()}
   end
@@ -80,6 +83,7 @@ defmodule CrewWeb.JobLive.Show do
       metrics: if(vm, do: Metrics.vm_series(vm.id), else: []),
       sizing: sizing,
       sizing_issue: sizing_issue(socket.assigns.attempt, job, sizing),
+      sizing_dismissal: Sizing.dismissal(job, sizing),
       durations: Sizing.durations(job),
       status: JobStatus.of(job, DateTime.utc_now())
     )
@@ -237,7 +241,24 @@ defmodule CrewWeb.JobLive.Show do
     end
   end
 
+  def handle_event(event, params, socket) when event in @sizing_events do
+    case allowed(socket) do
+      :ok -> SizingActions.handle(event, params, socket, &reload_sizing/1)
+      {:error, _} -> {:noreply, push_navigate(socket, to: ~p"/runs")}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp reload_sizing(%{assigns: %{attempt: attempt, job: job}} = socket) do
+    sizing = Sizing.for_job(job)
+
+    assign(socket,
+      sizing: sizing,
+      sizing_issue: sizing_issue(attempt, job, sizing),
+      sizing_dismissal: Sizing.dismissal(job, sizing)
+    )
+  end
 
   defp allowed(socket) do
     if Repos.can_read?(socket.assigns.current_scope, socket.assigns.job.repo_id),
@@ -640,6 +661,8 @@ defmodule CrewWeb.JobLive.Show do
               repo={@attempt.repo}
               workflow_path={@attempt.workflow_path}
               issue={@sizing_issue}
+              dismissal={@sizing_dismissal}
+              dismissing={@dismissing == @job.id}
             />
             <div
               :if={@durations != []}

@@ -4,13 +4,16 @@ defmodule Crew.Sizing do
   each job's latest runs (its summaries, §16.5) and the sizes its repo may
   use, and asks `Crew.Sizing.Rules`.
 
-  Display only. Nothing here changes placement, labels or sizes.
+  Display only. Nothing here changes placement, labels or sizes. Admins
+  can dismiss a hint (`dismiss/3`): it stays on its repo's page, marked,
+  and leaves the fleet's hints and totals.
   """
   import Ecto.Query
 
-  alias Crew.{Repo, Repos, Scope, Sizes}
+  alias Crew.{Audit, Repo, Repos, Scope, Sizes}
   alias Crew.Jobs.{Job, RunAttempt}
-  alias Crew.Sizing.{CriticalPath, Rules}
+  alias Crew.Sizing.{CriticalPath, Dismissal, Rules}
+  alias Crew.Sizing.Rules.Hint
 
   # Rows read per job: more than the rules' window, since only the runs
   # on the newest one's shape count.
@@ -97,14 +100,14 @@ defmodule Crew.Sizing do
 
     from(j in Job,
       where:
-        j.repo_id == ^job.repo_id and j.workflow_name == ^job.workflow_name and
-          j.name == ^job.name and j.classification == "ours" and j.gh_state == "completed" and
+        j.repo_id == ^job.repo_id and j.classification == "ours" and j.gh_state == "completed" and
           j.completed_at >= ^since and j.conclusion == "success" and not is_nil(j.vcpus) and
           not is_nil(j.memory_mib),
       order_by: [desc: j.completed_at, desc: j.id],
       limit: @history,
       select: map(j, [:vcpus, :memory_mib, :started_at, :completed_at])
     )
+    |> same_job(job)
     |> Repo.all()
   end
 
@@ -127,19 +130,170 @@ defmodule Crew.Sizing do
   @doc """
   Every job of `repo` that ran in the last 30 days and has a change to
   suggest, the most memory a run would free first, each with its newest
-  run (`job`) and that run's workflow file as GitHub gives it
-  (`workflow_path`, nil when Crew doesn't know it). Nothing for someone
-  who can't read the repo.
+  run (`job`), that run's workflow file as GitHub gives it
+  (`workflow_path`, nil when Crew doesn't know it), and its `dismissal`
+  (nil unless an admin dismissed it). Nothing for someone who can't read
+  the repo.
   """
   def for_repo(%Scope{} = scope, repo) do
     if Repos.can_read?(scope, repo.id) do
       [repo.id]
       |> recent_jobs(DateTime.add(DateTime.utc_now(), -@repo_days * 86_400))
       |> job_hints(sizes_for(repo))
+      |> put_dismissals(repo.id)
       |> Enum.sort_by(&{-&1.hint.saved_mib, &1.workflow_name || "", &1.name || ""})
     else
       []
     end
+  end
+
+  @doc """
+  Dismisses a job's hint (admins), with an optional `"reason"`: the hint
+  for the job's (repo, workflow, name) that the page showed, by its
+  `"kind"` and the shape it's from (`"vcpus"`, `"memory_mib"`), as a
+  dismiss form sends them. Dismissing it again keeps one, with the newer
+  reason. `{:error, :changed}` when the job's hint isn't that one any
+  more, on its page or in the lists: a form left open while a run came
+  in dismisses nothing.
+  """
+  def dismiss(%Scope{} = scope, job_id, %{} = shown) do
+    with :ok <- authorize(scope),
+         {:ok, job} <- fetch(Job, job_id),
+         {:ok, hint} <- still_shown(job, shown) do
+      {repo_id, workflow, name, vcpus, memory, kind} =
+        Dismissal.key(job.repo_id, job.workflow_name, job.name, hint.from, hint.kind)
+
+      %Dismissal{
+        repo_id: repo_id,
+        workflow_name: workflow,
+        job_name: name,
+        vcpus: vcpus,
+        memory_mib: memory,
+        kind: kind,
+        user_id: Scope.user_id(scope),
+        user_login: scope.user && scope.user.login
+      }
+      |> Dismissal.changeset(%{reason: shown["reason"]})
+      |> Repo.insert(
+        on_conflict: {:replace, [:reason, :user_id, :user_login, :updated_at]},
+        conflict_target: [:repo_id, :workflow_name, :job_name, :vcpus, :memory_mib, :kind],
+        returning: true
+      )
+      |> logged(scope, "sizing_hint.dismiss")
+    end
+  end
+
+  @doc "Brings a dismissed hint back (admins)."
+  def restore(%Scope{} = scope, dismissal_id) do
+    with :ok <- authorize(scope),
+         {:ok, dismissal} <- fetch(Dismissal, dismissal_id) do
+      dismissal |> Repo.delete() |> logged(scope, "sizing_hint.restore")
+    end
+  end
+
+  @doc "The dismissal of a job's hint (from `for_job/1`), for its page, or nil."
+  def dismissal(_job, nil), do: nil
+
+  def dismissal(%Job{} = job, %Hint{} = hint) do
+    {repo_id, workflow, name, vcpus, memory, kind} =
+      Dismissal.key(job.repo_id, job.workflow_name, job.name, hint.from, hint.kind)
+
+    Repo.get_by(Dismissal,
+      repo_id: repo_id,
+      workflow_name: workflow,
+      job_name: name,
+      vcpus: vcpus,
+      memory_mib: memory,
+      kind: kind
+    )
+  end
+
+  defp authorize(scope), do: if(Scope.admin?(scope), do: :ok, else: {:error, :unauthorized})
+
+  defp fetch(schema, id) do
+    with {:ok, id} <- Ecto.UUID.cast(id),
+         %{} = row <- Repo.get(schema, id) do
+      {:ok, row}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # The job's hint that matches what the page showed: its page's (from
+  # the job's latest runs) or the lists' (from those of the last 30 days).
+  defp still_shown(job, shown) do
+    key = {shown["kind"], int(shown["vcpus"]), int(shown["memory_mib"])}
+
+    [&for_job/1, &listed/1]
+    |> Enum.find_value(fn hint_of ->
+      case hint_of.(job) do
+        %Hint{kind: kind, from: from} = hint when kind != :fits ->
+          if {to_string(kind), from.vcpus, from.memory_mib} == key, do: hint
+
+        _ ->
+          nil
+      end
+    end)
+    |> case do
+      nil -> {:error, :changed}
+      hint -> {:ok, hint}
+    end
+  end
+
+  defp int(n) when is_integer(n), do: n
+
+  defp int(text) when is_binary(text) do
+    case Integer.parse(text) do
+      {n, ""} -> n
+      _ -> nil
+    end
+  end
+
+  defp int(_), do: nil
+
+  # A job's hint as the repo and fleet lists have it, or nil.
+  defp listed(%Job{} = job) do
+    case Repos.get(job.repo_id) do
+      nil ->
+        nil
+
+      repo ->
+        [job.repo_id]
+        |> recent_jobs(DateTime.add(DateTime.utc_now(), -@repo_days * 86_400), job)
+        |> job_hints(sizes_for(repo))
+        |> Enum.find_value(& &1.hint)
+    end
+  end
+
+  defp logged({:ok, %Dismissal{} = d} = ok, scope, action) do
+    repo = Repos.get(d.repo_id)
+
+    Audit.log(scope, action, d, %{
+      "repo" => repo && repo.full_name,
+      "job" => "#{d.workflow_name} · #{d.job_name}",
+      "kind" => d.kind,
+      "shape" => "#{d.vcpus} vCPU · #{Float.round(d.memory_mib / 1024, 1)} GiB",
+      "reason" => d.reason
+    })
+
+    ok
+  end
+
+  defp logged(error, _scope, _action), do: error
+
+  # Each hint with its dismissal, from those of `repo_ids` (or one), read
+  # at once. A hint's repo is its own `repo`, or the one repo.
+  defp put_dismissals(hints, repo_ids) do
+    dismissals =
+      from(d in Dismissal, where: d.repo_id in ^List.wrap(repo_ids))
+      |> Repo.all()
+      |> Map.new(&{Dismissal.key(&1), &1})
+
+    Enum.map(hints, fn h ->
+      repo_id = if h[:repo], do: h.repo.id, else: repo_ids
+      key = Dismissal.key(repo_id, h.workflow_name, h.name, h.hint.from, h.hint.kind)
+      Map.put(h, :dismissal, Map.get(dismissals, key))
+    end)
   end
 
   @doc """
@@ -149,7 +303,8 @@ defmodule Crew.Sizing do
   have changed over the week's runs: what they free, what they take (a
   larger or faster size), and the net. With each repo's share and every
   hint, the most freed first. `needs_more` counts the jobs whose hint is
-  a larger size.
+  a larger size. Dismissed hints count toward none of it; they're apart,
+  in `dismissed`, each with its `dismissal`.
 
   Archived repos' runs still count toward the week; only live repos get
   hints. Hints look at each job's runs over 30 days, and only runs whose
@@ -175,7 +330,7 @@ defmodule Crew.Sizing do
       |> recent_jobs(DateTime.add(now, -@repo_days * 86_400))
       |> Enum.group_by(& &1.repo_id)
 
-    hints =
+    {dismissed, hints} =
       for repo <- live,
           h <- job_hints(Map.get(by_repo, repo.id, []), sizes_for(repo, sizes)) do
         key = {repo.id, h.workflow_name, h.name, h.hint.from.vcpus, h.hint.from.memory_mib}
@@ -185,9 +340,11 @@ defmodule Crew.Sizing do
           freed_gib_h: h.hint.saved_mib * Map.get(seconds, key, 0) / @mib_hour
         })
       end
+      |> put_dismissals(Enum.map(live, & &1.id))
       |> Enum.sort_by(
         &{-&1.freed_gib_h, &1.repo.full_name, &1.workflow_name || "", &1.name || ""}
       )
+      |> Enum.split_with(& &1.dismissal)
 
     changes = Enum.group_by(hints, & &1.repo.id)
     week_by_repo = Enum.group_by(week, & &1.repo_id)
@@ -212,7 +369,8 @@ defmodule Crew.Sizing do
         used_gib_h: gib_hours(week, & &1.peak_mem_mib),
         needs_more: Enum.count(hints, &(&1.hint.kind == :larger)),
         repos: Enum.sort_by(rows, &{-&1.net_gib_h, -&1.reserved_gib_h, &1.repo.full_name}),
-        hints: hints
+        hints: hints,
+        dismissed: dismissed
       },
       change(hints)
     )
@@ -270,10 +428,12 @@ defmodule Crew.Sizing do
   # Each job's latest finished runs (at most @history) in these repos
   # since `since`, newest first: only the fields hints and links read
   # (with the run's workflow file), and the limit applied in the
-  # database, since a busy repo runs thousands of jobs a month.
-  defp recent_jobs([], _since), do: []
+  # database, since a busy repo runs thousands of jobs a month. Only
+  # those of `job`'s (workflow, name), given one.
+  defp recent_jobs(repo_ids, since, job \\ nil)
+  defp recent_jobs([], _since, _job), do: []
 
-  defp recent_jobs(repo_ids, since) do
+  defp recent_jobs(repo_ids, since, job) do
     ranked =
       from(j in Job,
         where:
@@ -287,6 +447,7 @@ defmodule Crew.Sizing do
         ],
         select: %{id: j.id, rank: over(row_number(), :per_job)}
       )
+      |> then(&if(job, do: same_job(&1, job), else: &1))
 
     from(j in Job,
       join: r in subquery(ranked),
@@ -330,12 +491,12 @@ defmodule Crew.Sizing do
   defp history(%Job{} = job) do
     from(j in Job,
       where:
-        j.repo_id == ^job.repo_id and j.workflow_name == ^job.workflow_name and
-          j.name == ^job.name and j.classification == "ours" and j.gh_state == "completed",
+        j.repo_id == ^job.repo_id and j.classification == "ours" and j.gh_state == "completed",
       order_by: [desc: j.completed_at, desc: j.id],
       limit: @history,
       select: map(j, ^@run_fields)
     )
+    |> same_job(job)
     |> Repo.all()
     |> Enum.map(&run/1)
     |> then(&hd(trace([&1])))
@@ -386,6 +547,14 @@ defmodule Crew.Sizing do
     |> Map.take(@run_fields)
     |> Map.put(:duration_s, duration(job.started_at, job.completed_at))
   end
+
+  # The runs of `job`'s (workflow, name), either of which GitHub may
+  # leave out: SQL's `=` never matches a null.
+  defp same_job(query, job),
+    do: query |> same(:workflow_name, job.workflow_name) |> same(:name, job.name)
+
+  defp same(query, field, nil), do: where(query, [j], is_nil(field(j, ^field)))
+  defp same(query, field, value), do: where(query, [j], field(j, ^field) == ^value)
 
   defp duration(%DateTime{} = a, %DateTime{} = b), do: DateTime.diff(b, a)
   defp duration(_a, _b), do: nil
