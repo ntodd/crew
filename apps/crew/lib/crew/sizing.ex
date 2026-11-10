@@ -9,7 +9,7 @@ defmodule Crew.Sizing do
   import Ecto.Query
 
   alias Crew.{Repo, Repos, Scope, Sizes}
-  alias Crew.Jobs.Job
+  alias Crew.Jobs.{Job, RunAttempt}
   alias Crew.Sizing.{CriticalPath, Rules}
 
   # Rows read per job: more than the rules' window, since only the runs
@@ -117,7 +117,9 @@ defmodule Crew.Sizing do
   @doc """
   Every job of `repo` that ran in the last 30 days and has a change to
   suggest, the most memory a run would free first, each with its newest
-  run (`job`). Nothing for someone who can't read the repo.
+  run (`job`) and that run's workflow file as GitHub gives it
+  (`workflow_path`, nil when Crew doesn't know it). Nothing for someone
+  who can't read the repo.
   """
   def for_repo(%Scope{} = scope, repo) do
     if Repos.can_read?(scope, repo.id) do
@@ -256,9 +258,9 @@ defmodule Crew.Sizing do
   end
 
   # Each job's latest finished runs (at most @history) in these repos
-  # since `since`, newest first: only the fields hints and links read, and
-  # the limit applied in the database, since a busy repo runs thousands of
-  # jobs a month.
+  # since `since`, newest first: only the fields hints and links read
+  # (with the run's workflow file), and the limit applied in the
+  # database, since a busy repo runs thousands of jobs a month.
   defp recent_jobs([], _since), do: []
 
   defp recent_jobs(repo_ids, since) do
@@ -279,14 +281,16 @@ defmodule Crew.Sizing do
     from(j in Job,
       join: r in subquery(ranked),
       on: r.id == j.id and r.rank <= ^@history,
+      left_join: a in RunAttempt,
+      on: a.id == j.run_attempt_id,
       order_by: [desc: j.completed_at, desc: j.id],
-      select: map(j, ^@job_fields)
+      select: merge(map(j, ^@job_fields), %{workflow_path: a.workflow_path})
     )
     |> Repo.all()
   end
 
   # A hint for each (workflow, name) among `jobs` (newest first) with a
-  # change to suggest, with its newest run.
+  # change to suggest, with its newest run and that run's workflow file.
   defp job_hints(jobs, sizes) do
     groups = jobs |> Enum.group_by(&{&1.workflow_name, &1.name}) |> Map.values()
 
@@ -297,7 +301,15 @@ defmodule Crew.Sizing do
     |> Enum.flat_map(fn {runs, [newest | _]} ->
       case Rules.hint(runs, sizes) do
         %{kind: kind} = hint when kind != :fits ->
-          [%{workflow_name: newest.workflow_name, name: newest.name, hint: hint, job: newest}]
+          [
+            %{
+              workflow_name: newest.workflow_name,
+              name: newest.name,
+              workflow_path: newest.workflow_path,
+              hint: hint,
+              job: newest
+            }
+          ]
 
         _ ->
           []

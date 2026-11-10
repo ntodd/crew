@@ -5,9 +5,10 @@ defmodule CrewWeb.SizingComponents do
   """
   use Phoenix.Component
 
-  import CrewWeb.CrewComponents, only: [gib: 1]
+  import CrewWeb.CrewComponents, only: [gib: 1, gh_link: 1]
 
   alias Crew.Sizing.Rules.Hint
+  alias CrewWeb.GitHub
 
   @doc "A hint's headline."
   def title(%Hint{kind: :smaller, to: to}), do: "Try #{to.name}"
@@ -62,10 +63,17 @@ defmodule CrewWeb.SizingComponents do
   attr :hint, Hint, required: true
   attr :job, :any, default: nil, doc: "a job of the hint's, for the label's arch"
   attr :admin, :boolean, default: false
+  attr :repo, :any, default: nil, doc: "the job's repo, for the workflow file's link"
+  attr :workflow_path, :string, default: nil, doc: "the run's `path`, as GitHub gives it"
 
-  @doc "A hint in full: the headline, the move, why, and how."
+  @doc "A hint in full: the headline, the move, why, and how: the `runs-on` line and its file."
   def hint_details(assigns) do
-    assigns = assign(assigns, label: label(assigns.hint.to, assigns.job))
+    assigns =
+      assign(assigns,
+        label: label(assigns.hint.to, assigns.job),
+        file: GitHub.workflow_file(assigns.workflow_path),
+        file_url: assigns.repo && GitHub.workflow_url(assigns.repo, assigns.workflow_path)
+      )
 
     ~H"""
     <div class="space-y-3">
@@ -78,10 +86,12 @@ defmodule CrewWeb.SizingComponents do
       <ul class="space-y-1 text-xs text-ink-2">
         <li :for={reason <- @hint.reasons}>{reason}</li>
       </ul>
-      <code
-        :if={@label}
-        class="block w-fit rounded-md border border-line bg-subtle px-2 py-1 font-mono text-xs text-ink"
-      >runs-on: {@label}</code>
+      <div :if={@label} class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <code class="block w-fit rounded-md border border-line bg-subtle px-2 py-1 font-mono text-xs text-ink">runs-on: {@label}</code>
+        <p :if={@file_url} class="min-w-0 text-xs text-ink-3">
+          in <.gh_link href={@file_url} class="break-all font-mono text-ink-2">{@file}</.gh_link>
+        </p>
+      </div>
       <p :if={@hint.kind == :custom} class="text-xs text-ink-3">
         <%= if @admin do %>
           Add it on <.link navigate="/admin/sizes" class="underline underline-offset-2 hover:text-ink">Sizes & labels</.link>, then use it in the job's <code class="font-mono">runs-on</code>.

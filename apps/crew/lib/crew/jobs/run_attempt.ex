@@ -8,6 +8,9 @@ defmodule Crew.Jobs.RunAttempt do
     field :run_attempt, :integer
     field :run_number, :integer
     field :workflow_name, :string
+    # GitHub's `path`: `.github/workflows/ci.yml`, or `dynamic/...` for
+    # workflows GitHub runs itself.
+    field :workflow_path, :string
     field :event, :string
     field :head_branch, :string
     field :head_sha, :string

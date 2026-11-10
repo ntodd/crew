@@ -3,7 +3,7 @@ defmodule Crew.JobsTest do
   use Oban.Testing, repo: Crew.Repo
 
   alias Crew.Jobs
-  alias Crew.Jobs.Job
+  alias Crew.Jobs.{Job, RunAttempt}
 
   setup do
     repo = repo_fixture(name: "app")
@@ -378,6 +378,51 @@ defmodule Crew.JobsTest do
       assert job.run_attempt_id == attempt.id
       assert job.blocked_reason == nil
       assert job.classification == "ours"
+    end
+
+    test "a run attempt keeps its workflow file", %{repo: repo} do
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 74, path: ".github/workflows/e2e.yml")
+        )
+
+      assert attempt.workflow_path == ".github/workflows/e2e.yml"
+    end
+
+    test "an attempt seen without its file gets it from a later event, and keeps it", %{
+      repo: repo
+    } do
+      {:ok, attempt} = Jobs.handle_workflow_run(workflow_run_payload(repo, id: 75, path: nil))
+      assert attempt.workflow_path == nil
+
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(workflow_run_payload(repo, id: 75, status: "in_progress"))
+
+      assert attempt.workflow_path == ".github/workflows/ci.yml"
+
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo,
+            id: 75,
+            status: "completed",
+            conclusion: "success",
+            path: nil
+          )
+        )
+
+      assert attempt.workflow_path == ".github/workflows/ci.yml"
+      assert Repo.get!(RunAttempt, attempt.id).workflow_path == ".github/workflows/ci.yml"
+    end
+
+    test "a finished attempt without its file gets it from an event no later than it", %{
+      repo: repo
+    } do
+      done = [id: 76, status: "completed", conclusion: "success"]
+      {:ok, _} = Jobs.handle_workflow_run(workflow_run_payload(repo, [path: nil] ++ done))
+      {:ok, attempt} = Jobs.handle_workflow_run(workflow_run_payload(repo, done))
+
+      assert attempt.workflow_path == ".github/workflows/ci.yml"
+      assert Repo.get!(RunAttempt, attempt.id).workflow_path == ".github/workflows/ci.yml"
     end
 
     test "a run attempt seen first links jobs as they arrive", %{repo: repo} do

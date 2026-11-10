@@ -622,6 +622,8 @@ defmodule CrewWeb.JobLive.Show do
               hint={@sizing}
               job={@job}
               admin={Scope.admin?(@current_scope)}
+              repo={@attempt.repo}
+              workflow_path={@attempt.workflow_path}
             />
             <div
               :if={@durations != []}

@@ -626,8 +626,13 @@ the repo's jobs that GitHub still has queued or waiting.
   the job finishes, and the repo page lists its jobs' hints. They come
   from the last 10 finished runs of the same `(repo, workflow, job name)`
   on the shape the newest one ran on (none if it has no shape), from
-  summaries a newer guest wrote (§16.5). Memory and CPU are sized separately, since memory is what
-  limits placement (§8.3):
+  summaries a newer guest wrote (§16.5). Next to the `runs-on` line, the
+  hint links the newest run's workflow file on the repo's default branch:
+  GitHub's `path` for the run, kept on the attempt, when it's a file in
+  `.github/workflows/` (not a `dynamic/...` workflow GitHub runs itself),
+  without any `@ref` after it. A job in a reusable workflow has its
+  `runs-on` in the called file, so the link is where to start. Memory and
+  CPU are sized separately, since memory is what limits placement (§8.3):
   - **larger** when any run had a process killed for memory, most stalled
     on memory, or one peaked at 90% of its memory: never fewer vCPUs, and
     the disk the runs used (adding vCPUs when it's also waiting on a CPU);
@@ -3648,8 +3653,9 @@ sizes(id, name unique, vcpus, memory_mib, disk_gib, disk_iops null,
       disk_bandwidth_mbps null, net_bandwidth_mbps null, is_default, retired_at)
 label_aliases(id, labels [string] unique (sorted), size_id, arch enum(any, x64, arm64))
 
-run_attempts(id, repo_id, github_run_id, run_attempt, run_number, workflow_name, event,
-             head_branch, head_sha, head_commit_message, actor_login, actor_id,
+run_attempts(id, repo_id, github_run_id, run_attempt, run_number, workflow_name,
+             workflow_path null,                     -- GitHub's `path` (§7.5)
+             event, head_branch, head_sha, head_commit_message, actor_login, actor_id,
              pull_requests map, head_repo_full_name, is_fork bool null, status,
              conclusion, gh_created_at, gh_updated_at)
              unique(github_run_id, run_attempt)

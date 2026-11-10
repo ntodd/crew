@@ -407,6 +407,27 @@ defmodule CrewWeb.JobLiveTest do
       assert has_element?(view, "#sizing", "Try xs")
       assert has_element?(view, "#sizing", "frees 6.0 GiB a run")
       assert has_element?(view, "#sizing code", "runs-on: crew-xs")
+
+      # The run's workflow file, where the line goes.
+      assert has_element?(
+               view,
+               ~s(#sizing a[href="#{CrewWeb.GitHub.repo_url(repo)}/blob/main/.github/workflows/ci.yml"]),
+               ".github/workflows/ci.yml"
+             )
+    end
+
+    test "no file link for a run whose workflow isn't a file", %{conn: conn, repo: repo} do
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 4343, path: "dynamic/dependabot/dependabot-updates")
+        )
+
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4343, id: 92)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4343/attempts/1/jobs/92")
+      assert has_element?(view, "#sizing code", "runs-on: crew-xs")
+      refute has_element?(view, "#sizing a[href*='/blob/']")
     end
 
     test "a custom size tells an admin where to add it", %{conn: conn, repo: repo} do

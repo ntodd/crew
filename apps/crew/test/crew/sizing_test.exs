@@ -165,6 +165,23 @@ defmodule Crew.SizingTest do
              ] = Sizing.for_repo(admin, repo)
     end
 
+    test "each hint has its newest run's workflow file, when Crew knows it", %{repo: repo} do
+      finished_n(repo, 4, name: "lint")
+
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 5151, path: ".github/workflows/lint.yml")
+        )
+
+      finished(repo, name: "lint", run_id: 5151)
+      hints = Sizing.for_repo(Scope.for_user(user_fixture(role: "admin")), repo)
+
+      assert %{workflow_path: ".github/workflows/lint.yml"} =
+               Enum.find(hints, &(&1.name == "lint"))
+
+      assert %{workflow_path: nil} = Enum.find(hints, &(&1.name == "test"))
+    end
+
     test "a job's history is its 30 newest runs, as on the job page", %{repo: repo} do
       # 5 runs on m, then 30 on l, then the newest back on m: the 30 newest
       # hold one run on m, too few for a hint.

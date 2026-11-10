@@ -128,6 +128,7 @@ defmodule Crew.Fixtures do
         "run_attempt" => Map.get(attrs, :run_attempt, 1),
         "run_number" => Map.get(attrs, :run_number, 12),
         "name" => Map.get(attrs, :name, "CI"),
+        "path" => Map.get(attrs, :path, ".github/workflows/ci.yml"),
         "event" => Map.get(attrs, :event, "push"),
         "status" => Map.get(attrs, :status, "queued"),
         "conclusion" => Map.get(attrs, :conclusion),

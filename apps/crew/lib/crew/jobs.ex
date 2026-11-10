@@ -549,6 +549,7 @@ defmodule Crew.Jobs do
       run_attempt: run["run_attempt"] || 1,
       run_number: run["run_number"],
       workflow_name: run["name"],
+      workflow_path: run["path"],
       event: run["event"],
       head_branch: run["head_branch"],
       head_sha: run["head_sha"],
@@ -594,6 +595,7 @@ defmodule Crew.Jobs do
         from a in RunAttempt,
           where: a.github_run_id == ^row.github_run_id and a.run_attempt == ^row.run_attempt
       )
+      |> fill_workflow_path(row.workflow_path)
 
     settle_attempt_jobs(repo, attempt)
     Phoenix.PubSub.broadcast(Crew.PubSub, "jobs", {:run_changed, attempt.id})
@@ -601,6 +603,20 @@ defmodule Crew.Jobs do
     Phoenix.PubSub.broadcast(Crew.PubSub, repo_topic(attempt.repo_id), {:run_changed, attempt.id})
     {:ok, attempt}
   end
+
+  # A run's workflow file never changes, so an attempt seen without it
+  # (from before Crew kept it) takes it from any later event, whatever
+  # its status: the rank gate above is for the run's state.
+  defp fill_workflow_path(%RunAttempt{workflow_path: nil} = attempt, path) when is_binary(path) do
+    Repo.update_all(
+      from(a in RunAttempt, where: a.id == ^attempt.id and is_nil(a.workflow_path)),
+      set: [workflow_path: path]
+    )
+
+    %{attempt | workflow_path: path}
+  end
+
+  defp fill_workflow_path(attempt, _path), do: attempt
 
   defp pull_request(pr) do
     %{
