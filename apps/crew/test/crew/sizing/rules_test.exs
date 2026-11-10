@@ -240,6 +240,62 @@ defmodule Crew.Sizing.RulesTest do
     end
   end
 
+  describe "the critical path" do
+    @starved [cpu_pressure_pct: 40.0, cpu_excess: [1800.0, 1200.0, 600.0]]
+
+    test "more vCPUs for a starved job on its run's critical path, saying so" do
+      runs = runs(4, [critical: true] ++ @starved) ++ runs(1, [critical: false] ++ @starved)
+
+      assert %Hint{kind: :faster, to: @l, reasons: [_, path]} = Rules.hint(runs, @sizes)
+      assert path =~ "on its run's critical path in 4 of the 5 runs where it waited"
+    end
+
+    test "none for one off it: they'd take capacity without finishing the run sooner" do
+      runs = runs(4, [critical: false] ++ @starved) ++ runs(1, [critical: true] ++ @starved)
+
+      assert %Hint{kind: kind, reasons: reasons} = Rules.hint(runs, @sizes)
+      refute kind == :faster
+
+      assert Enum.any?(
+               reasons,
+               &(&1 =~ "off its run's critical path in 4 of the 5 runs where it waited")
+             )
+    end
+
+    test "counts the starved runs whose path is known, and as before when none is" do
+      runs =
+        runs(3, [critical: true] ++ @starved) ++ runs(2, @starved) ++ runs(5, critical: false)
+
+      assert %Hint{kind: :faster, reasons: [_, path]} = Rules.hint(runs, @sizes)
+      assert path =~ "in 3 of the 3 runs where it waited that Crew could trace"
+
+      assert %Hint{kind: :faster, reasons: [_]} = Rules.hint(runs(5, @starved), @sizes)
+    end
+
+    test "fewer than 3 traced starved runs don't decide it" do
+      runs = runs(2, [critical: false] ++ @starved) ++ runs(3, @starved)
+      assert %Hint{kind: :faster, reasons: [_]} = Rules.hint(runs, @sizes)
+    end
+
+    test "a larger size adds vCPUs only on the path" do
+      sizes = [@m, %{name: "m-plus", vcpus: 4, memory_mib: 12_288, disk_gib: 60}, @xl]
+      on = run([peak_mem_mib: 7400, critical: true] ++ @starved)
+      off = %{on | critical: false}
+
+      assert %Hint{kind: :larger, to: @xl} = Rules.hint([on, on, on], sizes)
+
+      assert %Hint{kind: :larger, to: %{name: "m-plus"}, reasons: [_, why]} =
+               Rules.hint([off, off, off], sizes)
+
+      assert why =~ "off its run's critical path"
+    end
+
+    test "says nothing of the path for a job that isn't starved" do
+      assert %Hint{reasons: reasons} = Rules.hint(runs(5, critical: false), @sizes)
+      refute Enum.any?(reasons, &(&1 =~ "critical path"))
+    end
+  end
+
   describe "the runs that count" do
     test "only those on the shape the newest run used" do
       # It moved from l to m: l's runs, peaks and all, don't count.

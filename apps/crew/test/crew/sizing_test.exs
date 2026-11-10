@@ -71,6 +71,71 @@ defmodule Crew.SizingTest do
     end
   end
 
+  describe "the critical path" do
+    @starved [cpu_pressure_pct: 40.0, cpu_excess: [1800.0, 1200.0, 600.0]]
+
+    # A run of CI with a starved 10-minute Crew job, test, and a
+    # GitHub-hosted e2e that takes `e2e_s`, both queued at the start.
+    defp starved_run(repo, i, e2e_s) do
+      run_id = unique()
+      started = hours_ago(50 - i)
+      {:ok, _} = Jobs.handle_workflow_run(workflow_run_payload(repo, id: run_id))
+
+      {:ok, _} =
+        Jobs.handle_workflow_job(
+          workflow_job_payload(repo,
+            id: unique(),
+            run_id: run_id,
+            name: "e2e",
+            labels: ["ubuntu-latest"],
+            status: "completed",
+            conclusion: "success",
+            created_at: DateTime.to_iso8601(started),
+            started_at: DateTime.to_iso8601(started),
+            completed_at: DateTime.to_iso8601(DateTime.add(started, e2e_s))
+          )
+        )
+
+      finished(
+        repo,
+        [run_id: run_id, created_at: DateTime.to_iso8601(started), started_at: started] ++
+          @starved
+      )
+    end
+
+    test "more vCPUs for a starved job that sets its runs' length", %{repo: repo} do
+      jobs = for i <- 1..5, do: starved_run(repo, i, 60)
+
+      assert %Hint{kind: :faster, reasons: [_, path]} = Sizing.for_job(List.last(jobs))
+      assert path =~ "on its run's critical path in 5 of the 5 runs where it waited"
+
+      assert [%{name: "test", hint: %Hint{kind: :faster}}] =
+               Sizing.for_repo(Scope.for_user(user_fixture(role: "admin")), repo)
+    end
+
+    test "none for one that finishes while another job is still going", %{repo: repo} do
+      jobs = for i <- 1..5, do: starved_run(repo, i, 1200)
+
+      assert %Hint{kind: kind, reasons: reasons} = Sizing.for_job(List.last(jobs))
+      refute kind == :faster
+
+      assert Enum.any?(
+               reasons,
+               &(&1 =~ "off its run's critical path in 5 of the 5 runs where it waited")
+             )
+
+      assert [%{name: "test", hint: %Hint{kind: kind}}] =
+               Sizing.fleet(Scope.for_user(user_fixture(role: "admin"))).hints
+
+      refute kind == :faster
+    end
+
+    test "as before for runs Crew can't trace", %{repo: repo} do
+      jobs = finished_n(repo, 5, @starved)
+      assert %Hint{kind: :faster, reasons: [_]} = Sizing.for_job(List.last(jobs))
+    end
+  end
+
   describe "for_repo/2" do
     setup %{repo: repo} do
       finished_n(repo, 5)

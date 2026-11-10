@@ -10,7 +10,7 @@ defmodule Crew.Sizing do
 
   alias Crew.{Repo, Repos, Scope, Sizes}
   alias Crew.Jobs.Job
-  alias Crew.Sizing.Rules
+  alias Crew.Sizing.{CriticalPath, Rules}
 
   # Rows read per job: more than the rules' window, since only the runs
   # on the newest one's shape count.
@@ -24,6 +24,8 @@ defmodule Crew.Sizing do
   @mib_hour 1024 * 3600
 
   @run_fields [
+    :id,
+    :run_attempt_id,
     :conclusion,
     :vcpus,
     :memory_mib,
@@ -40,7 +42,7 @@ defmodule Crew.Sizing do
   ]
 
   @job_fields @run_fields ++
-                [:id, :repo_id, :workflow_name, :name, :github_id, :github_run_id, :run_attempt]
+                [:repo_id, :workflow_name, :name, :github_id, :github_run_id, :run_attempt]
 
   @doc """
   The hint for a finished Crew job, from the latest runs of the same
@@ -286,12 +288,16 @@ defmodule Crew.Sizing do
   # A hint for each (workflow, name) among `jobs` (newest first) with a
   # change to suggest, with its newest run.
   defp job_hints(jobs, sizes) do
-    jobs
-    |> Enum.group_by(&{&1.workflow_name, &1.name})
-    |> Enum.flat_map(fn {{workflow, name}, [newest | _] = runs} ->
-      case runs |> Enum.map(&run/1) |> Rules.hint(sizes) do
+    groups = jobs |> Enum.group_by(&{&1.workflow_name, &1.name}) |> Map.values()
+
+    groups
+    |> Enum.map(fn group -> Enum.map(group, &run/1) end)
+    |> trace()
+    |> Enum.zip(groups)
+    |> Enum.flat_map(fn {runs, [newest | _]} ->
+      case Rules.hint(runs, sizes) do
         %{kind: kind} = hint when kind != :fits ->
-          [%{workflow_name: workflow, name: name, hint: hint, job: newest}]
+          [%{workflow_name: newest.workflow_name, name: newest.name, hint: hint, job: newest}]
 
         _ ->
           []
@@ -310,6 +316,47 @@ defmodule Crew.Sizing do
     )
     |> Repo.all()
     |> Enum.map(&run/1)
+    |> then(&hd(trace([&1])))
+  end
+
+  # Marks the runs a hint counts that waited on a CPU, in each job's runs
+  # (`groups`), with whether they were on their run attempt's critical
+  # path (`critical`; absent when that can't be told): the hints that add
+  # vCPUs ask. Reads those attempts' jobs only.
+  defp trace(groups) do
+    paths =
+      paths(
+        for runs <- groups,
+            r <- Rules.counted_runs(runs),
+            Rules.starved?(r),
+            r.run_attempt_id,
+            uniq: true,
+            do: r.run_attempt_id
+      )
+
+    for runs <- groups do
+      Enum.map(runs, fn r ->
+        case Map.get(paths, r.run_attempt_id) do
+          %MapSet{} = path -> Map.put(r, :critical, MapSet.member?(path, r.id))
+          nil -> r
+        end
+      end)
+    end
+  end
+
+  # Each run attempt's critical path, by id, a chunk of attempts a query.
+  defp paths(attempt_ids) do
+    attempt_ids
+    |> Enum.chunk_every(500)
+    |> Enum.flat_map(fn ids ->
+      from(j in Job,
+        where: j.run_attempt_id in ^ids,
+        select: map(j, [:id, :run_attempt_id, :queued_at, :started_at, :completed_at])
+      )
+      |> Repo.all()
+    end)
+    |> Enum.group_by(& &1.run_attempt_id)
+    |> Map.new(fn {attempt, jobs} -> {attempt, CriticalPath.ids(jobs)} end)
   end
 
   defp run(job) do

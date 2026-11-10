@@ -154,6 +154,36 @@ test("the right-sizing page: the week's memory, each repo's share, every hint", 
   await page.setViewportSize({width: 1440, height: 900})
 })
 
+test("more vCPUs for a starved job on its runs' critical path, and why not for one off it", async ({page}) => {
+  await signIn(page)
+  await openRepo(page)
+  await page.getByRole("link", {name: "Nightly · integration"}).click()
+  await connected(page)
+
+  let panel = page.locator("#sizing")
+  await expect(panel).toContainText("Could run faster on m")
+  await expect(panel).toContainText("It was on its run's critical path in 6 of the 6 runs where it waited")
+  await shot(page, layer, "job-faster")
+
+  // Release · docs: e2e/seeds/sizing.exs's last runs.
+  await page.goto("/runs/7790001/attempts/1/jobs/8890001")
+  await connected(page)
+  panel = page.locator("#sizing")
+  await expect(panel).toContainText("m fits")
+  await expect(panel).toContainText("off its run's critical path in 5 of the 5 runs where it waited")
+  await expect(panel).not.toContainText("Could run faster")
+  await shot(page, layer, "job-off-path")
+  await setTheme(page, "dark")
+  await shot(page, layer, "job-off-path-dark")
+  await setTheme(page, "light")
+
+  await page.setViewportSize({width: 390, height: 844})
+  await page.reload()
+  await connected(page)
+  await shot(page, layer, "job-off-path-mobile")
+  await page.setViewportSize({width: 1440, height: 900})
+})
+
 // e2e/seeds/sizing.exs makes 26 runs before CI · lint's, the newest of
 // which is its 27th.
 test("a job that moved sizes shows its time on each", async ({page}) => {

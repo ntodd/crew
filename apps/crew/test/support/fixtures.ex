@@ -243,7 +243,7 @@ defmodule Crew.Fixtures do
     attrs = Map.new(attrs)
     # Recent, since repo pages look at the last 30 days.
     started = Map.get_lazy(attrs, :started_at, fn -> ago(86_400) end)
-    hook = [:name, :workflow_name, :conclusion, :run_id, :id, :labels]
+    hook = [:name, :workflow_name, :conclusion, :run_id, :id, :labels, :created_at]
 
     {:ok, job} =
       Crew.Jobs.handle_workflow_job(

@@ -633,7 +633,23 @@ the repo's jobs that GitHub still has queued or waiting.
     the disk the runs used (adding vCPUs when it's also waiting on a CPU);
   - **faster** when most runs (3 or more) had tasks waiting for a CPU a
     quarter of the time, to the smallest size with more vCPUs that holds
-    its memory and disk (and no less memory if a run stalled on it);
+    its memory and disk (and no less memory if a run stalled on it), as
+    long as the job is on its run's **critical path**: a run takes as
+    long as its longest chain of dependent jobs, so more vCPUs off that
+    chain take capacity and finish nothing sooner. GitHub's jobs don't
+    say what they `needs:`, so Crew infers the chain from the run
+    attempt's jobs, Crew's or not: GitHub queues a job (`created_at`)
+    in the second its last dependency finished. The path runs back from
+    the jobs that finished last, through the jobs that finished as each
+    one was queued (never after), to jobs queued at the run's start.
+    Jobs within 5% of the run (at least 2 s) of the path are on it too,
+    so matrix legs that finish together all are. A run with a job still
+    going, not yet linked to its attempt, or whose path stops short of
+    its start (a job queued when nothing had just finished) is unknown.
+    The job has to be on the path in at least half of its starved runs,
+    with 3 or more known; with fewer the hint is as before. Off the
+    path, the hint says so instead. The larger hint adds vCPUs on the
+    same terms;
   - **smaller**, after 5 complete successful runs (a final summary
     covering 80% of the run), to the allowed size with the least memory
     that holds the highest peak plus 25% (at least 512 MiB), the highest
