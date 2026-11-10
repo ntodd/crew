@@ -15,6 +15,7 @@ defmodule CrewWeb.JobLive.Show do
   require Logger
 
   alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Scope, Sizes, Sizing, VMs}
+  alias Crew.Jobs.CacheMisses
   alias CrewWeb.{JobStatus, SizingComponents}
 
   @flush_ms 250
@@ -59,6 +60,8 @@ defmodule CrewWeb.JobLive.Show do
     available = Enum.filter(["github", "live"], &available?(&1, job, vm))
     default = if "github" in available, do: "github", else: "live"
     source = if socket.assigns[:shown] in available, do: socket.assigns.shown, else: default
+    history = Jobs.recent_successes(job, CacheMisses.runs())
+    steps = steps(source, job, vm)
 
     assign(socket,
       job: job,
@@ -70,8 +73,9 @@ defmodule CrewWeb.JobLive.Show do
       sources: available,
       total: total(source, job, vm) || 0,
       index: index(source, job, vm),
-      steps: steps(source, job, vm),
-      usual: usual_durations(job),
+      steps: steps,
+      usual: usual_durations(history),
+      cache_misses: cache_misses(steps, history),
       metrics: if(vm, do: Metrics.vm_series(vm.id), else: []),
       sizing: Sizing.for_job(job),
       durations: Sizing.durations(job),
@@ -153,8 +157,8 @@ defmodule CrewWeb.JobLive.Show do
 
   # "usually X": each step's median over the last 10 successful runs of
   # the same job.
-  defp usual_durations(job) do
-    Jobs.recent_successes(job, 10)
+  defp usual_durations(history) do
+    history
     |> Enum.flat_map(fn j ->
       for s <- j.steps || [],
           d = duration(time(s["started_at"]), time(s["completed_at"])),
@@ -477,6 +481,15 @@ defmodule CrewWeb.JobLive.Show do
                       @usual[step.number]
                     )}</span>
                   </span>
+                  <span
+                    :if={miss = @cache_misses[step.number]}
+                    data-cache-miss
+                    title={"About #{JobStatus.format(miss.p50)} on each of the last #{miss.runs} successful runs, never under #{JobStatus.format(miss.fastest)}: its cache likely never hits."}
+                    class="mt-0.5 flex items-center gap-1 text-xs text-warning"
+                  >
+                    <.icon name="hero-arrow-down-tray-micro" class="size-3.5 shrink-0" />
+                    No cache hit in {miss.runs} runs
+                  </span>
                 </span>
               </button>
             </li>
@@ -662,6 +675,29 @@ defmodule CrewWeb.JobLive.Show do
     do: JobStatus.format(duration(from, step.completed_at || now))
 
   defp step_duration(_step, _now), do: "–"
+
+  # The steps, by number, that missed their cache on the job's recent
+  # runs, unless this run skipped one or it took under half as long:
+  # its cache hit this time.
+  defp cache_misses(steps, history) do
+    misses = CacheMisses.find(Enum.map(history, & &1.steps))
+
+    for {key, step} <- CacheMisses.keyed(steps),
+        miss = misses[key],
+        not hit?(step, miss),
+        into: %{},
+        do: {step.number, miss}
+  end
+
+  defp hit?(%{conclusion: "skipped"}, _miss), do: true
+
+  defp hit?(
+         %{status: "completed", started_at: %DateTime{} = a, completed_at: %DateTime{} = b},
+         miss
+       ),
+       do: duration(a, b) * 2 < miss.p50
+
+  defp hit?(_step, _miss), do: false
 
   defp phase_title(name, {:other, _}), do: "#{name}: runner started for another job"
   defp phase_title(name, s), do: "#{name}: #{JobStatus.format(s || 0)}"

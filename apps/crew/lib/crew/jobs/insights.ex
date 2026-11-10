@@ -15,11 +15,15 @@ defmodule Crew.Jobs.Insights do
   failed there and a later run of it on the same commit passed, within
   the window. A failure fixed by a new commit isn't flaky; neither is a
   pass followed by a failure.
+
+  A job's **cache misses** are its dependency steps that took about as
+  long on each of its last successful runs in the window
+  (`Crew.Jobs.CacheMisses`).
   """
   import Ecto.Query
 
   alias Crew.{Repo, Repos, Scope}
-  alias Crew.Jobs.{Job, RunAttempt}
+  alias Crew.Jobs.{CacheMisses, Job, RunAttempt}
   alias Crew.Repos.Repo, as: GitRepo
   alias Crew.Usage.Tally
 
@@ -43,13 +47,16 @@ defmodule Crew.Jobs.Insights do
   `totals` covers the window; `series` has one entry per UTC day, oldest
   first; `jobs` has one row per `(workflow_name, name)`, most minutes
   first, each with its `last` run; `flaky` lists the flaky jobs, most
-  flakes first. `totals.flaky_jobs` counts them.
+  flakes first. `totals.flaky_jobs` counts them. `cache_misses` has one
+  row per job and step, the slowest first, each with the `last` run that
+  had the step.
   """
   def for_repo(%Scope{} = scope, %GitRepo{} = repo, days, today \\ Date.utc_today())
       when days > 0 do
     if Repos.can_read?(scope, repo.id) do
       from = Date.add(today, 1 - days)
-      jobs = load(repo.id, DateTime.new!(from, ~T[00:00:00], "Etc/UTC"))
+      since = DateTime.new!(from, ~T[00:00:00], "Etc/UTC")
+      jobs = load(repo.id, since)
       flaky = flaky(jobs)
 
       %{
@@ -59,7 +66,8 @@ defmodule Crew.Jobs.Insights do
         totals: jobs |> totals() |> Map.put(:flaky_jobs, length(flaky)),
         series: series(jobs, from, today),
         jobs: by_job(jobs),
-        flaky: flaky
+        flaky: flaky,
+        cache_misses: cache_misses(repo.id, since)
       }
     end
   end
@@ -75,16 +83,21 @@ defmodule Crew.Jobs.Insights do
     Enum.at(sorted, max(ceil(p * length(sorted)) - 1, 0))
   end
 
+  # The jobs that count: ran on Crew, finished, in the window.
+  defp counted(repo_id, since) do
+    from j in Job,
+      where:
+        j.repo_id == ^repo_id and j.classification == "ours" and j.gh_state == "completed" and
+          not is_nil(j.started_at) and not is_nil(j.completed_at) and
+          not is_nil(j.runner_name) and j.runner_name != "" and
+          j.completed_at >= ^since
+  end
+
   defp load(repo_id, since) do
     Repo.all(
-      from j in Job,
+      from j in counted(repo_id, since),
         left_join: a in RunAttempt,
         on: a.id == j.run_attempt_id,
-        where:
-          j.repo_id == ^repo_id and j.classification == "ours" and j.gh_state == "completed" and
-            not is_nil(j.started_at) and not is_nil(j.completed_at) and
-            not is_nil(j.runner_name) and j.runner_name != "" and
-            j.completed_at >= ^since,
         select: %{
           github_id: j.github_id,
           github_run_id: j.github_run_id,
@@ -183,6 +196,55 @@ defmodule Crew.Jobs.Insights do
       }
     end)
     |> Enum.sort_by(&{-&1.flakes, &1.workflow_name || "", &1.name || ""})
+  end
+
+  # Each job's last successful runs, newest first, as many as
+  # CacheMisses looks at. Ranked by id alone, so only those runs' steps
+  # are read.
+  defp cache_misses(repo_id, since) do
+    ranked =
+      from j in counted(repo_id, since),
+        where: j.conclusion == "success",
+        select: %{
+          id: j.id,
+          rank:
+            over(row_number(),
+              partition_by: [j.workflow_name, j.name],
+              order_by: [desc: j.completed_at, desc: j.id]
+            )
+        }
+
+    Repo.all(
+      from r in subquery(ranked),
+        join: j in Job,
+        on: j.id == r.id,
+        where: r.rank <= ^CacheMisses.runs(),
+        order_by: [asc: r.rank],
+        select: %{
+          workflow_name: j.workflow_name,
+          name: j.name,
+          steps: j.steps,
+          github_id: j.github_id,
+          github_run_id: j.github_run_id,
+          run_attempt: j.run_attempt,
+          conclusion: j.conclusion,
+          completed_at: j.completed_at
+        }
+    )
+    |> Enum.group_by(&{&1.workflow_name, &1.name})
+    |> Enum.flat_map(fn {{workflow, name}, runs} ->
+      for {{step, _nth}, miss} <- CacheMisses.find(Enum.map(runs, & &1.steps)) do
+        miss
+        |> Map.delete(:run)
+        |> Map.merge(%{
+          workflow_name: workflow,
+          name: name,
+          step: step,
+          last: runs |> Enum.at(miss.run) |> ref()
+        })
+      end
+    end)
+    |> Enum.sort_by(&{-&1.p50, &1.workflow_name || "", &1.name || "", &1.step, &1.number || 0})
   end
 
   # The failures on one commit that a later run of the same job passed.

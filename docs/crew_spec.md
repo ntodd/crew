@@ -2866,6 +2866,35 @@ jobs on `(classification, gh_state, completed_at)`, samples on
   days after the day it was requested on, leaves that day as it was
   stored.
 
+### 16.7 Cache misses
+
+A dependency step that takes about as long on every run usually means
+its cache never hits. `Crew.Jobs.CacheMisses` finds them in a job's
+stored steps (GitHub's), over the job's last 10 successful runs:
+
+- **A dependency step** installs or fetches what the job needs, going by
+  its name: `mix deps.get` and `deps.compile`; `npm`, `yarn`, `pnpm`,
+  `bun` or `composer` `ci`/`install`; `bundle install`, `pip install`,
+  `poetry install`, `uv sync`, `go mod download`, `cargo fetch`; a
+  `setup-*` action or a step whose name starts "Set up" (not the
+  runner's "Set up job", nor Buildx or QEMU, which have nothing to
+  cache); a step named for dependencies or deps; and a cache's post step
+  (`Post Run actions/cache@v4`), which saves only on a miss. A cache's
+  restore isn't one: a miss is the restore's fast case.
+- **A step** is known by its name and which step of that name it is in
+  its run, so two installs with the same name stay apart.
+- **It misses its cache** when it ran in at least 5 of those runs, and
+  even its fastest took 15 s or more and at least half its p50. A cache
+  that hit even once would have made one run much faster. A skipped step
+  counts as a run of 0 s (the usual way to skip an install on a hit); a
+  failed or cancelled one doesn't count.
+- The job page marks the step (§17.6), unless this run skipped it or
+  its took under half the p50; the repo page lists them (§17.3), each
+  linked to the step on the newest run with a run of it that counts.
+
+Registry pulls aren't counted per job: on a vz box every VM reaches the
+cache through the Mac (§14.3), so the cache can't tell them apart.
+
 ## 17. UI
 
 ### 17.1 Foundations
@@ -3011,6 +3040,9 @@ The sidebar has:
     same commit, within the window; how many flakes in how many runs,
     linked to the last flaky run. A failure fixed by a new commit, or a
     pass followed by a failure, isn't flaky.
+  - **Cache misses** (§16.7): each job's dependency steps that miss
+    their cache, the slowest first, with their p50 and how many runs,
+    linked to the step on the last run that had it.
   - **Recent runs,** the latest 8, linking to Runs filtered to the repo.
   - right-sizing hints (§7.5);
   - **VM time** (§16.6): VM minutes, overhead, VMs and unused VMs, and
@@ -3116,6 +3148,8 @@ The sidebar has:
 **Layout:**
 - **Left: the steps.** Each shows an icon, its name, a live duration, and
   "usually X" (the median for that step over the last 10 successful runs).
+  A dependency step that misses its cache (§16.7) says "No cache hit in
+  N runs".
   The current step is highlighted, and clicking one scrolls the log to it.
 - **Top: the timing bar,** with the phases from §16.4 drawn to scale.
 - **Right, collapsible:**
