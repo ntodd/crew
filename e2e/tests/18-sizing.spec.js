@@ -61,6 +61,11 @@ test("the repo page lists its jobs' hints, the most memory freed first", async (
   await expect(page.locator("#sizing")).toContainText("Could run faster on m")
   await expect(page.locator("#sizing")).toContainText("Needs more memory: xl")
   await expect(page.locator("#sizing")).not.toContainText("lint")
+  // Each hint with a size to move to can become an issue; a custom one
+  // can't until the size exists.
+  await expect(rows.nth(0).getByRole("link", {name: "File issue"})).toHaveCount(0)
+  await expect(rows.nth(1).getByRole("link", {name: "File issue"})).toHaveAttribute("href", /^https:\/\/github\.com\/mona\/storefront\/issues\/new\?/)
+  await expect(rows.nth(1).getByRole("button", {name: "Copy as Markdown"})).toBeVisible()
   expect(await rowOverflows(page)).toEqual([])
 
   await shot(page, layer, "repo")
@@ -91,6 +96,28 @@ test("a job's page shows its hint, with the runs-on line to use", async ({page})
   const file = panel.getByRole("link", {name: ".github/workflows/ci.yml"})
   await expect(file).toHaveAttribute("href", "https://github.com/mona/storefront/blob/main/.github/workflows/ci.yml")
   await expect(file).toHaveAttribute("target", "_blank")
+
+  // An issue for the move: GitHub's form, filled in.
+  const issue = panel.getByRole("link", {name: "File issue"})
+  await expect(issue).toHaveAttribute("target", "_blank")
+  const url = new URL(await issue.getAttribute("href"))
+  expect(url.origin + url.pathname).toBe("https://github.com/mona/storefront/issues/new")
+  expect(url.searchParams.get("title")).toBe("Move CI · test to crew-xs")
+  const body = url.searchParams.get("body")
+  expect(body).toContain("```diff\n- runs-on: crew-m\n+ runs-on: crew-xs\n```")
+  expect(body).toContain("In [`.github/workflows/ci.yml`](https://github.com/mona/storefront/blob/main/.github/workflows/ci.yml).")
+  expect(body).toContain("- Memory peaked at")
+
+  // Or the same as Markdown, for a tracker that isn't GitHub.
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"])
+  // By id: the button's name changes while it says Copied.
+  const copy = page.locator("#sizing-issue-copy")
+  await expect(copy).toHaveText("Copy as Markdown")
+  await copy.click()
+  await expect(copy).toContainText("Copied")
+  const copied = await page.evaluate(() => navigator.clipboard.readText())
+  expect(copied).toBe(`# Move CI · test to crew-xs\n\n${body}`)
+  await expect(copy).toContainText("Copy as Markdown")
   await shot(page, layer, "job-smaller")
   await setTheme(page, "dark")
   await shot(page, layer, "job-smaller-dark")
@@ -107,6 +134,7 @@ test("a custom shape names what to add, and where", async ({page}) => {
   await expect(panel).toContainText("A custom size would fit")
   await expect(panel).toContainText("4 vCPU · 2.0 GiB · 20 GiB disk")
   await expect(panel.getByRole("link", {name: "Sizes & labels"})).toHaveAttribute("href", "/admin/sizes")
+  await expect(panel.getByRole("link", {name: "File issue"})).toHaveCount(0)
   await shot(page, layer, "job-custom")
 
   await page.setViewportSize({width: 390, height: 844})
@@ -140,6 +168,7 @@ test("the right-sizing page: the week's memory, each repo's share, every hint", 
   const hints = page.locator("#sizing-hints > li")
   await expect(hints).toHaveCount(4)
   await expect(hints.nth(0)).toContainText("mona/storefront")
+  await expect(page.locator("#sizing-hints").getByRole("link", {name: "File issue"})).toHaveCount(3)
   await expect(page.locator("#sizing-repo-rows")).toContainText("mona/storefront")
   expect(await rowOverflows(page)).toEqual([])
   await shot(page, layer, "fleet")

@@ -673,6 +673,22 @@ the repo's jobs that GitHub still has queued or waiting.
   check that a smaller size didn't slow it down: Crew counts reclaimable
   page cache as free, so a job that reads a lot can get slower on less
   memory without ever running out.
+- **Filing an issue:** a hint with a size to move to (smaller, faster, or
+  larger when an allowed size is larger) has a "File issue" link to
+  GitHub's new-issue form on the repo (`/issues/new?title=…&body=…`),
+  filled in. Whoever clicks it reads it on GitHub and files it as
+  themselves, so the App needs no permission for issues (§6.1). The
+  title is "Move `<workflow>` · `<job>` to `<label>`". The body has the
+  `runs-on` change as a diff: the job's labels, with its Crew label
+  swapped for the new size's (keeping its arch and `-spare`), or, for a
+  job on an alias (§7.3), the Crew label alone with the alias's arch.
+  Then the workflow file, both shapes and what a run frees or takes, the
+  hint's reasons, and the job's page on Crew, to check its time on each
+  size once the change lands. "Copy as Markdown" copies the same title,
+  as a heading, and body, for a tracker that isn't GitHub. Custom hints
+  (the size doesn't exist yet), larger ones without a size, and fits get
+  neither. Both are on the job page's hint and on each hint row of the
+  repo page and `/sizing`.
 - **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
   days, for the repos the viewer can read: the memory the runs reserved
   and the most they used, in GiB-hours (a VM's memory times how long it

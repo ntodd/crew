@@ -27,6 +27,16 @@ defmodule CrewWeb.GitHub do
   end
 
   @doc """
+  GitHub's form for a new issue on the repo, with its title and body
+  filled in. Spaces and `+` are escaped as %20 and %2B, so GitHub reads
+  neither as the other.
+  """
+  def new_issue_url(repo, title, body),
+    do:
+      "#{repo_url(repo)}/issues/new?" <>
+        URI.encode_query(%{"title" => title, "body" => body}, :rfc3986)
+
+  @doc """
   The workflow file in GitHub's `path`, without a ref after it; nil for
   one GitHub runs itself (`dynamic/...`), which isn't in the repo.
   GitHub only reads workflows directly in `.github/workflows/`, and a

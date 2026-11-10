@@ -43,6 +43,19 @@ defmodule CrewWeb.SizingLiveTest do
     {e2e_at, _} = :binary.match(hints, "Needs more memory")
     assert api_at < e2e_at
 
+    # Each hint can become an issue on its own repo.
+    assert has_element?(
+             view,
+             ~s(#sizing-hints a[href^="https://github.com/#{other.full_name}/issues/new?"]),
+             "File issue"
+           )
+
+    assert has_element?(
+             view,
+             ~s(#sizing-hints button[data-copy^="# Move CI · e2e to crew-l"]),
+             "Copy as Markdown"
+           )
+
     assert has_element?(view, ~s(#sizing-repos a[href="/repos/#{other.id}"]), other.full_name)
     assert has_element?(view, ~s(#sizing-repos a[href="/repos/#{repo.id}"]), repo.full_name)
   end

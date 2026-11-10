@@ -8,14 +8,20 @@ defmodule CrewWeb.SizingLive do
   use CrewWeb, :live_view
 
   alias Crew.Sizing
-  alias CrewWeb.SizingComponents
+  alias CrewWeb.{SizingComponents, SizingIssue}
 
   @impl true
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:page_title, "Right-sizing")
-     |> assign(:fleet, Sizing.fleet(socket.assigns.current_scope))}
+     |> assign(:fleet, fleet(socket.assigns.current_scope))}
+  end
+
+  # The fleet, each hint with its issue (`CrewWeb.SizingIssue`).
+  defp fleet(scope) do
+    fleet = Sizing.fleet(scope)
+    %{fleet | hints: SizingIssue.put_issues(fleet.hints)}
   end
 
   @doc "GiB-hours as the page writes them: one decimal, whole past 100."
@@ -116,7 +122,15 @@ defmodule CrewWeb.SizingLive do
               <.badge color={SizingComponents.color(h.hint)}>{SizingComponents.title(h.hint)}</.badge>
               <p class="mt-1 text-xs text-ink-2">{List.first(h.hint.reasons)}</p>
             </div>
-            <p class="whitespace-nowrap text-xs text-ink-2 sm:text-right">{week(h)}</p>
+            <div class="space-y-1 sm:text-right">
+              <p class="whitespace-nowrap text-xs text-ink-2">{week(h)}</p>
+              <SizingComponents.issue_actions
+                :if={h.issue}
+                id={"sizing-#{h.job.id}-issue"}
+                issue={h.issue}
+                compact
+              />
+            </div>
           </li>
         </ul>
       </.panel>

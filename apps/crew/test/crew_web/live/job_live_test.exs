@@ -414,6 +414,34 @@ defmodule CrewWeb.JobLiveTest do
                ~s(#sizing a[href="#{CrewWeb.GitHub.repo_url(repo)}/blob/main/.github/workflows/ci.yml"]),
                ".github/workflows/ci.yml"
              )
+
+      # An issue for the change, on GitHub or copied.
+      assert has_element?(
+               view,
+               ~s(#sizing a[href^="https://github.com/#{repo.full_name}/issues/new?"][target="_blank"]),
+               "File issue"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#sizing button[phx-hook="Copy"][data-copy^="# Move CI · lint to crew-xs"]),
+               "Copy as Markdown"
+             )
+    end
+
+    test "a spare job keeps its tier, and its other labels stay", %{conn: conn, repo: repo} do
+      spare = [name: "fuzz", labels: ["self-hosted", "crew-m-spare"]]
+      summarized_jobs_fixture(repo, 4, spare)
+      summarized_job_fixture(repo, [run_id: 4242, id: 93] ++ spare)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/93")
+      assert has_element?(view, "#sizing code", "runs-on: [self-hosted, crew-xs-spare]")
+
+      assert has_element?(
+               view,
+               ~s(#sizing button[data-copy*="- runs-on: [self-hosted, crew-m-spare]"]),
+               "Copy as Markdown"
+             )
     end
 
     test "no file link for a run whose workflow isn't a file", %{conn: conn, repo: repo} do
@@ -440,6 +468,9 @@ defmodule CrewWeb.JobLiveTest do
       assert has_element?(view, "#sizing", "4 vCPU · 2.0 GiB · 20 GiB disk")
       assert has_element?(view, "#sizing a[href='/admin/sizes']", "Sizes & labels")
       refute has_element?(view, "#sizing code", "runs-on:")
+      # Nothing to file until the size exists.
+      refute has_element?(view, "#sizing a[href*='/issues/new']")
+      refute has_element?(view, "#sizing [phx-hook='Copy']")
 
       # A member can't add sizes, so there's no link for them.
       member = user_fixture()

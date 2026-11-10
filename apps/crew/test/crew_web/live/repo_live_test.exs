@@ -161,6 +161,18 @@ defmodule CrewWeb.RepoLiveTest do
                "CI · test"
              )
 
+      assert has_element?(
+               view,
+               ~s(#sizing-#{newest.id} a[href^="https://github.com/#{repo.full_name}/issues/new?"]),
+               "File issue"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#sizing-#{newest.id} button[data-copy^="# Move CI · test to crew-xs"]),
+               "Copy as Markdown"
+             )
+
       # e2e fits m.
       refute has_element?(view, "#sizing", "e2e")
     end

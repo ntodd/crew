@@ -15,7 +15,7 @@ defmodule CrewWeb.RepoLive.Show do
   alias Crew.{Jobs, Repos, Schedules, Scope, Sizes, Sizing, Usage}
   alias Crew.Jobs.Insights
   alias Crew.Schedules.Schedule
-  alias CrewWeb.{Charts, GitHub, JobStatus, SizingComponents, UsageComponents}
+  alias CrewWeb.{Charts, GitHub, JobStatus, SizingComponents, SizingIssue, UsageComponents}
   alias CrewWeb.Charts.Geometry
 
   import CrewWeb.UsageComponents, only: [minutes: 1, delimit: 1, pct: 1]
@@ -89,7 +89,13 @@ defmodule CrewWeb.RepoLive.Show do
 
     socket
     |> assign(:repo, repo)
-    |> assign(:hints, Sizing.for_repo(socket.assigns.current_scope, repo))
+    |> assign(
+      :hints,
+      socket.assigns.current_scope
+      |> Sizing.for_repo(repo)
+      |> Enum.map(&Map.put(&1, :repo, repo))
+      |> SizingIssue.put_issues()
+    )
     |> assign(:missing, Repos.missing_permissions(repo.installation))
     |> assign(:form, to_form(Repos.change_settings(repo), as: :repo))
   end
@@ -559,9 +565,17 @@ defmodule CrewWeb.RepoLive.Show do
                   </.badge>
                   <p class="mt-1 text-xs text-ink-2">{List.first(h.hint.reasons)}</p>
                 </div>
-                <p class="whitespace-nowrap text-xs text-ink-2 sm:text-right">
-                  {SizingComponents.saving(h.hint)}
-                </p>
+                <div class="space-y-1 sm:text-right">
+                  <p class="whitespace-nowrap text-xs text-ink-2">
+                    {SizingComponents.saving(h.hint)}
+                  </p>
+                  <SizingComponents.issue_actions
+                    :if={h.issue}
+                    id={"sizing-#{h.job.id}-issue"}
+                    issue={h.issue}
+                    compact
+                  />
+                </div>
               </li>
             </ul>
           </.panel>

@@ -42,7 +42,17 @@ defmodule Crew.Sizing do
   ]
 
   @job_fields @run_fields ++
-                [:repo_id, :workflow_name, :name, :github_id, :github_run_id, :run_attempt]
+                [
+                  :repo_id,
+                  :workflow_name,
+                  :name,
+                  :github_id,
+                  :github_run_id,
+                  :run_attempt,
+                  :labels,
+                  :arch,
+                  :spare
+                ]
 
   @doc """
   The hint for a finished Crew job, from the latest runs of the same
