@@ -730,6 +730,15 @@ the repo's jobs that GitHub still has queued or waiting.
   what they'd free in the week, the most first, and one link to add it
   that offers every repo among its jobs that limits its sizes: one size
   for all of them, not one per job.
+- **Size changes** on `/sizing` show whether a move worked. A job's
+  newest run sets its size, and its change is the first run on that size
+  after the last run on another (within 90 days); the jobs whose change
+  is under 30 days old are listed. Each has the shape before and after,
+  when it moved, how many runs it had on each, the median duration of the
+  newest 30 successful runs on each, and what the move freed or took over
+  the week's runs. A move whose median is more than 5% longer, or with a
+  process killed for memory on the new size, says so, and those come
+  first. Nothing new is stored: the runs have their shapes.
 
 ### 7.6 Workflow schedules (admin, on the repo page)
 

@@ -8,7 +8,7 @@ defmodule CrewWeb.SizingLive do
   use CrewWeb, :live_view
 
   alias Crew.Sizing
-  alias CrewWeb.{SizingActions, SizingComponents, SizingIssue}
+  alias CrewWeb.{JobStatus, SizingActions, SizingComponents, SizingIssue}
 
   @sizing_events SizingActions.events()
 
@@ -19,6 +19,7 @@ defmodule CrewWeb.SizingLive do
      |> assign(:page_title, "Right-sizing")
      |> assign(:admin, Crew.Scope.admin?(socket.assigns.current_scope))
      |> assign(:fleet, fleet(socket.assigns.current_scope))
+     |> assign(:changes, Sizing.changes(socket.assigns.current_scope))
      |> SizingActions.mount()}
   end
 
@@ -64,6 +65,29 @@ defmodule CrewWeb.SizingLive do
 
   defp share(_part, total) when total <= 0, do: nil
   defp share(part, total), do: "#{round(part / total * 100)}% of reserved"
+
+  # How a move to a new size went, as a badge: killed for memory, slower,
+  # or neither; with too few successful runs on one side, unknown.
+  defp outcome(%{ooms: n, to: to}) when n > 0,
+    do: {"amber", "Killed for memory on #{to.name || "the new size"}"}
+
+  defp outcome(%{slower: true, median_before_s: b, median_after_s: a}) when b > 0,
+    do: {"amber", "#{round((a / b - 1) * 100)}% slower"}
+
+  defp outcome(%{slower: true}), do: {"amber", "Slower"}
+
+  defp outcome(%{median_before_s: b, median_after_s: a}) when is_integer(b) and is_integer(a),
+    do: {"emerald", "No slower"}
+
+  defp outcome(_change), do: {"zinc", "Too few successful runs to compare"}
+
+  defp medians(%{median_before_s: b, median_after_s: a, from: from, to: to})
+       when is_integer(b) and is_integer(a),
+       do:
+         "Median #{JobStatus.format(b)} on #{from.name || "the old size"}, " <>
+           "#{JobStatus.format(a)} on #{to.name || "the new size"}"
+
+  defp medians(_change), do: nil
 
   defp week(%{freed_gib_h: f}) when f > 0, do: "frees #{gib_h(f)} GiB-hours a week"
   defp week(%{freed_gib_h: f}) when f < 0, do: "takes #{gib_h(-f)} GiB-hours a week"
@@ -236,6 +260,51 @@ defmodule CrewWeb.SizingLive do
               </.link>
               <p :if={!@admin} class="text-xs text-ink-3">An admin can add it on Sizes & labels.</p>
             </div>
+          </li>
+        </ul>
+      </.panel>
+
+      <.panel :if={@changes != []} id="sizing-changes" title="Size changes" class="mb-4">
+        <:subtitle>
+          Jobs that moved to a new size in the last 30 days, and how their runs went since: those that got slower or ran out of memory first.
+        </:subtitle>
+        <ul class="-my-3 divide-y divide-line">
+          <li
+            :for={c <- @changes}
+            id={"sizing-change-#{c.job.id}"}
+            class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] sm:items-start"
+          >
+            <div class="min-w-0">
+              <.link
+                navigate={
+                  ~p"/runs/#{c.job.github_run_id}/attempts/#{c.job.run_attempt}/jobs/#{c.job.github_id}"
+                }
+                class="text-sm font-medium text-ink underline-offset-2 hover:underline"
+              >
+                {c.workflow_name} · {c.name}
+              </.link>
+              <p class="mt-0.5 truncate text-xs text-ink-3">{c.repo.full_name}</p>
+              <p class="text-xs text-ink-3">since {Calendar.strftime(c.changed_at, "%b %-d")}</p>
+            </div>
+            <div class="min-w-0">
+              <% {color, text} = outcome(c) %>
+              <.badge color={color}>{text}</.badge>
+              <p class="mt-1 text-xs text-ink-2">
+                {SizingComponents.shape(c.from)} → {SizingComponents.shape(c.to)}
+              </p>
+              <p class="text-xs text-ink-3">
+                {if medians(c), do: medians(c) <> " · "}{c.runs_before} {if c.runs_before == 1,
+                  do: "run",
+                  else: "runs"} before, {c.runs_after} since
+              </p>
+            </div>
+            <p class="whitespace-nowrap text-xs text-ink-2 sm:text-right">
+              {cond do
+                c.freed_gib_h > 0 -> "frees #{gib_h(c.freed_gib_h)} GiB-hours a week"
+                c.freed_gib_h < 0 -> "takes #{gib_h(-c.freed_gib_h)} GiB-hours a week"
+                true -> nil
+              end}
+            </p>
           </li>
         </ul>
       </.panel>

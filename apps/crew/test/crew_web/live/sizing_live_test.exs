@@ -106,6 +106,70 @@ defmodule CrewWeb.SizingLiveTest do
     assert has_element?(view, "#sizing-reserved", "0")
   end
 
+  describe "size changes" do
+    @l [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+
+    defp ran(repo, hours, seconds, attrs) do
+      started = DateTime.utc_now() |> DateTime.add(-hours * 3600) |> DateTime.truncate(:second)
+
+      summarized_job_fixture(
+        repo,
+        [started_at: started, completed_at: DateTime.add(started, seconds)] ++ attrs
+      )
+    end
+
+    test "a job that moved: from and to, its time on each, and what it frees", %{
+      conn: conn,
+      repo: repo
+    } do
+      for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
+      newest = for(h <- [40, 30, 20], do: ran(repo, h, 590, [])) |> List.last()
+
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      row = "#sizing-change-#{newest.id}"
+      assert has_element?(view, row, "CI · test")
+      assert has_element?(view, row, repo.full_name)
+      assert has_element?(view, row, "l (8 vCPU · 16.0 GiB) → m (4 vCPU · 8.0 GiB)")
+      assert has_element?(view, row, "No slower")
+      assert has_element?(view, row, "10m 00s on l, 9m 50s on m")
+      assert has_element?(view, row, "frees")
+
+      assert has_element?(
+               view,
+               ~s(#{row} a[href="/runs/#{newest.github_run_id}/attempts/1/jobs/#{newest.github_id}"])
+             )
+    end
+
+    test "slower, or killed for memory, says so", %{conn: conn, repo: repo, other: other} do
+      for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
+      slow = for(h <- [40, 30, 20], do: ran(repo, h, 700, [])) |> List.last()
+      for h <- [240, 200, 160], do: ran(other, h, 600, @l)
+      killed = ran(other, 10, 60, oom: true, conclusion: "failure")
+
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      assert has_element?(view, "#sizing-change-#{slow.id}", "17% slower")
+      assert has_element?(view, "#sizing-change-#{killed.id}", "Killed for memory on m")
+    end
+
+    test "slower than runs that took no time at all, without a percentage", %{
+      conn: conn,
+      repo: repo
+    } do
+      for h <- [240, 200, 160], do: ran(repo, h, 0, @l)
+      newest = for(h <- [40, 30, 20], do: ran(repo, h, 5, [])) |> List.last()
+
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      assert has_element?(view, "#sizing-change-#{newest.id}", "Slower")
+      refute has_element?(view, "#sizing-change-#{newest.id}", "% slower")
+    end
+
+    test "nothing when no job moved", %{conn: conn, repo: repo} do
+      summarized_jobs_fixture(repo, 5)
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      refute has_element?(view, "#sizing-changes")
+    end
+  end
+
   describe "sizes that would fit" do
     @busy [name: "build", cpu_excess: [1200.0, 600.0, 120.0]]
 

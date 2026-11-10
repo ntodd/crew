@@ -524,6 +524,112 @@ defmodule Crew.SizingTest do
     end
   end
 
+  describe "changes/1" do
+    @l [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+
+    # A finished run `hours` ago that took `seconds`.
+    defp ran(repo, hours, seconds, attrs) do
+      started = hours_ago(hours)
+      finished(repo, [started_at: started, completed_at: DateTime.add(started, seconds)] ++ attrs)
+    end
+
+    test "a job that moved sizes: from and to, when, its time on each, and its week", %{
+      repo: repo
+    } do
+      for h <- [240, 200, 160, 120, 100], do: ran(repo, h, 600, @l)
+      [first_m | _] = for h <- [40, 30, 20, 10], do: ran(repo, h, 570, [])
+
+      assert [change] = Sizing.changes(admin())
+      assert %{repo: %{id: repo_id}, workflow_name: "CI", name: "test"} = change
+      assert repo_id == repo.id
+      assert %{name: "l", vcpus: 8, memory_mib: 16_384} = change.from
+      assert %{name: "m", vcpus: 4, memory_mib: 8192} = change.to
+      assert change.changed_at == first_m.started_at
+      assert {change.runs_before, change.runs_after} == {5, 4}
+      assert {change.median_before_s, change.median_after_s} == {600, 570}
+      refute change.slower
+      assert change.ooms == 0
+      # 8 GiB less, over the week's 4 runs of 570 s on m.
+      assert_in_delta change.freed_gib_h, 8 * 4 * 570 / 3600, 0.001
+      assert change.job.github_id
+    end
+
+    test "more than 5% slower on the new size is flagged", %{repo: repo} do
+      for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
+      for h <- [40, 30, 20], do: ran(repo, h, 640, [])
+
+      assert [%{slower: true, median_before_s: 600, median_after_s: 640}] =
+               Sizing.changes(admin())
+    end
+
+    test "so is a run killed for memory on it, and failed runs don't count toward time", %{
+      repo: repo
+    } do
+      for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
+      for h <- [40, 30], do: ran(repo, h, 600, [])
+      ran(repo, 10, 60, oom: true, conclusion: "failure")
+
+      assert [%{ooms: 1, slower: false, median_after_s: 600, runs_after: 3}] =
+               Sizing.changes(admin())
+    end
+
+    test "the latest move counts; a job on one size, or that moved over 30 days ago, isn't listed",
+         %{repo: repo} do
+      for h <- [500, 400], do: ran(repo, h, 600, @l)
+      for h <- [300, 250], do: ran(repo, h, 600, [])
+      for h <- [50, 20], do: ran(repo, h, 600, @l)
+
+      assert [%{from: %{name: "m"}, to: %{name: "l"}}] = Sizing.changes(admin())
+
+      for h <- [24 * 45, 24 * 40], do: ran(repo, h, 600, [name: "old"] ++ @l)
+      for h <- [24 * 35, 24 * 2], do: ran(repo, h, 600, name: "old")
+      for h <- [30, 20], do: ran(repo, h, 600, name: "steady")
+
+      assert [%{name: "test"}] = Sizing.changes(admin())
+    end
+
+    test "a busy job's move, however many runs it's had since", %{repo: repo} do
+      for h <- [300, 290, 280], do: ran(repo, h, 600, @l)
+      for i <- 1..35, do: ran(repo, 200 - i * 5, 600, [])
+
+      assert [%{runs_before: 3, runs_after: 35, from: %{name: "l"}}] = Sizing.changes(admin())
+    end
+
+    test "a run on the new size that finished in the same second as the last on the old counts",
+         %{repo: repo} do
+      at = hours_ago(10)
+      finished(repo, [started_at: DateTime.add(at, -600), completed_at: at] ++ @l)
+      finished(repo, started_at: DateTime.add(at, -590), completed_at: at)
+
+      assert [%{from: %{name: "l"}, to: %{name: "m"}, runs_before: 1, runs_after: 1}] =
+               Sizing.changes(admin())
+    end
+
+    test "the week counts only the runs since the latest move", %{repo: repo} do
+      ran(repo, 100, 600, [])
+      ran(repo, 80, 600, @l)
+      ran(repo, 60, 600, [])
+
+      # Back on m from l: 8 GiB less over one 10-minute run, not both on m.
+      assert [%{from: %{name: "l"}, runs_after: 1, freed_gib_h: freed}] = Sizing.changes(admin())
+      assert_in_delta freed, 8 * 600 / 3600, 0.001
+    end
+
+    test "a job GitHub gave no name", %{repo: repo} do
+      for h <- [240, 200], do: ran(repo, h, 600, [name: nil] ++ @l)
+      for h <- [40, 30], do: ran(repo, h, 600, name: nil)
+
+      assert [%{name: nil, from: %{name: "l"}}] = Sizing.changes(admin())
+    end
+
+    test "only the repos the viewer can read", %{repo: repo} do
+      for h <- [240, 200], do: ran(repo, h, 600, @l)
+      for h <- [40, 30], do: ran(repo, h, 600, [])
+
+      assert Sizing.changes(Scope.for_user(user_fixture())) == []
+    end
+  end
+
   describe "durations/1" do
     defp ran(repo, minutes, attrs) do
       started = hours_ago(attrs[:hours] || 1)

@@ -312,6 +312,40 @@ test("a job that moved sizes shows its time on each", async ({page}) => {
   await shot(page, layer, "job-durations")
 })
 
+// CI · lint moved from l to m in e2e/seeds/sizing.exs, and its runs on m
+// take 9 minutes against 8m 20s on l.
+test("the right-sizing page shows which changes worked", async ({page}) => {
+  await signIn(page)
+  await page.goto("/sizing")
+  await connected(page)
+
+  const changes = page.locator("#sizing-changes > div > ul > li")
+  await expect(changes).toHaveCount(1)
+  const lint = changes.first()
+  await expect(lint).toContainText("CI · lint")
+  await expect(lint).toContainText("mona/storefront")
+  await expect(lint).toContainText("l (8 vCPU · 16.0 GiB) → m (4 vCPU · 8.0 GiB)")
+  await expect(lint).toContainText("8% slower")
+  await expect(lint).toContainText("Median 8m 20s on l, 9m 00s on m")
+  await expect(lint).toContainText("3 runs before, 6 since")
+  await expect(lint).toContainText(/frees [0-9.]+ GiB-hours a week/)
+  await shot(page, layer, "fleet-changes")
+  await setTheme(page, "dark")
+  await shot(page, layer, "fleet-changes-dark")
+  await setTheme(page, "light")
+
+  await page.setViewportSize({width: 390, height: 844})
+  await page.reload()
+  await connected(page)
+  expect(await page.locator("#sizing-changes").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true)
+  await shot(page, layer, "fleet-changes-mobile")
+  await page.setViewportSize({width: 1440, height: 900})
+
+  await lint.getByRole("link", {name: "CI · lint"}).click()
+  await connected(page)
+  await expect(page.locator("#sizing-durations li")).toHaveCount(2)
+})
+
 // Last: it adds a size, which changes the hints the tests above expect.
 test("a custom shape becomes a size an admin adds, and then a hint with an issue", async ({page}) => {
   await signIn(page)
