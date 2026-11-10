@@ -52,9 +52,9 @@ quint test models/vm_lifecycle.qnt
 
 ### What it found
 
-Both `noKillDuringJob` violations come from the `requested` state taking
-the shortcut that no other pre-job state takes: it fails the VM and
-deletes its runner in the background (`Crew.VMs.DeleteRunner`, fire and
+Both `noKillDuringJob` violations came from the `requested` state taking
+the shortcut that no other pre-job state takes: it failed the VM and
+deleted its runner in the background (`Crew.VMs.DeleteRunner`, fire and
 forget), where `starting`, `booted` and `idle` delete first and act on the
 answer (204 or 404: stop; 422: the runner has a job, go `busy`).
 
@@ -64,10 +64,17 @@ answer (204 or 404: stop; 422: the runner has a job, go `busy`).
   plane fails it, sends `vm.stop force`, and keeps sending one from the
   `check` timer until the box's inventory stops listing it. The in-flight
   Oban delete gets a 422 and is done. `cpRestartKillsJobTest` walks it;
-  the random runs find it within a few hundred thousand samples.
+  the random runs find it within a few hundred thousand samples. The
+  server is fixed (#112), but the model's `cpRestart` still takes the old
+  path, so it still finds this one.
 - **`box_disconnected`** in `requested` (#108, `Machine.transition/2`): the same
   through a dropped link, with the stop arriving as `inventory_alive`
-  when the box rejoins. `disconnectKillsJobTest`.
+  when the box rejoins. Fixed: `requested` now deletes the runner first
+  like the other pre-job states, and `disconnectKeepsJobTest` walks the
+  422 to `busy`. Without a runner yet (the JIT call still out), the server
+  applies the `:gone` answer in the same step rather than sending it to
+  itself, or a JIT config already in its mailbox would register a runner
+  and send `vm.start` to a VM that then fails.
 
 Both need the runner to take the job before the background delete lands,
 so GitHub's delete has to be slow or failing (the Oban job retries every

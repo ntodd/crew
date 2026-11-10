@@ -116,9 +116,7 @@ module vm_lifecycle {
           Ok({ vm: vm.with("state", "destroyed").with("alive", false), effects: Set() })
         else Ok({ vm: vm.with("alive", false), effects: Set(CleanupFailed) })
       | BoxDisconnected =>
-        if (s == "requested") failTo(vm, "lost", Set(DeleteRunner))
-        else if (s == "starting" or s == "booted" or s == "idle")
-          Ok({ vm: vm, effects: Set(DeleteRunnerThen("lost")) })
+        if (preJob.contains(s)) Ok({ vm: vm, effects: Set(DeleteRunnerThen("lost")) })
         else Ignored
       | InventoryMissing =>
         if (preJob.contains(s)) failTo(vm, "lost", Set(DeleteRunner))
@@ -255,9 +253,9 @@ module vm_lifecycle {
     match e {
       | RecordStartOp => s
       | DeleteRunner => if (s.runnerId) s.with("gcDeletes", s.gcDeletes + 1) else s
+      // Without a runner, applyEvent answers gone in the same step.
       | DeleteRunnerThen(r) =>
-        if (s.runnerId) s.with("deletes", s.deletes.union(Set(r)))
-        else s.with("deleteResults", s.deleteResults.union(Set({ outcome: "gone", reason: r })))
+        if (s.runnerId) s.with("deletes", s.deletes.union(Set(r))).disarm("ack") else s
       | Stop(force) => s.dispatch(CStop({ force: force, reason: stopReason(s.cp, ev) }))
       | FetchJob => s
       | LinkJob(_) => s.with("cpJobLinked", true)
@@ -325,12 +323,25 @@ module vm_lifecycle {
   /// that did before its job is failed, then destroyed.
   pure def applyEvent(s: Sys, ev: Event, forceReason: str): Sys =
     val from = s.cp.state
-    val s1 = s.applyOnce(ev, forceReason)
+    val gone = goneNow(s, ev)
+    val s0 = s.applyOnce(ev, forceReason)
+    val s1 = if (gone != "") s0.applyOnce(RunnerDeleted({ outcome: "gone", reason: gone }), "") else s0
     if (s1.serverUp and carriesOn(ev) and
         ((from == "busy" and s1.cp.state == "finished") or
          (preJob.contains(from) and s1.cp.state == "failed")))
       s1.applyOnce(ev, "")
     else s1
+
+  /// The {:delete_runner_then, reason} effect when the VM has no runner
+  /// yet: the server applies {:runner_deleted, :gone, reason} at once, so
+  /// a JIT config that comes back afterwards finds the VM failed. "" when
+  /// the event doesn't ask for one.
+  pure def goneNow(s: Sys, ev: Event): str =
+    if (s.runnerId) ""
+    else match transition(s.cp, ev) {
+      | Ignored => ""
+      | Ok(r) => r.effects.fold("", (acc, e) => match e { | DeleteRunnerThen(x) => x | _ => acc })
+    }
 
   pure def fresh(s: Sys): Sys = s.with("steps", [])
 
@@ -695,21 +706,23 @@ module vm_lifecycle {
       .then(agentDeliverOk)          // the agent kills a VM whose job is running
       .expect(S.killedDuringJob and S.stopReasonDuringJob == "lost")
 
-  /// The same through a dropped link: requested + box_disconnected fails
-  /// the VM with a background delete, unlike starting/booted/idle, which
-  /// wait for 204 or 422.
-  run disconnectKillsJobTest =
+  /// A dropped link while a placement is in flight: requested deletes the
+  /// runner first, as starting/booted/idle do, so a runner that took the
+  /// job meanwhile gets a 422 and the VM goes busy. The inventory on rejoin
+  /// leaves a busy VM alone.
+  run disconnectKeepsJobTest =
     init.then(cpJitOkA)
       .then(agentDeliverOk)
-      .then(boxDisconnectA)          // requested -> failed (lost), runner delete queued
+      .then(boxDisconnectA)          // requested: the runner delete is in flight
       .then(guestFetchPayloadA)
       .then(guestRunnerUpA)
-      .then(ghAssignA)
+      .then(ghAssignA)               // GitHub gives the runner the job before the delete lands
+      .then(ghDeleteA)               // 422
+      .then(cpDeliverDeleteA)        // requested -> busy
       .then(boxJoinA)
       .then(cpDeliverAgentA).then(cpDeliverAgentA).then(cpDeliverAgentA)
-      .then(cpDeliverAgentA)         // inventory alive: vm.stop force
-      .then(agentDeliverOk)
-      .expect(S.killedDuringJob and S.stopReasonDuringJob == "lost")
+      .then(cpDeliverAgentA)         // inventory lists it alive: ignored in busy
+      .expect(S.cp.state == "busy" and not(S.killedDuringJob))
 
   /// A VM that went busy on the guest's hook, then exited with a cleanup
   /// error before GitHub's in_progress arrived: it stays finished, and the

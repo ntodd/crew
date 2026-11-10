@@ -737,11 +737,129 @@ defmodule Crew.VMs.ServerTest do
   end
 
   describe "the box's link" do
-    test "a disconnect fails a requested VM as lost", %{box: box, repo: repo} do
+    test "a disconnect deletes a requested VM's runner first, then fails it as lost", %{
+      box: box,
+      repo: repo
+    } do
       id = place(box, repo)
       assert_command("vm.start")
+      eventually(fn -> VMs.get!(id).start_op_id end)
+
       VMs.agent_left(box.id)
+
+      assert_receive {:runner_deleted, _}, 1_000
       assert await_state(id, "failed").fail_reason == "lost"
+    end
+
+    test "a disconnect with the runner on a job: the runner is deleted first, a 422 makes the VM busy",
+         %{box: box, repo: repo} do
+      GitHubStub.stub(github_routes(repo, delete_status: 422))
+      id = place(box, repo)
+      assert_command("vm.start")
+      eventually(fn -> VMs.get!(id).start_op_id end)
+
+      VMs.agent_left(box.id)
+
+      assert_receive {:runner_deleted, _}, 1_000
+      await_state(id, "busy")
+
+      # The box rejoins and lists the VM alive: a busy VM is left alone.
+      agent_event(box, "box.inventory", %{
+        "vms" => [%{"vm_id" => id, "alive" => true}],
+        "images" => []
+      })
+
+      :sys.get_state(Crew.VMs.Server.whereis(id))
+      assert VMs.get!(id).state == "busy"
+      refute_received {:dispatch, %CrewProtocol.Command{type: "vm.stop"}}
+    end
+
+    @tag timers: %{ack: 50, delete_retry: 200}
+    test "a requested VM's ack timeout waits for the disconnect's delete: still lost, one chain",
+         %{box: box, repo: repo} do
+      calls = :counters.new(1, [])
+
+      GitHubStub.stub(
+        github_routes(repo,
+          delete_status: fn ->
+            :counters.add(calls, 1, 1)
+            if :counters.get(calls, 1) == 1, do: 500, else: 204
+          end
+        )
+      )
+
+      id = place(box, repo)
+      assert_command("vm.start")
+      eventually(fn -> VMs.get!(id).start_op_id end)
+
+      VMs.agent_left(box.id)
+
+      # The first delete fails; the ack timer runs out while it waits.
+      assert_receive {:runner_deleted, _}, 1_000
+      assert_receive {:runner_deleted, _}, 1_000
+      assert await_state(id, "failed").fail_reason == "lost"
+      refute_receive {:runner_deleted, _}, 300
+      assert :counters.get(calls, 1) == 2
+      refute Repo.get_by(Crew.Scheduler.ClassState, repo_id: repo.id, consecutive_failures: 1)
+    end
+
+    @tag timers: %{jit_retry: 60_000}
+    test "a disconnect before the JIT config comes back fails the VM as lost at once", %{
+      box: box,
+      repo: repo
+    } do
+      GitHubStub.stub(
+        Map.put(
+          github_routes(repo),
+          {"POST", "/repos/#{repo.full_name}/actions/runners/generate-jitconfig"},
+          {500, %{}}
+        )
+      )
+
+      id = place(box, repo)
+
+      eventually(fn ->
+        Repo.exists?(from e in Crew.VMs.VMEvent, where: e.vm_id == ^id and e.kind == "jit_error")
+      end)
+
+      VMs.agent_left(box.id)
+
+      assert await_state(id, "failed").fail_reason == "lost"
+      refute_received {:runner_deleted, _}
+    end
+
+    test "a JIT config that lands behind a disconnect finds the VM failed: no vm.start", %{
+      box: box,
+      repo: repo
+    } do
+      routes = github_routes(repo)
+      jit = {"POST", "/repos/#{repo.full_name}/actions/runners/generate-jitconfig"}
+      test = self()
+
+      GitHubStub.stub(
+        Map.put(routes, jit, fn conn ->
+          send(test, {:jit_held, self()})
+          receive do: (:release -> routes[jit].(conn))
+        end)
+      )
+
+      id = place(box, repo)
+      assert_receive {:jit_held, request}
+      server = Server.whereis(id)
+
+      # The disconnect is handled first, with the JIT config already
+      # behind it in the mailbox.
+      :sys.suspend(server)
+      VMs.agent_left(box.id)
+      send(request, :release)
+      eventually(fn -> Process.info(server, :message_queue_len) == {:message_queue_len, 2} end)
+      :sys.resume(server)
+
+      vm = await_state(id, "failed")
+      assert vm.fail_reason == "lost"
+      refute vm.runner_id
+      refute_received {:dispatch, %CrewProtocol.Command{type: "vm.start"}}
+      assert_enqueued(worker: Crew.VMs.DeleteRunner, args: %{repo_id: repo.id})
     end
 
     test "a revoked box's VMs are destroyed", %{box: box, repo: repo} do
