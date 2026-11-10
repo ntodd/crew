@@ -431,6 +431,47 @@ defmodule CrewWeb.RepoLive.Show do
             </ul>
           </.panel>
 
+          <.panel
+            :if={@insights.totals.jobs > 0}
+            id="cache-misses"
+            title="Cache misses"
+            padded={false}
+          >
+            <:subtitle>
+              Dependency steps that took about as long on each of a job's last successful runs, so their cache likely never hits.
+            </:subtitle>
+            <p
+              :if={@insights.cache_misses == []}
+              id="cache-misses-none"
+              class="px-5 py-4 text-sm text-ink-3"
+            >
+              None in the last {@days} days.
+            </p>
+            <ul :if={@insights.cache_misses != []} class="divide-y divide-line text-sm">
+              <li
+                :for={m <- @insights.cache_misses}
+                id={dom_id("cache-miss", m.workflow_name, {m.name, m.step, m.number})}
+                class="flex flex-col gap-1 px-5 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+              >
+                <span class="flex min-w-0 items-center gap-2">
+                  <.icon name="hero-arrow-down-tray-micro" class="size-4 shrink-0 text-warning" />
+                  <span class="min-w-0 truncate">
+                    <span class="font-medium text-ink">{job_title(m.workflow_name, m.name)}</span>
+                    <span class="text-ink-3"> · </span>
+                    <span class="font-mono text-xs text-ink-2">{m.step}</span>
+                  </span>
+                </span>
+                <.link
+                  navigate={job_path(m.last) <> "#step-#{m.number}"}
+                  title={"Fastest #{JobStatus.format(m.fastest)}"}
+                  class="shrink-0 pl-6 text-xs tabular-nums text-ink-2 underline-offset-2 hover:text-ink hover:underline sm:pl-0"
+                >
+                  about {JobStatus.format(m.p50)} on each of {plural(m.runs, "run")}
+                </.link>
+              </li>
+            </ul>
+          </.panel>
+
           <.panel id="recent-runs" title="Recent runs" padded={false}>
             <:actions>
               <.link

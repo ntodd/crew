@@ -387,7 +387,8 @@ defmodule CrewWeb.RepoLiveTest do
         started_at: started,
         completed_at: completed,
         github_run_id: run_id,
-        run_attempt_id: attempt.id
+        run_attempt_id: attempt.id,
+        steps: Map.get(attrs, :steps, [])
       )
     end
 
@@ -446,6 +447,46 @@ defmodule CrewWeb.RepoLiveTest do
       assert has_element?(view, "#stat-flaky", "1")
       assert has_element?(view, "#flaky-jobs li", "test")
       refute has_element?(view, "#flaky-jobs li", "lint")
+    end
+
+    test "dependency steps that miss their cache, linked to the step", %{conn: conn, repo: repo} do
+      deps = fn s ->
+        [
+          %{"name" => "Set up job", "number" => 1, "conclusion" => "success"},
+          %{
+            "name" => "Run mix deps.get",
+            "number" => 2,
+            "status" => "completed",
+            "conclusion" => "success",
+            "started_at" => "2026-11-03T10:00:00Z",
+            "completed_at" => DateTime.to_iso8601(DateTime.add(~U[2026-11-03 10:00:00Z], s))
+          }
+        ]
+      end
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      refute has_element?(view, "#cache-misses")
+
+      ran(repo, name: "lint")
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#cache-misses-none")
+
+      for {s, i} <- Enum.with_index([52, 48, 50, 47, 55]),
+          do: ran(repo, name: "test", steps: deps.(s), completed_at: hours_ago(i + 2))
+
+      last = ran(repo, name: "test", steps: deps.(51), completed_at: hours_ago(1))
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      refute has_element?(view, "#cache-misses-none")
+
+      row = view |> element("#cache-misses li") |> render()
+      assert row =~ "CI · test"
+      assert row =~ "Run mix deps.get"
+      assert row =~ "50s"
+      assert row =~ "6 runs"
+
+      assert row =~
+               ~s(href="/runs/#{last.github_run_id}/attempts/1/jobs/#{last.github_id}#step-2")
     end
 
     test "recent runs link to each run, and to all of the repo's runs", %{conn: conn, repo: repo} do

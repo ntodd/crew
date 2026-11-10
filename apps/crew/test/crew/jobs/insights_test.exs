@@ -48,8 +48,25 @@ defmodule Crew.Jobs.InsightsTest do
       started_at: started,
       completed_at: completed,
       github_run_id: run_id,
-      run_attempt_id: attempt && attempt.id
+      run_attempt_id: attempt && attempt.id,
+      steps: Map.get(attrs, :steps, [])
     )
+  end
+
+  # Steps as GitHub stores them, from `{name, seconds}`.
+  defp steps(list) do
+    list
+    |> Enum.with_index(1)
+    |> Enum.map(fn {{name, s}, n} ->
+      %{
+        "name" => name,
+        "number" => n,
+        "status" => "completed",
+        "conclusion" => "success",
+        "started_at" => "2026-11-03T10:00:00Z",
+        "completed_at" => DateTime.to_iso8601(DateTime.add(~U[2026-11-03 10:00:00Z], s))
+      }
+    end)
   end
 
   describe "for_repo/3" do
@@ -209,6 +226,89 @@ defmodule Crew.Jobs.InsightsTest do
       job(ctx.repo)
       member = Scope.for_user(user_fixture(role: "member"))
       assert Insights.for_repo(member, ctx.repo, 30, ctx.today) == nil
+    end
+  end
+
+  describe "cache misses" do
+    test "each job's dependency steps that took about as long on every successful run", ctx do
+      for {s, i} <- Enum.with_index([40, 42, 38, 45, 41]) do
+        job(ctx.repo,
+          name: "test",
+          completed_at: ago(3600 * (i + 1)),
+          steps: steps([{"Set up job", 1}, {"Run mix deps.get", s}, {"Run mix test", 90}])
+        )
+      end
+
+      # Hits its cache sometimes.
+      for s <- [40, 2, 45, 41, 39],
+          do: job(ctx.repo, name: "lint", steps: steps([{"Run npm ci", s}]))
+
+      # A failed run's steps don't count.
+      for _ <- 1..5,
+          do:
+            job(ctx.repo, name: "e2e", conclusion: "failure", steps: steps([{"Run npm ci", 60}]))
+
+      newest =
+        job(ctx.repo,
+          name: "test",
+          completed_at: ago(60),
+          steps: steps([{"Checkout", 1}, {"Run mix deps.get", 39}])
+        )
+
+      assert [miss] = Insights.for_repo(ctx.admin, ctx.repo, 30, ctx.today).cache_misses
+      assert miss.workflow_name == "CI"
+      assert miss.name == "test"
+      assert miss.step == "Run mix deps.get"
+      assert miss.runs == 6
+      assert miss.p50 == 40
+      assert miss.fastest == 38
+      assert miss.number == 2
+      assert miss.last.github_id == newest.github_id
+    end
+
+    test "a job's last 10 successful runs count, each job on its own", ctx do
+      deps = fn s -> steps([{"Run mix deps.get", s}]) end
+
+      # Slow on the last 10; the cache hit before that.
+      for h <- 1..13 do
+        job(ctx.repo,
+          name: "test",
+          completed_at: ago(3600 * h),
+          steps: deps.(if(h <= 10, do: 40, else: 2))
+        )
+      end
+
+      # Another job, its runs in between.
+      for h <- 1..5,
+          do: job(ctx.repo, name: "build", completed_at: ago(3600 * h + 60), steps: deps.(60))
+
+      misses = Insights.for_repo(ctx.admin, ctx.repo, 30, ctx.today).cache_misses
+      assert [%{name: "build", runs: 5, p50: 60}, %{name: "test", runs: 10, p50: 40}] = misses
+    end
+
+    test "the run linked is the one the step's number is from", ctx do
+      [linked | _] =
+        for h <- 2..6 do
+          job(ctx.repo,
+            completed_at: ago(3600 * h),
+            steps: steps([{"Checkout", 1}, {"Run mix deps.get", 40}])
+          )
+        end
+
+      # The newest run's install failed (continue-on-error), and it moved.
+      job(ctx.repo,
+        completed_at: ago(3600),
+        steps: [%{"name" => "Run mix deps.get", "number" => 1, "conclusion" => "failure"}]
+      )
+
+      assert [miss] = Insights.for_repo(ctx.admin, ctx.repo, 30, ctx.today).cache_misses
+      assert miss.number == 2
+      assert miss.last.github_id == linked.github_id
+    end
+
+    test "none without steps", ctx do
+      job(ctx.repo)
+      assert Insights.for_repo(ctx.admin, ctx.repo, 30, ctx.today).cache_misses == []
     end
   end
 

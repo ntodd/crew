@@ -289,6 +289,111 @@ defmodule CrewWeb.JobLiveTest do
     assert_push_event(view, "source", %{source: "live", total: 1}, 1_000)
   end
 
+  describe "cache misses (§16.7)" do
+    defp deps_step(s, conclusion \\ "success") do
+      %{
+        "name" => "Run mix deps.get",
+        "number" => 2,
+        "status" => "completed",
+        "conclusion" => conclusion,
+        "started_at" => "2026-11-03T10:00:00Z",
+        "completed_at" => DateTime.to_iso8601(DateTime.add(~U[2026-11-03 10:00:00Z], s))
+      }
+    end
+
+    defp past_runs(job, durations) do
+      for {s, i} <- Enum.with_index(durations, 1) do
+        job_row_fixture(Crew.Repo.get!(Crew.Repos.Repo, job.repo_id),
+          workflow_name: job.workflow_name,
+          name: job.name,
+          completed_at: DateTime.add(DateTime.utc_now(), -3600 * i),
+          steps: [deps_step(s)]
+        )
+      end
+    end
+
+    defp with_deps_step(job, s) do
+      steps = [
+        hd(job.steps),
+        deps_step(s),
+        %{"name" => "Run tests", "number" => 3, "status" => "in_progress"}
+      ]
+
+      job |> Ecto.Changeset.change(steps: steps) |> Repo.update!()
+    end
+
+    test "a dependency step that took about as long on each recent run is flagged", %{
+      conn: conn,
+      path: path,
+      job: job
+    } do
+      past_runs(job, [40, 42, 38, 45, 41])
+      with_deps_step(job, 43)
+
+      {:ok, view, _} = live(conn, path)
+      assert has_element?(view, "#step-2 [data-cache-miss]", "No cache hit in 5 runs")
+      refute has_element?(view, "#step-3 [data-cache-miss]")
+    end
+
+    test "not when this run's step was fast: the cache hit", %{conn: conn, path: path, job: job} do
+      past_runs(job, [40, 42, 38, 45, 41])
+      with_deps_step(job, 2)
+
+      {:ok, view, _} = live(conn, path)
+      refute has_element?(view, "[data-cache-miss]")
+    end
+
+    test "not when this run skipped it: the cache hit", %{conn: conn, path: path, job: job} do
+      past_runs(job, [40, 42, 38, 45, 41])
+
+      skipped = %{
+        "name" => "Run mix deps.get",
+        "number" => 2,
+        "status" => "completed",
+        "conclusion" => "skipped"
+      }
+
+      job
+      |> Ecto.Changeset.change(steps: [hd(job.steps), skipped])
+      |> Repo.update!()
+
+      {:ok, view, _} = live(conn, path)
+      refute has_element?(view, "[data-cache-miss]")
+    end
+
+    test "of two steps with one name, only the one that missed", %{
+      conn: conn,
+      path: path,
+      job: job
+    } do
+      repo = Crew.Repo.get!(Crew.Repos.Repo, job.repo_id)
+      twice = fn a, b -> [%{deps_step(a) | "number" => 2}, %{deps_step(b) | "number" => 3}] end
+
+      for i <- 1..5 do
+        job_row_fixture(repo,
+          workflow_name: job.workflow_name,
+          name: job.name,
+          completed_at: DateTime.add(DateTime.utc_now(), -3600 * i),
+          steps: twice.(40, 2)
+        )
+      end
+
+      job |> Ecto.Changeset.change(steps: [hd(job.steps) | twice.(41, 2)]) |> Repo.update!()
+
+      {:ok, view, _} = live(conn, path)
+      assert has_element?(view, "#step-2 [data-cache-miss]")
+      refute has_element?(view, "#step-3 [data-cache-miss]")
+    end
+
+    test "not when a recent run was fast", %{conn: conn, path: path, job: job} do
+      past_runs(job, [40, 3, 38, 45, 41])
+      with_deps_step(job, 43)
+
+      {:ok, view, _} = live(conn, path)
+      refute has_element?(view, "[data-cache-miss]")
+    end
+  end
+
   describe "right-sizing (§7.5)" do
     test "a finished job with enough runs shows its hint and the runs-on line", %{
       conn: conn,
