@@ -30,6 +30,98 @@ defmodule CrewWeb.SizesLiveTest do
     assert Repo.get_by(Crew.Sizes.Size, name: "gpu")
   end
 
+  describe "from a custom right-sizing hint (§7.5)" do
+    test "the form comes filled in with its shape", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/admin/sizes?vcpus=4&memory_mib=2048&disk_gib=20")
+
+      assert has_element?(view, ~s(#new-size input[name="size[vcpus]"][value="4"]))
+      assert has_element?(view, ~s(#new-size input[name="size[memory_mib]"][value="2048"]))
+      assert has_element?(view, ~s(#new-size input[name="size[disk_gib]"][value="20"]))
+      refute has_element?(view, "#new-size .text-danger")
+      refute has_element?(view, "#new-size-allow")
+    end
+
+    test "a repo that limits its sizes can be given the new one too", %{conn: conn} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+      limited = repo_fixture(name: "limited")
+      {:ok, limited} = Crew.Repos.update_settings(admin, limited, %{"allowed_sizes" => ["m"]})
+      open = repo_fixture(name: "open")
+
+      {:ok, view, _} =
+        live(
+          conn,
+          ~p"/admin/sizes?#{[vcpus: 4, memory_mib: 2048, disk_gib: 20, repos: [limited.id, open.id]]}"
+        )
+
+      # Only the repo that limits its sizes needs it, and it's ticked.
+      assert has_element?(view, "#new-size-allow", limited.full_name)
+      assert has_element?(view, ~s(#new-size-allow input[value="#{limited.id}"][checked]))
+      refute has_element?(view, "#new-size-allow", open.full_name)
+
+      view
+      |> form("#new-size", size: %{name: "c4"})
+      |> render_submit()
+
+      assert Repo.get_by(Crew.Sizes.Size, name: "c4")
+      assert Crew.Repos.get(limited.id).allowed_sizes == ["m", "c4"]
+      assert Crew.Repos.get(open.id).allowed_sizes in [nil, []]
+      assert render(view) =~ "#{limited.full_name} may use it"
+      refute has_element?(view, "#new-size-allow")
+    end
+
+    test "a repo that isn't there is left out", %{conn: conn} do
+      {:ok, view, _} =
+        live(
+          conn,
+          ~p"/admin/sizes?#{[vcpus: 4, memory_mib: 2048, disk_gib: 20, repos: [Ecto.UUID.generate(), "junk"]]}"
+        )
+
+      assert has_element?(view, ~s(#new-size input[name="size[vcpus]"][value="4"]))
+      refute has_element?(view, "#new-size-allow")
+    end
+
+    test "a repo that stopped limiting its sizes while the form was open is left alone", %{
+      conn: conn
+    } do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+      limited = repo_fixture(name: "limited")
+      {:ok, limited} = Crew.Repos.update_settings(admin, limited, %{"allowed_sizes" => ["m"]})
+
+      {:ok, view, _} =
+        live(
+          conn,
+          ~p"/admin/sizes?#{[vcpus: 4, memory_mib: 2048, disk_gib: 20, repos: [limited.id]]}"
+        )
+
+      {:ok, _} = Crew.Repos.update_settings(admin, limited, %{"allowed_sizes" => []})
+      html = view |> form("#new-size", size: %{name: "c4"}) |> render_submit()
+
+      assert Repo.get_by(Crew.Sizes.Size, name: "c4")
+      assert Crew.Repos.get(limited.id).allowed_sizes in [nil, []]
+      assert html =~ "Added c4."
+      refute html =~ "may use it"
+    end
+
+    test "unticked, the repo's sizes stay as they were", %{conn: conn} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+      limited = repo_fixture(name: "limited")
+      {:ok, limited} = Crew.Repos.update_settings(admin, limited, %{"allowed_sizes" => ["m"]})
+
+      {:ok, view, _} =
+        live(
+          conn,
+          ~p"/admin/sizes?#{[vcpus: 4, memory_mib: 2048, disk_gib: 20, repos: [limited.id]]}"
+        )
+
+      view
+      |> form("#new-size", size: %{name: "c4"}, allow: [])
+      |> render_submit()
+
+      assert Repo.get_by(Crew.Sizes.Size, name: "c4")
+      assert Crew.Repos.get(limited.id).allowed_sizes == ["m"]
+    end
+  end
+
   test "makes another size the default, and retires one", %{conn: conn} do
     {:ok, view, _} = live(conn, ~p"/admin/sizes")
     l = Repo.get_by!(Crew.Sizes.Size, name: "l")

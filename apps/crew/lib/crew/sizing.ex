@@ -304,7 +304,10 @@ defmodule Crew.Sizing do
   larger or faster size), and the net. With each repo's share and every
   hint, the most freed first. `needs_more` counts the jobs whose hint is
   a larger size. Dismissed hints count toward none of it; they're apart,
-  in `dismissed`, each with its `dismissal`.
+  in `dismissed`, each with its `dismissal`. `custom` groups the custom
+  hints by the shape they'd fit, each with its hints and what they'd
+  free in the week, the most first: one size for an admin to add where
+  several jobs would use it.
 
   Archived repos' runs still count toward the week; only live repos get
   hints. Hints look at each job's runs over 30 days, and only runs whose
@@ -370,10 +373,25 @@ defmodule Crew.Sizing do
         needs_more: Enum.count(hints, &(&1.hint.kind == :larger)),
         repos: Enum.sort_by(rows, &{-&1.net_gib_h, -&1.reserved_gib_h, &1.repo.full_name}),
         hints: hints,
-        dismissed: dismissed
+        dismissed: dismissed,
+        custom: custom_shapes(hints)
       },
       change(hints)
     )
+  end
+
+  defp custom_shapes(hints) do
+    hints
+    |> Enum.filter(&(&1.hint.kind == :custom))
+    |> Enum.group_by(&Map.take(&1.hint.to, [:vcpus, :memory_mib, :disk_gib]))
+    |> Enum.map(fn {shape, hints} ->
+      %{
+        shape: shape,
+        hints: hints,
+        freed_gib_h: hints |> Enum.map(& &1.freed_gib_h) |> Enum.sum()
+      }
+    end)
+    |> Enum.sort_by(&{-&1.freed_gib_h, &1.shape.memory_mib, &1.shape.vcpus})
   end
 
   defp readable(scope) do

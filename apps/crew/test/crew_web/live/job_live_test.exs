@@ -530,7 +530,19 @@ defmodule CrewWeb.JobLiveTest do
       {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/89")
       assert has_element?(view, "#sizing", "A custom size would fit")
       assert has_element?(view, "#sizing", "4 vCPU · 2.0 GiB · 20 GiB disk")
-      assert has_element?(view, "#sizing a[href='/admin/sizes']", "Sizes & labels")
+
+      [href] =
+        view
+        |> element("#sizing a", "Sizes & labels")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.attribute("href")
+
+      %URI{path: "/admin/sizes", query: query} = URI.parse(href)
+
+      assert Plug.Conn.Query.decode(query) ==
+               %{"vcpus" => "4", "memory_mib" => "2048", "disk_gib" => "20", "repos" => [repo.id]}
+
       refute has_element?(view, "#sizing code", "runs-on:")
       # Nothing to file until the size exists.
       refute has_element?(view, "#sizing a[href*='/issues/new']")
@@ -547,7 +559,7 @@ defmodule CrewWeb.JobLiveTest do
 
       {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/89")
       assert has_element?(view, "#sizing", "An admin can add it on Sizes & labels.")
-      refute has_element?(view, "#sizing a[href='/admin/sizes']")
+      refute has_element?(view, "#sizing a[href^='/admin/sizes']")
     end
 
     test "the job's median duration on each size it ran on", %{conn: conn, repo: repo} do

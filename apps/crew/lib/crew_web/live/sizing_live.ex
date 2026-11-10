@@ -159,6 +159,13 @@ defmodule CrewWeb.SizingLive do
                   issue={h.issue}
                   compact
                 />
+                <.link
+                  :if={@admin and h.hint.kind == :custom}
+                  href={SizingComponents.add_size_path(h.hint.to, [h.repo.id])}
+                  class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+                >
+                  Add this size
+                </.link>
                 <SizingComponents.dismiss_button
                   :if={@admin and @dismissing != h.job.id}
                   job_id={h.job.id}
@@ -180,6 +187,57 @@ defmodule CrewWeb.SizingLive do
           admin={@admin}
           repo
         />
+      </.panel>
+
+      <.panel
+        :if={@fleet.custom != []}
+        id="sizing-custom"
+        title="Sizes that would fit"
+        class="mb-4"
+      >
+        <:subtitle>
+          The custom hints by the shape they'd fit: one size an admin adds can serve all of a shape's jobs.
+        </:subtitle>
+        <ul class="-my-3 divide-y divide-line">
+          <li
+            :for={c <- @fleet.custom}
+            id={"sizing-custom-#{c.shape.vcpus}-#{c.shape.memory_mib}-#{c.shape.disk_gib}"}
+            class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] sm:items-start"
+          >
+            <div class="min-w-0">
+              <p class="text-sm font-medium text-ink">{SizingComponents.shape(c.shape)}</p>
+              <p class="mt-0.5 text-xs text-ink-3">
+                {length(c.hints)} {if length(c.hints) == 1, do: "job", else: "jobs"}
+              </p>
+            </div>
+            <ul class="min-w-0 space-y-0.5 text-xs">
+              <li :for={h <- c.hints} class="truncate">
+                <.link
+                  navigate={
+                    ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
+                  }
+                  class="text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+                >
+                  {h.workflow_name} · {h.name}
+                </.link>
+                <span class="text-ink-3">{h.repo.full_name}</span>
+              </li>
+            </ul>
+            <div class="space-y-1 sm:text-right">
+              <p :if={c.freed_gib_h > 0} class="whitespace-nowrap text-xs text-ink-2">
+                frees {gib_h(c.freed_gib_h)} GiB-hours a week
+              </p>
+              <.link
+                :if={@admin}
+                href={SizingComponents.add_size_path(c.shape, Enum.map(c.hints, & &1.repo.id))}
+                class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+              >
+                Add this size
+              </.link>
+              <p :if={!@admin} class="text-xs text-ink-3">An admin can add it on Sizes & labels.</p>
+            </div>
+          </li>
+        </ul>
       </.panel>
 
       <.panel id="sizing-repos" title="By repo">

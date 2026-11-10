@@ -143,7 +143,7 @@ test("a custom shape names what to add, and where", async ({page}) => {
   const panel = page.locator("#sizing")
   await expect(panel).toContainText("A custom size would fit")
   await expect(panel).toContainText("4 vCPU · 2.0 GiB · 20 GiB disk")
-  await expect(panel.getByRole("link", {name: "Sizes & labels"})).toHaveAttribute("href", "/admin/sizes")
+  await expect(panel.getByRole("link", {name: "Sizes & labels"})).toHaveAttribute("href", /^\/admin\/sizes\?vcpus=4&memory_mib=2048&disk_gib=20&repos\[\]=/)
   await expect(panel.getByRole("link", {name: "File issue"})).toHaveCount(0)
   await shot(page, layer, "job-custom")
 
@@ -310,4 +310,49 @@ test("a job that moved sizes shows its time on each", async ({page}) => {
   await expect(rows.nth(1)).toContainText("l (8 vCPU · 16.0 GiB)")
   await expect(rows.nth(1)).toContainText("8m 20s")
   await shot(page, layer, "job-durations")
+})
+
+// Last: it adds a size, which changes the hints the tests above expect.
+test("a custom shape becomes a size an admin adds, and then a hint with an issue", async ({page}) => {
+  await signIn(page)
+  await page.goto("/sizing")
+  await connected(page)
+
+  // The shapes custom hints would fit, with the jobs each would serve.
+  const shape = page.locator("#sizing-custom-4-2048-20")
+  await expect(shape).toContainText("4 vCPU · 2.0 GiB · 20 GiB disk")
+  await expect(shape).toContainText("1 job")
+  await expect(shape).toContainText("CI · build")
+  await expect(shape).toContainText("mona/storefront")
+  await shot(page, layer, "fleet-custom")
+
+  // The repo limits its sizes, so the new one has to be allowed there too.
+  await openRepo(page)
+  const settings = page.locator("#repo-settings")
+  for (const name of ["xs", "s", "m", "l", "xl"]) await settings.getByLabel(name, {exact: true}).check()
+  await settings.getByRole("button", {name: "Save"}).click()
+  await expect(page.locator("#sizing-hints > li").first()).toContainText("A custom size would fit")
+
+  await page.locator("#sizing-hints > li", {hasText: "CI · build"}).getByRole("link", {name: "Add this size"}).click()
+  await page.waitForURL(/\/admin\/sizes\?/)
+  await connected(page)
+  const form = page.locator("#new-size")
+  await expect(form.getByLabel("vCPUs")).toHaveValue("4")
+  await expect(form.getByLabel("Memory (MiB)")).toHaveValue("2048")
+  await expect(form.getByLabel("Disk (GiB)")).toHaveValue("20")
+  const allow = page.locator("#new-size-allow")
+  await expect(allow.getByLabel("mona/storefront")).toBeChecked()
+  await form.getByLabel("Name").fill("c4")
+  await shot(page, layer, "sizes-prefilled")
+  await form.getByRole("button", {name: "Add size"}).click()
+  await expect(page.getByText("Added c4. mona/storefront may use it.")).toBeVisible()
+  await expect(page.locator("#new-size-allow")).toHaveCount(0)
+
+  // The hint is now a size to move to, with its issue.
+  await openRepo(page)
+  const build = page.locator("#sizing-hints > li", {hasText: "CI · build"})
+  await expect(build).toContainText("Try c4")
+  const issue = new URL(await build.getByRole("link", {name: "File issue"}).getAttribute("href"))
+  expect(issue.searchParams.get("title")).toBe("Move CI · build to crew-c4")
+  await shot(page, layer, "repo-after-custom")
 })

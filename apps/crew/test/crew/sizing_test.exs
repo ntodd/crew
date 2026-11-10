@@ -457,6 +457,73 @@ defmodule Crew.SizingTest do
     end
   end
 
+  describe "custom shapes" do
+    @busy [cpu_excess: [1200.0, 600.0, 120.0]]
+
+    defp add_size(name),
+      do: Crew.Sizes.create(admin(), %{name: name, vcpus: 4, memory_mib: 2048, disk_gib: 20})
+
+    test "a custom hint is a smaller one once its shape is a size the repo may use", %{repo: repo} do
+      finished_n(repo, 5, [name: "build"] ++ @busy)
+
+      assert [%{hint: %Hint{kind: :custom, to: %{vcpus: 4, memory_mib: 2048}}}] =
+               Sizing.for_repo(admin(), repo)
+
+      {:ok, _} = add_size("c4")
+
+      assert [%{hint: %Hint{kind: :smaller, to: %{name: "c4"}, saved_mib: 6144}}] =
+               Sizing.for_repo(admin(), repo)
+    end
+
+    test "not while the repo's sizes leave it out", %{repo: repo} do
+      finished_n(repo, 5, [name: "build"] ++ @busy)
+      {:ok, repo} = Crew.Repos.update_settings(admin(), repo, %{"allowed_sizes" => ["m", "l"]})
+      {:ok, _} = add_size("c4")
+
+      assert [%{hint: %Hint{kind: :custom}}] = Sizing.for_repo(admin(), repo)
+
+      {:ok, repo} =
+        Crew.Repos.update_settings(admin(), repo, %{"allowed_sizes" => ["m", "l", "c4"]})
+
+      assert [%{hint: %Hint{kind: :smaller, to: %{name: "c4"}}}] = Sizing.for_repo(admin(), repo)
+    end
+
+    test "the fleet groups custom hints by the shape they'd fit, the most freed first", %{
+      repo: repo
+    } do
+      other = repo_fixture(name: "api")
+      finished_n(repo, 5, [name: "build"] ++ @busy)
+      finished_n(other, 5, [name: "build"] ++ @busy)
+      finished_n(other, 5, name: "pack", cpu_excess: [1200.0, 600.0, 120.0], peak_mem_mib: 2600)
+      finished_n(repo, 5)
+
+      fleet = Sizing.fleet(admin())
+
+      assert [
+               %{shape: %{vcpus: 4, memory_mib: 2048, disk_gib: 20}, hints: [_, _]} = two,
+               %{shape: %{vcpus: 4, memory_mib: 4096}, hints: [%{name: "pack"}]}
+             ] = fleet.custom
+
+      assert Enum.sort(Enum.map(two.hints, & &1.repo.id)) == Enum.sort([repo.id, other.id])
+      assert_in_delta two.freed_gib_h, Enum.sum(Enum.map(two.hints, & &1.freed_gib_h)), 0.001
+      assert two.freed_gib_h > 0
+    end
+
+    test "a dismissed custom hint isn't in a group", %{repo: repo} do
+      newest = repo |> finished_n(5, [name: "build"] ++ @busy) |> List.last()
+      %Hint{kind: kind, from: from} = Sizing.for_job(newest)
+
+      {:ok, _} =
+        Sizing.dismiss(admin(), newest.id, %{
+          "kind" => to_string(kind),
+          "vcpus" => to_string(from.vcpus),
+          "memory_mib" => to_string(from.memory_mib)
+        })
+
+      assert Sizing.fleet(admin()).custom == []
+    end
+  end
+
   describe "durations/1" do
     defp ran(repo, minutes, attrs) do
       started = hours_ago(attrs[:hours] || 1)

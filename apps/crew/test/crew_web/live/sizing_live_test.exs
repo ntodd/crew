@@ -106,6 +106,63 @@ defmodule CrewWeb.SizingLiveTest do
     assert has_element?(view, "#sizing-reserved", "0")
   end
 
+  describe "sizes that would fit" do
+    @busy [name: "build", cpu_excess: [1200.0, 600.0, 120.0]]
+
+    test "custom hints by shape, each with the jobs it fits and a link to add it", %{
+      conn: conn,
+      repo: repo,
+      other: other
+    } do
+      summarized_jobs_fixture(repo, 5, @busy)
+      summarized_jobs_fixture(other, 5, @busy)
+
+      {:ok, view, _} = live(conn, ~p"/sizing")
+      shape = "#sizing-custom-4-2048-20"
+      assert has_element?(view, shape, "4 vCPU · 2.0 GiB · 20 GiB disk")
+      assert has_element?(view, shape, "2 jobs")
+      assert has_element?(view, shape, "CI · build")
+      assert has_element?(view, shape, repo.full_name)
+      assert has_element?(view, shape, other.full_name)
+      assert has_element?(view, shape, "GiB-hours a week")
+
+      [a, b] = Enum.sort([repo.id, other.id])
+
+      [href] =
+        view
+        |> element("#{shape} a", "Add this size")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.attribute("href")
+
+      %URI{path: "/admin/sizes", query: query} = URI.parse(href)
+
+      assert %{"vcpus" => "4", "memory_mib" => "2048", "disk_gib" => "20", "repos" => repos} =
+               Plug.Conn.Query.decode(query)
+
+      assert Enum.sort(repos) == [a, b]
+    end
+
+    test "none without custom hints; no link for a member", %{repo: repo} do
+      summarized_jobs_fixture(repo, 5)
+      member = user_fixture()
+
+      Crew.Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+      refute has_element?(view, "#sizing-custom")
+
+      summarized_jobs_fixture(repo, 5, @busy)
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+      assert has_element?(view, "#sizing-custom", "An admin can add it")
+      refute has_element?(view, "#sizing-custom a[href^='/admin/sizes']")
+    end
+  end
+
   describe "dismissing a hint" do
     test "an admin dismisses one, with why: it leaves the hints and the totals, and comes back",
          %{conn: conn, admin: admin, repo: repo} do

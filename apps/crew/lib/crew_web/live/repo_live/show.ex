@@ -620,6 +620,13 @@ defmodule CrewWeb.RepoLive.Show do
                       issue={h.issue}
                       compact
                     />
+                    <.link
+                      :if={Scope.admin?(@current_scope) and h.hint.kind == :custom}
+                      href={SizingComponents.add_size_path(h.hint.to, [@repo.id])}
+                      class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+                    >
+                      Add this size
+                    </.link>
                     <SizingComponents.dismiss_button
                       :if={Scope.admin?(@current_scope) and @dismissing != h.job.id}
                       job_id={h.job.id}

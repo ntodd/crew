@@ -114,6 +114,14 @@ defmodule CrewWeb.SizingComponents do
     if spare?(job), do: String.replace_suffix(label, "-spare", ""), else: label
   end
 
+  @doc """
+  The new-size form on Sizes & labels, filled in with a custom hint's
+  shape, offering it to the repos (by id) that limit their sizes.
+  """
+  def add_size_path(%{vcpus: vcpus, memory_mib: memory, disk_gib: disk}, repo_ids),
+    do:
+      ~p"/admin/sizes?#{[vcpus: vcpus, memory_mib: memory, disk_gib: disk, repos: Enum.uniq(repo_ids)]}"
+
   @doc "What a hint is based on."
   def basis(%Hint{runs: 1}), do: "From this job's last run."
   def basis(%Hint{runs: n}), do: "From the last #{n} runs of this job."
@@ -182,7 +190,10 @@ defmodule CrewWeb.SizingComponents do
       </div>
       <p :if={@hint.kind == :custom} class="text-xs text-ink-3">
         <%= if @admin do %>
-          Add it on <.link navigate="/admin/sizes" class="underline underline-offset-2 hover:text-ink">Sizes & labels</.link>, then use it in the job's <code class="font-mono">runs-on</code>.
+          Add it on <.link
+            href={add_size_path(@hint.to, if(@job, do: [@job.repo_id], else: []))}
+            class="underline underline-offset-2 hover:text-ink"
+          >Sizes & labels</.link>, then use it in the job's <code class="font-mono">runs-on</code>.
         <% else %>
           An admin can add it on Sizes & labels.
         <% end %>

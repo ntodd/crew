@@ -665,7 +665,11 @@ the repo's jobs that GitHub still has queued or waiting.
     saw was done;
   - **custom** when the best allowed size reserves at least twice the
     memory the job needs and 4 GiB more: the hint names a shape (1 or an
-    even count of vCPUs, whole GiB) for an admin to add;
+    even count of vCPUs, whole GiB) for an admin to add. Its link opens
+    the new-size form on Sizes & labels with the shape filled in, and
+    when the job's repo limits its sizes, offers (ticked) to allow the new
+    one there too. Once the size exists and the repo may use it, the hint
+    is a smaller one, to that size;
   - **fits** otherwise.
 - **Time on each size:** when a job's recent successful runs (its last 30
   within 90 days) used more than one shape, its page shows the median
@@ -721,7 +725,11 @@ the repo's jobs that GitHub still has queued or waiting.
   ran), what applying the hints would have changed (what they free, what
   larger sizes take, and the net), each repo's share, and every hint,
   the most memory freed in a week first. Archived repos' runs still count
-  toward the week; only live repos get hints.
+  toward the week; only live repos get hints. **Sizes that would fit**
+  groups the custom hints by the shape they'd fit, each with its jobs and
+  what they'd free in the week, the most first, and one link to add it
+  that offers every repo among its jobs that limits its sizes: one size
+  for all of them, not one per job.
 
 ### 7.6 Workflow schedules (admin, on the repo page)
 
