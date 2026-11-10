@@ -8,7 +8,7 @@ defmodule CrewWeb.AdminLive.Sizes do
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Scheduler, Sizes}
+  alias Crew.{Repos, Scheduler, Sizes}
   alias Crew.Sizes.{LabelAlias, Size}
 
   @impl true
@@ -22,24 +22,82 @@ defmodule CrewWeb.AdminLive.Sizes do
      |> assign(:tested, nil)
      |> assign(:new_size, to_form(Sizes.change(%Size{}), as: :size))
      |> assign(:new_alias, to_form(LabelAlias.changeset(%LabelAlias{}, %{}), as: :label_alias))
+     |> assign(:allow_repos, [])
      |> load()}
   end
 
+  # From a custom right-sizing hint (§7.5): its shape in the new-size
+  # form, and the repos it's for that limit their sizes, to allow it for.
+  @impl true
+  def handle_params(params, _uri, socket) do
+    shape = Map.take(params, ["vcpus", "memory_mib", "disk_gib"])
+
+    socket =
+      if shape == %{},
+        do: socket,
+        else: assign(socket, new_size: to_form(Sizes.change(%Size{}, shape), as: :size))
+
+    {:noreply, assign(socket, :allow_repos, limited_repos(params["repos"]))}
+  end
+
+  defp limited_repos(ids) when is_list(ids) do
+    ids
+    |> Enum.flat_map(fn id ->
+      case Ecto.UUID.cast(id) do
+        {:ok, id} -> [Repos.get(id)]
+        :error -> []
+      end
+    end)
+    |> Enum.filter(&limits_sizes?/1)
+    |> Enum.uniq_by(& &1.id)
+  end
+
+  defp limited_repos(_ids), do: []
+
+  defp limits_sizes?(%Crew.Repos.Repo{archived_at: nil, allowed_sizes: [_ | _]}), do: true
+  defp limits_sizes?(_repo), do: false
+
+  # Adds the new size to each of the repos ticked, among those offered,
+  # that still limit their sizes: one that stopped already takes it.
+  defp allow(scope, size, ticked, offered) do
+    for %{id: id} <- offered,
+        id in List.wrap(ticked),
+        repo = Repos.get(id),
+        limits_sizes?(repo),
+        size.name not in repo.allowed_sizes,
+        {:ok, repo} <-
+          [
+            Repos.update_settings(scope, repo, %{
+              "allowed_sizes" => repo.allowed_sizes ++ [size.name]
+            })
+          ],
+        do: repo
+  end
+
   defp load(socket), do: assign(socket, sizes: Sizes.list(), aliases: Sizes.list_aliases())
+
+  defp added(size, []), do: "Added #{size.name}."
+
+  defp added(size, repos),
+    do: "Added #{size.name}. #{Enum.map_join(repos, ", ", & &1.full_name)} may use it."
 
   @impl true
   def handle_info(:sizes_changed, socket), do: {:noreply, load(socket)}
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
-  def handle_event("create_size", %{"size" => attrs}, socket) do
-    case Sizes.create(socket.assigns.current_scope, attrs) do
+  def handle_event("create_size", %{"size" => attrs} = params, socket) do
+    scope = socket.assigns.current_scope
+
+    case Sizes.create(scope, attrs) do
       {:ok, size} ->
+        allowed = allow(scope, size, params["allow"], socket.assigns.allow_repos)
+
         {:noreply,
          socket
          |> load()
-         |> assign(new_size: to_form(Sizes.change(%Size{}), as: :size))
-         |> put_flash(:info, "Added #{size.name}.")}
+         |> assign(new_size: to_form(Sizes.change(%Size{}), as: :size), allow_repos: [])
+         |> put_flash(:info, added(size, allowed))}
 
       {:error, %Ecto.Changeset{} = cs} ->
         {:noreply, assign(socket, new_size: to_form(Map.put(cs, :action, :validate), as: :size))}
@@ -246,6 +304,20 @@ defmodule CrewWeb.AdminLive.Sizes do
             <.input field={@new_size[:vcpus]} type="number" label="vCPUs" />
             <.input field={@new_size[:memory_mib]} type="number" label="Memory (MiB)" />
             <.input field={@new_size[:disk_gib]} type="number" label="Disk (GiB)" />
+            <fieldset
+              :if={@allow_repos != []}
+              id="new-size-allow"
+              class="col-span-2 space-y-1.5 sm:col-span-4"
+            >
+              <legend class="mb-1.5 text-xs text-ink-2">
+                These repos limit their sizes. Allow the new one for them:
+              </legend>
+              <input type="hidden" name="allow[]" value="" />
+              <label :for={r <- @allow_repos} class="flex items-center gap-2 text-sm text-ink">
+                <input type="checkbox" name="allow[]" value={r.id} checked class="checkbox" />
+                {r.full_name}
+              </label>
+            </fieldset>
             <div class="col-span-2 sm:col-span-4">
               <.button type="submit" size="sm">Add size</.button>
             </div>

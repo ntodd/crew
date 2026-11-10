@@ -626,8 +626,13 @@ the repo's jobs that GitHub still has queued or waiting.
   the job finishes, and the repo page lists its jobs' hints. They come
   from the last 10 finished runs of the same `(repo, workflow, job name)`
   on the shape the newest one ran on (none if it has no shape), from
-  summaries a newer guest wrote (§16.5). Memory and CPU are sized separately, since memory is what
-  limits placement (§8.3):
+  summaries a newer guest wrote (§16.5). Next to the `runs-on` line, the
+  hint links the newest run's workflow file on the repo's default branch:
+  GitHub's `path` for the run, kept on the attempt, when it's a file in
+  `.github/workflows/` (not a `dynamic/...` workflow GitHub runs itself),
+  without any `@ref` after it. A job in a reusable workflow has its
+  `runs-on` in the called file, so the link is where to start. Memory and
+  CPU are sized separately, since memory is what limits placement (§8.3):
   - **larger** when any run had a process killed for memory, most stalled
     on memory, or one peaked at 90% of its memory: never fewer vCPUs, and
     the disk the runs used (adding vCPUs when it's also waiting on a CPU);
@@ -660,7 +665,11 @@ the repo's jobs that GitHub still has queued or waiting.
     saw was done;
   - **custom** when the best allowed size reserves at least twice the
     memory the job needs and 4 GiB more: the hint names a shape (1 or an
-    even count of vCPUs, whole GiB) for an admin to add;
+    even count of vCPUs, whole GiB) for an admin to add. Its link opens
+    the new-size form on Sizes & labels with the shape filled in, and
+    when the job's repo limits its sizes, offers (ticked) to allow the new
+    one there too. Once the size exists and the repo may use it, the hint
+    is a smaller one, to that size;
   - **fits** otherwise.
 - **Time on each size:** when a job's recent successful runs (its last 30
   within 90 days) used more than one shape, its page shows the median
@@ -668,13 +677,68 @@ the repo's jobs that GitHub still has queued or waiting.
   check that a smaller size didn't slow it down: Crew counts reclaimable
   page cache as free, so a job that reads a lot can get slower on less
   memory without ever running out.
+- **Filing an issue:** a hint with a size to move to (smaller, faster, or
+  larger when an allowed size is larger) has a "File issue" link to
+  GitHub's new-issue form on the repo (`/issues/new?title=…&body=…`),
+  filled in. Whoever clicks it reads it on GitHub and files it as
+  themselves, so the App needs no permission for issues (§6.1). The
+  title is "Move `<workflow>` · `<job>` to `<label>`". The body has the
+  `runs-on` change as a diff: the job's labels, with its Crew label
+  swapped for the new size's (keeping its arch and `-spare`), or, for a
+  job on an alias (§7.3), the Crew label alone with the alias's arch.
+  Then the workflow file, both shapes and what a run frees or takes, the
+  hint's reasons, and the job's page on Crew, to check its time on each
+  size once the change lands. "Copy as Markdown" copies the same title,
+  as a heading, and body, for a tracker that isn't GitHub. Custom hints
+  (the size doesn't exist yet), larger ones without a size, and fits get
+  neither. Both are on the job page's hint and on each hint row of the
+  repo page and `/sizing`.
+- **One issue per repo:** "File one issue" on the repo page's Right-sizing
+  panel, and "File issue" on each row of `/sizing`'s By repo table, file
+  one issue for all of a repo's hints that have a size to move to. It's
+  a checklist with one item per job (its `runs-on` change, its first
+  reason and its page on Crew), grouped under each workflow file, or the
+  workflow's name without one, in the hints' order. The title counts the
+  jobs. On `/sizing` it also says what the changes would free or take
+  over the week, and the body's first line gives both. GitHub refuses
+  links much past 8,000 characters, so the link's body leaves jobs off
+  the end and ends with how many more there are and the repo's page on
+  Crew. Copy as Markdown always has every job.
+- **Dismissing a hint:** an admin can dismiss a hint nobody will apply,
+  with an optional reason (up to 500 characters), from its row on the
+  repo page or `/sizing`, or from its job's page. Repo settings and
+  schedules are admin-only too (§7.4, §7.6). A dismissal is keyed on the
+  repo, the workflow, the job name, the shape the job's newest run had
+  and the hint's kind, so the hint comes back when the job changes size
+  or the hint changes kind: a dismissed "Try xs" can't hide a later
+  "Needs more memory". Dismissing again keeps one, with the newer
+  reason. A dismissed hint leaves `/sizing`'s hints and totals (what the
+  hints would free and take, the jobs that need more memory, each
+  repo's net) and both kinds of issue. The repo page and `/sizing` say
+  how many are dismissed and can list them, each with who dismissed it,
+  when and why, and Restore for admins. The job page still shows its
+  hint, marked dismissed, without its issue. Both are audit-logged
+  (`sizing_hint.dismiss`, `sizing_hint.restore`).
 - **The Right-sizing page** (`/sizing`) adds the hints up over the last 7
   days, for the repos the viewer can read: the memory the runs reserved
   and the most they used, in GiB-hours (a VM's memory times how long it
   ran), what applying the hints would have changed (what they free, what
   larger sizes take, and the net), each repo's share, and every hint,
   the most memory freed in a week first. Archived repos' runs still count
-  toward the week; only live repos get hints.
+  toward the week; only live repos get hints. **Sizes that would fit**
+  groups the custom hints by the shape they'd fit, each with its jobs and
+  what they'd free in the week, the most first, and one link to add it
+  that offers every repo among its jobs that limits its sizes: one size
+  for all of them, not one per job.
+- **Size changes** on `/sizing` show whether a move worked. A job's
+  newest run sets its size, and its change is the first run on that size
+  after the last run on another (within 90 days); the jobs whose change
+  is under 30 days old are listed. Each has the shape before and after,
+  when it moved, how many runs it had on each, the median duration of the
+  newest 30 successful runs on each, and what the move freed or took over
+  the week's runs. A move whose median is more than 5% longer, or with a
+  process killed for memory on the new size, says so, and those come
+  first. Nothing new is stored: the runs have their shapes.
 
 ### 7.6 Workflow schedules (admin, on the repo page)
 
@@ -3641,6 +3705,9 @@ repos(id, installation_id, github_id unique, full_name, private, default_branch,
       allowed_sizes [string] null, allowed_boxes [uuid] null, max_concurrent int null,
       fork_prs enum(refuse, allow), priority int, archived_at)
 user_repo_access(user_id, repo_id, can_push, checked_at)            pk(user_id, repo_id)
+sizing_dismissals(id, repo_id, workflow_name, job_name, vcpus, memory_mib, kind,
+                  reason null, user_id null, user_login null)  -- §7.5
+                  unique(repo_id, workflow_name, job_name, vcpus, memory_mib, kind)
 schedules(id, repo_id, workflow, ref, cron, enabled, last_due_at, last_dispatched_at,
           last_error null)                   unique(repo_id, workflow, ref, cron)  -- §7.6
 
@@ -3648,8 +3715,9 @@ sizes(id, name unique, vcpus, memory_mib, disk_gib, disk_iops null,
       disk_bandwidth_mbps null, net_bandwidth_mbps null, is_default, retired_at)
 label_aliases(id, labels [string] unique (sorted), size_id, arch enum(any, x64, arm64))
 
-run_attempts(id, repo_id, github_run_id, run_attempt, run_number, workflow_name, event,
-             head_branch, head_sha, head_commit_message, actor_login, actor_id,
+run_attempts(id, repo_id, github_run_id, run_attempt, run_number, workflow_name,
+             workflow_path null,                     -- GitHub's `path` (§7.5)
+             event, head_branch, head_sha, head_commit_message, actor_login, actor_id,
              pull_requests map, head_repo_full_name, is_fork bool null, status,
              conclusion, gh_created_at, gh_updated_at)
              unique(github_run_id, run_attempt)

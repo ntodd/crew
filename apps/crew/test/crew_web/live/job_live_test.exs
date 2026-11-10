@@ -407,6 +407,119 @@ defmodule CrewWeb.JobLiveTest do
       assert has_element?(view, "#sizing", "Try xs")
       assert has_element?(view, "#sizing", "frees 6.0 GiB a run")
       assert has_element?(view, "#sizing code", "runs-on: crew-xs")
+
+      # The run's workflow file, where the line goes.
+      assert has_element?(
+               view,
+               ~s(#sizing a[href="#{CrewWeb.GitHub.repo_url(repo)}/blob/main/.github/workflows/ci.yml"]),
+               ".github/workflows/ci.yml"
+             )
+
+      # An issue for the change, on GitHub or copied.
+      assert has_element?(
+               view,
+               ~s(#sizing a[href^="https://github.com/#{repo.full_name}/issues/new?"][target="_blank"]),
+               "File issue"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#sizing button[phx-hook="Copy"][data-copy^="# Move CI · lint to crew-xs"]),
+               "Copy as Markdown"
+             )
+    end
+
+    test "an admin dismisses the hint here; the page says so, with no issue, until it's restored",
+         %{conn: conn, repo: repo} do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 94)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/94")
+      view |> element("#sizing button", "Dismiss") |> render_click()
+      view |> form("#sizing-dismiss", %{"reason" => "lint stays on m"}) |> render_submit()
+
+      assert has_element?(view, "#sizing", "Try xs")
+      assert has_element?(view, "#sizing-dismissed", "Dismissed by")
+      assert has_element?(view, "#sizing-dismissed", "lint stays on m")
+      refute has_element?(view, "#sizing a", "File issue")
+      refute has_element?(view, "#sizing button", "Dismiss")
+
+      view |> element("#sizing-dismissed button", "Restore") |> render_click()
+      refute has_element?(view, "#sizing-dismissed")
+      assert has_element?(view, "#sizing a", "File issue")
+    end
+
+    test "a member sees it's dismissed, without the buttons", %{repo: repo} do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      job = summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 95)
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+      %{kind: kind, from: from} = Crew.Sizing.for_job(job)
+
+      {:ok, _} =
+        Crew.Sizing.dismiss(admin, job.id, %{
+          "kind" => to_string(kind),
+          "vcpus" => to_string(from.vcpus),
+          "memory_mib" => to_string(from.memory_mib)
+        })
+
+      member = user_fixture()
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/95")
+      assert has_element?(view, "#sizing-dismissed", "Dismissed by #{admin.user.login}")
+      refute has_element?(view, "#sizing button", "Restore")
+      refute has_element?(view, "#sizing button", "Dismiss")
+    end
+
+    test "a member whose access lapsed is sent away, not shown the hint again", %{repo: repo} do
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4242, id: 96)
+      member = user_fixture()
+
+      Repo.insert!(%Crew.Repos.Access{
+        user_id: member.id,
+        repo_id: repo.id,
+        checked_at: DateTime.utc_now()
+      })
+
+      {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/96")
+      Repo.delete_all(Crew.Repos.Access)
+      render_hook(view, "dismissing", %{"job" => "x"})
+      assert_redirect(view, ~p"/runs")
+    end
+
+    test "a spare job keeps its tier, and its other labels stay", %{conn: conn, repo: repo} do
+      spare = [name: "fuzz", labels: ["self-hosted", "crew-m-spare"]]
+      summarized_jobs_fixture(repo, 4, spare)
+      summarized_job_fixture(repo, [run_id: 4242, id: 93] ++ spare)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/93")
+      assert has_element?(view, "#sizing code", "runs-on: [self-hosted, crew-xs-spare]")
+
+      assert has_element?(
+               view,
+               ~s(#sizing button[data-copy*="- runs-on: [self-hosted, crew-m-spare]"]),
+               "Copy as Markdown"
+             )
+    end
+
+    test "no file link for a run whose workflow isn't a file", %{conn: conn, repo: repo} do
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 4343, path: "dynamic/dependabot/dependabot-updates")
+        )
+
+      summarized_jobs_fixture(repo, 4, name: "lint")
+      summarized_job_fixture(repo, name: "lint", run_id: 4343, id: 92)
+
+      {:ok, view, _} = live(conn, ~p"/runs/4343/attempts/1/jobs/92")
+      assert has_element?(view, "#sizing code", "runs-on: crew-xs")
+      refute has_element?(view, "#sizing a[href*='/blob/']")
     end
 
     test "a custom size tells an admin where to add it", %{conn: conn, repo: repo} do
@@ -417,8 +530,23 @@ defmodule CrewWeb.JobLiveTest do
       {:ok, view, _} = live(conn, ~p"/runs/4242/attempts/1/jobs/89")
       assert has_element?(view, "#sizing", "A custom size would fit")
       assert has_element?(view, "#sizing", "4 vCPU · 2.0 GiB · 20 GiB disk")
-      assert has_element?(view, "#sizing a[href='/admin/sizes']", "Sizes & labels")
+
+      [href] =
+        view
+        |> element("#sizing a", "Sizes & labels")
+        |> render()
+        |> LazyHTML.from_fragment()
+        |> LazyHTML.attribute("href")
+
+      %URI{path: "/admin/sizes", query: query} = URI.parse(href)
+
+      assert Plug.Conn.Query.decode(query) ==
+               %{"vcpus" => "4", "memory_mib" => "2048", "disk_gib" => "20", "repos" => [repo.id]}
+
       refute has_element?(view, "#sizing code", "runs-on:")
+      # Nothing to file until the size exists.
+      refute has_element?(view, "#sizing a[href*='/issues/new']")
+      refute has_element?(view, "#sizing [phx-hook='Copy']")
 
       # A member can't add sizes, so there's no link for them.
       member = user_fixture()
@@ -431,7 +559,7 @@ defmodule CrewWeb.JobLiveTest do
 
       {:ok, view, _} = live(log_in(build_conn(), member), ~p"/runs/4242/attempts/1/jobs/89")
       assert has_element?(view, "#sizing", "An admin can add it on Sizes & labels.")
-      refute has_element?(view, "#sizing a[href='/admin/sizes']")
+      refute has_element?(view, "#sizing a[href^='/admin/sizes']")
     end
 
     test "the job's median duration on each size it ran on", %{conn: conn, repo: repo} do

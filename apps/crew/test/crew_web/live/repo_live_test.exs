@@ -161,13 +161,61 @@ defmodule CrewWeb.RepoLiveTest do
                "CI · test"
              )
 
+      assert has_element?(
+               view,
+               ~s(#sizing-#{newest.id} a[href^="https://github.com/#{repo.full_name}/issues/new?"]),
+               "File issue"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#sizing-#{newest.id} button[data-copy^="# Move CI · test to crew-xs"]),
+               "Copy as Markdown"
+             )
+
+      # Or one issue for all of them.
+      assert has_element?(
+               view,
+               ~s(#sizing-repo-issue a[href^="https://github.com/#{repo.full_name}/issues/new?"]),
+               "File one issue"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#sizing-repo-issue button[data-copy^="# Right-size 1 job in #{repo.full_name}"])
+             )
+
       # e2e fits m.
       refute has_element?(view, "#sizing", "e2e")
+    end
+
+    test "an admin dismisses a hint: it moves under the list, out of the repo's issue", %{
+      conn: conn,
+      repo: repo
+    } do
+      newest = repo |> summarized_jobs_fixture(5, name: "test") |> List.last()
+      row = "#sizing-#{newest.id}"
+
+      {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
+      assert has_element?(view, "#sizing-repo-issue")
+
+      view |> element("#{row} button", "Dismiss") |> render_click()
+      view |> form("#{row}-dismiss", %{"reason" => "kept on m"}) |> render_submit()
+
+      refute has_element?(view, "#sizing-hints #{row}")
+      refute has_element?(view, "#sizing-repo-issue")
+      view |> element("#sizing-dismissed-toggle", "1 dismissed") |> render_click()
+      assert has_element?(view, "#sizing-dismissed-#{newest.id}", "kept on m")
+
+      view |> element("#sizing-dismissed-#{newest.id} button", "Restore") |> render_click()
+      assert has_element?(view, "#sizing-hints #{row}", "Try xs")
+      assert has_element?(view, "#sizing-repo-issue")
     end
 
     test "says when there's nothing to change", %{conn: conn, repo: repo} do
       {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")
       assert has_element?(view, "#sizing-empty")
+      refute has_element?(view, "#sizing-repo-issue")
 
       summarized_jobs_fixture(repo, 5, name: "e2e", peak_mem_mib: 5000)
       {:ok, view, _} = live(conn, ~p"/repos/#{repo.id}")

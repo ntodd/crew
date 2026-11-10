@@ -165,6 +165,23 @@ defmodule Crew.SizingTest do
              ] = Sizing.for_repo(admin, repo)
     end
 
+    test "each hint has its newest run's workflow file, when Crew knows it", %{repo: repo} do
+      finished_n(repo, 4, name: "lint")
+
+      {:ok, _} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, id: 5151, path: ".github/workflows/lint.yml")
+        )
+
+      finished(repo, name: "lint", run_id: 5151)
+      hints = Sizing.for_repo(Scope.for_user(user_fixture(role: "admin")), repo)
+
+      assert %{workflow_path: ".github/workflows/lint.yml"} =
+               Enum.find(hints, &(&1.name == "lint"))
+
+      assert %{workflow_path: nil} = Enum.find(hints, &(&1.name == "test"))
+    end
+
     test "a job's history is its 30 newest runs, as on the job page", %{repo: repo} do
       # 5 runs on m, then 30 on l, then the newest back on m: the 30 newest
       # hold one run on m, too few for a hint.
@@ -281,6 +298,335 @@ defmodule Crew.SizingTest do
     test "runs from before summaries kept the shape don't count", %{repo: repo} do
       finished_n(repo, 3, vcpus: nil, memory_mib: nil)
       assert %{repos: [], reserved_gib_h: +0.0} = Sizing.fleet(admin())
+    end
+  end
+
+  describe "dismissals" do
+    alias Crew.Sizing.Dismissal
+
+    setup %{repo: repo} do
+      %{newest: repo |> finished_n(5) |> List.last()}
+    end
+
+    # What a page's dismiss form sends for the hint it shows.
+    defp shown(job, reason \\ nil), do: shown_hint(Sizing.for_job(job), reason)
+
+    defp shown_hint(%Hint{kind: kind, from: from}, reason),
+      do: %{
+        "kind" => to_string(kind),
+        "vcpus" => to_string(from.vcpus),
+        "memory_mib" => to_string(from.memory_mib),
+        "reason" => reason
+      }
+
+    defp logged(action) do
+      import Ecto.Query
+      Repo.all(from e in Crew.Audit.Event, where: e.action == ^action)
+    end
+
+    test "an admin dismisses a hint: it stays on the repo, marked, and leaves the fleet's totals",
+         %{repo: repo, newest: newest} do
+      admin = admin()
+
+      {:ok, %Dismissal{} = d} =
+        Sizing.dismiss(admin, newest.id, shown(newest, "  xs made the tests flaky "))
+
+      assert {d.workflow_name, d.job_name, d.kind} == {"CI", "test", "smaller"}
+      assert {d.vcpus, d.memory_mib} == {4, 8192}
+      assert d.reason == "xs made the tests flaky"
+      assert d.user_login == admin.user.login
+
+      assert [%{name: "test", dismissal: %Dismissal{id: id}}] = Sizing.for_repo(admin, repo)
+      assert id == d.id
+
+      fleet = Sizing.fleet(admin)
+      assert fleet.hints == []
+      assert [%{name: "test", repo: %{id: repo_id}, dismissal: %Dismissal{}}] = fleet.dismissed
+      assert repo_id == repo.id
+      assert fleet.freed_gib_h == 0.0
+      assert [%{net_gib_h: +0.0}] = fleet.repos
+
+      assert [%{metadata: %{"repo" => _, "job" => "CI · test", "kind" => "smaller"}}] =
+               logged("sizing_hint.dismiss")
+    end
+
+    test "a blank reason is none, and dismissing again keeps one with the newer reason", %{
+      newest: newest
+    } do
+      {:ok, first} = Sizing.dismiss(admin(), newest.id, shown(newest, "  "))
+      assert first.reason == nil
+      {:ok, again} = Sizing.dismiss(admin(), newest.id, shown(newest, "on second thought"))
+      assert again.id == first.id
+      assert Repo.get!(Dismissal, first.id).reason == "on second thought"
+    end
+
+    test "it's for the job's size and the kind of hint, so a new kind brings it back", %{
+      repo: repo,
+      newest: newest
+    } do
+      {:ok, _} = Sizing.dismiss(admin(), newest.id, shown(newest))
+      assert [%{dismissal: %Dismissal{}}] = Sizing.for_repo(admin(), repo)
+
+      finished(repo, oom: true, conclusion: "failure", started_at: hours_ago(1))
+      assert [%{hint: %Hint{kind: :larger}, dismissal: nil}] = Sizing.for_repo(admin(), repo)
+      assert [%{name: "test"}] = Sizing.fleet(admin()).hints
+    end
+
+    test "and a new size brings it back", %{repo: repo, newest: newest} do
+      {:ok, _} = Sizing.dismiss(admin(), newest.id, shown(newest))
+
+      l = [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+      for i <- 1..5, do: finished(repo, [started_at: hours_ago(6 - i)] ++ l)
+
+      assert [%{hint: %Hint{kind: :smaller, from: %{vcpus: 8}}, dismissal: nil}] =
+               Sizing.for_repo(admin(), repo)
+    end
+
+    test "restoring puts it back; both are logged", %{repo: repo, newest: newest} do
+      {:ok, d} = Sizing.dismiss(admin(), newest.id, shown(newest))
+      {:ok, _} = Sizing.restore(admin(), d.id)
+
+      assert [%{dismissal: nil}] = Sizing.for_repo(admin(), repo)
+      assert [_] = Sizing.fleet(admin()).hints
+      assert [%{metadata: %{"job" => "CI · test"}}] = logged("sizing_hint.restore")
+      assert Sizing.restore(admin(), d.id) == {:error, :not_found}
+    end
+
+    test "only admins dismiss and restore", %{newest: newest} do
+      member = Scope.for_user(user_fixture())
+      assert Sizing.dismiss(member, newest.id, shown(newest)) == {:error, :unauthorized}
+
+      {:ok, d} = Sizing.dismiss(admin(), newest.id, shown(newest))
+      assert Sizing.restore(member, d.id) == {:error, :unauthorized}
+      assert logged("sizing_hint.restore") == []
+    end
+
+    test "nothing to dismiss when the job's hint isn't the one shown, or the job isn't there", %{
+      repo: repo
+    } do
+      fits = repo |> finished_n(5, name: "e2e", peak_mem_mib: 5000) |> List.last()
+      smaller = shown(List.last(finished_n(repo, 5, name: "lint")))
+      assert Sizing.dismiss(admin(), fits.id, smaller) == {:error, :changed}
+      assert Sizing.dismiss(admin(), Ecto.UUID.generate(), smaller) == {:error, :not_found}
+    end
+
+    test "a form left open while the hint changed dismisses nothing", %{
+      repo: repo,
+      newest: newest
+    } do
+      form = shown(newest)
+      finished(repo, oom: true, conclusion: "failure", started_at: hours_ago(1))
+
+      assert Sizing.dismiss(admin(), newest.id, form) == {:error, :changed}
+      assert [%{hint: %Hint{kind: :larger}, dismissal: nil}] = Sizing.for_repo(admin(), repo)
+      assert Repo.aggregate(Dismissal, :count) == 0
+    end
+
+    test "the hint a list shows, from the last 30 days, can be dismissed", %{
+      repo: repo,
+      newest: newest
+    } do
+      # Killed for memory 31 days ago: the job's page still counts that
+      # run, the lists don't.
+      finished(repo, oom: true, conclusion: "failure", started_at: hours_ago(31 * 24))
+      assert %Hint{kind: :larger} = Sizing.for_job(newest)
+      [%{hint: listed}] = Sizing.for_repo(admin(), repo)
+      assert listed.kind == :smaller
+
+      assert {:ok, _} = Sizing.dismiss(admin(), newest.id, shown_hint(listed, nil))
+      assert [%{dismissal: %Dismissal{kind: "smaller"}}] = Sizing.for_repo(admin(), repo)
+    end
+
+    test "a job without a workflow name has its hint, and it can be dismissed", %{repo: repo} do
+      nameless = repo |> finished_n(5, name: "solo", workflow_name: nil) |> List.last()
+      assert %Hint{kind: :smaller} = Sizing.for_job(nameless)
+
+      assert {:ok, %Dismissal{workflow_name: ""}} =
+               Sizing.dismiss(admin(), nameless.id, shown(nameless))
+
+      assert Enum.find(Sizing.for_repo(admin(), repo), &(&1.name == "solo")).dismissal
+    end
+
+    test "dismissal/2: a job's hint's dismissal, for its page", %{newest: newest} do
+      hint = Sizing.for_job(newest)
+      assert Sizing.dismissal(newest, hint) == nil
+      {:ok, d} = Sizing.dismiss(admin(), newest.id, shown(newest, "flaky"))
+      assert %Dismissal{reason: "flaky"} = Sizing.dismissal(newest, hint)
+      assert Sizing.dismissal(newest, nil) == nil
+      assert d.id == Sizing.dismissal(newest, hint).id
+    end
+  end
+
+  describe "custom shapes" do
+    @busy [cpu_excess: [1200.0, 600.0, 120.0]]
+
+    defp add_size(name),
+      do: Crew.Sizes.create(admin(), %{name: name, vcpus: 4, memory_mib: 2048, disk_gib: 20})
+
+    test "a custom hint is a smaller one once its shape is a size the repo may use", %{repo: repo} do
+      finished_n(repo, 5, [name: "build"] ++ @busy)
+
+      assert [%{hint: %Hint{kind: :custom, to: %{vcpus: 4, memory_mib: 2048}}}] =
+               Sizing.for_repo(admin(), repo)
+
+      {:ok, _} = add_size("c4")
+
+      assert [%{hint: %Hint{kind: :smaller, to: %{name: "c4"}, saved_mib: 6144}}] =
+               Sizing.for_repo(admin(), repo)
+    end
+
+    test "not while the repo's sizes leave it out", %{repo: repo} do
+      finished_n(repo, 5, [name: "build"] ++ @busy)
+      {:ok, repo} = Crew.Repos.update_settings(admin(), repo, %{"allowed_sizes" => ["m", "l"]})
+      {:ok, _} = add_size("c4")
+
+      assert [%{hint: %Hint{kind: :custom}}] = Sizing.for_repo(admin(), repo)
+
+      {:ok, repo} =
+        Crew.Repos.update_settings(admin(), repo, %{"allowed_sizes" => ["m", "l", "c4"]})
+
+      assert [%{hint: %Hint{kind: :smaller, to: %{name: "c4"}}}] = Sizing.for_repo(admin(), repo)
+    end
+
+    test "the fleet groups custom hints by the shape they'd fit, the most freed first", %{
+      repo: repo
+    } do
+      other = repo_fixture(name: "api")
+      finished_n(repo, 5, [name: "build"] ++ @busy)
+      finished_n(other, 5, [name: "build"] ++ @busy)
+      finished_n(other, 5, name: "pack", cpu_excess: [1200.0, 600.0, 120.0], peak_mem_mib: 2600)
+      finished_n(repo, 5)
+
+      fleet = Sizing.fleet(admin())
+
+      assert [
+               %{shape: %{vcpus: 4, memory_mib: 2048, disk_gib: 20}, hints: [_, _]} = two,
+               %{shape: %{vcpus: 4, memory_mib: 4096}, hints: [%{name: "pack"}]}
+             ] = fleet.custom
+
+      assert Enum.sort(Enum.map(two.hints, & &1.repo.id)) == Enum.sort([repo.id, other.id])
+      assert_in_delta two.freed_gib_h, Enum.sum(Enum.map(two.hints, & &1.freed_gib_h)), 0.001
+      assert two.freed_gib_h > 0
+    end
+
+    test "a dismissed custom hint isn't in a group", %{repo: repo} do
+      newest = repo |> finished_n(5, [name: "build"] ++ @busy) |> List.last()
+      %Hint{kind: kind, from: from} = Sizing.for_job(newest)
+
+      {:ok, _} =
+        Sizing.dismiss(admin(), newest.id, %{
+          "kind" => to_string(kind),
+          "vcpus" => to_string(from.vcpus),
+          "memory_mib" => to_string(from.memory_mib)
+        })
+
+      assert Sizing.fleet(admin()).custom == []
+    end
+  end
+
+  describe "changes/1" do
+    @l [vcpus: 8, memory_mib: 16_384, cpu_excess: List.duplicate(0.0, 7)]
+
+    # A finished run `hours` ago that took `seconds`.
+    defp ran(repo, hours, seconds, attrs) do
+      started = hours_ago(hours)
+      finished(repo, [started_at: started, completed_at: DateTime.add(started, seconds)] ++ attrs)
+    end
+
+    test "a job that moved sizes: from and to, when, its time on each, and its week", %{
+      repo: repo
+    } do
+      for h <- [240, 200, 160, 120, 100], do: ran(repo, h, 600, @l)
+      [first_m | _] = for h <- [40, 30, 20, 10], do: ran(repo, h, 570, [])
+
+      assert [change] = Sizing.changes(admin())
+      assert %{repo: %{id: repo_id}, workflow_name: "CI", name: "test"} = change
+      assert repo_id == repo.id
+      assert %{name: "l", vcpus: 8, memory_mib: 16_384} = change.from
+      assert %{name: "m", vcpus: 4, memory_mib: 8192} = change.to
+      assert change.changed_at == first_m.started_at
+      assert {change.runs_before, change.runs_after} == {5, 4}
+      assert {change.median_before_s, change.median_after_s} == {600, 570}
+      refute change.slower
+      assert change.ooms == 0
+      # 8 GiB less, over the week's 4 runs of 570 s on m.
+      assert_in_delta change.freed_gib_h, 8 * 4 * 570 / 3600, 0.001
+      assert change.job.github_id
+    end
+
+    test "more than 5% slower on the new size is flagged", %{repo: repo} do
+      for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
+      for h <- [40, 30, 20], do: ran(repo, h, 640, [])
+
+      assert [%{slower: true, median_before_s: 600, median_after_s: 640}] =
+               Sizing.changes(admin())
+    end
+
+    test "so is a run killed for memory on it, and failed runs don't count toward time", %{
+      repo: repo
+    } do
+      for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
+      for h <- [40, 30], do: ran(repo, h, 600, [])
+      ran(repo, 10, 60, oom: true, conclusion: "failure")
+
+      assert [%{ooms: 1, slower: false, median_after_s: 600, runs_after: 3}] =
+               Sizing.changes(admin())
+    end
+
+    test "the latest move counts; a job on one size, or that moved over 30 days ago, isn't listed",
+         %{repo: repo} do
+      for h <- [500, 400], do: ran(repo, h, 600, @l)
+      for h <- [300, 250], do: ran(repo, h, 600, [])
+      for h <- [50, 20], do: ran(repo, h, 600, @l)
+
+      assert [%{from: %{name: "m"}, to: %{name: "l"}}] = Sizing.changes(admin())
+
+      for h <- [24 * 45, 24 * 40], do: ran(repo, h, 600, [name: "old"] ++ @l)
+      for h <- [24 * 35, 24 * 2], do: ran(repo, h, 600, name: "old")
+      for h <- [30, 20], do: ran(repo, h, 600, name: "steady")
+
+      assert [%{name: "test"}] = Sizing.changes(admin())
+    end
+
+    test "a busy job's move, however many runs it's had since", %{repo: repo} do
+      for h <- [300, 290, 280], do: ran(repo, h, 600, @l)
+      for i <- 1..35, do: ran(repo, 200 - i * 5, 600, [])
+
+      assert [%{runs_before: 3, runs_after: 35, from: %{name: "l"}}] = Sizing.changes(admin())
+    end
+
+    test "a run on the new size that finished in the same second as the last on the old counts",
+         %{repo: repo} do
+      at = hours_ago(10)
+      finished(repo, [started_at: DateTime.add(at, -600), completed_at: at] ++ @l)
+      finished(repo, started_at: DateTime.add(at, -590), completed_at: at)
+
+      assert [%{from: %{name: "l"}, to: %{name: "m"}, runs_before: 1, runs_after: 1}] =
+               Sizing.changes(admin())
+    end
+
+    test "the week counts only the runs since the latest move", %{repo: repo} do
+      ran(repo, 100, 600, [])
+      ran(repo, 80, 600, @l)
+      ran(repo, 60, 600, [])
+
+      # Back on m from l: 8 GiB less over one 10-minute run, not both on m.
+      assert [%{from: %{name: "l"}, runs_after: 1, freed_gib_h: freed}] = Sizing.changes(admin())
+      assert_in_delta freed, 8 * 600 / 3600, 0.001
+    end
+
+    test "a job GitHub gave no name", %{repo: repo} do
+      for h <- [240, 200], do: ran(repo, h, 600, [name: nil] ++ @l)
+      for h <- [40, 30], do: ran(repo, h, 600, name: nil)
+
+      assert [%{name: nil, from: %{name: "l"}}] = Sizing.changes(admin())
+    end
+
+    test "only the repos the viewer can read", %{repo: repo} do
+      for h <- [240, 200], do: ran(repo, h, 600, @l)
+      for h <- [40, 30], do: ran(repo, h, 600, [])
+
+      assert Sizing.changes(Scope.for_user(user_fixture())) == []
     end
   end
 

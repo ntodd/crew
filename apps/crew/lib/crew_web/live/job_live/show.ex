@@ -16,7 +16,9 @@ defmodule CrewWeb.JobLive.Show do
 
   alias Crew.{Boxes, Images, Jobs, Logs, Metrics, Repos, Scope, Sizes, Sizing, VMs}
   alias Crew.Jobs.CacheMisses
-  alias CrewWeb.{JobStatus, SizingComponents}
+  alias CrewWeb.{JobStatus, SizingActions, SizingComponents, SizingIssue}
+
+  @sizing_events SizingActions.events()
 
   @flush_ms 250
   @steps_poll_ms 10_000
@@ -37,6 +39,7 @@ defmodule CrewWeb.JobLive.Show do
      |> assign(:page_title, job.name)
      |> assign(attempt: attempt, pending: [], flush: nil, reload: false, index_due: false)
      |> assign(now: DateTime.utc_now(), shown: nil, polling: false)
+     |> SizingActions.mount()
      |> load(job)
      |> start_polling()}
   end
@@ -62,6 +65,7 @@ defmodule CrewWeb.JobLive.Show do
     source = if socket.assigns[:shown] in available, do: socket.assigns.shown, else: default
     history = Jobs.recent_successes(job, CacheMisses.runs())
     steps = steps(source, job, vm)
+    sizing = Sizing.for_job(job)
 
     assign(socket,
       job: job,
@@ -77,10 +81,25 @@ defmodule CrewWeb.JobLive.Show do
       usual: usual_durations(history),
       cache_misses: cache_misses(steps, history),
       metrics: if(vm, do: Metrics.vm_series(vm.id), else: []),
-      sizing: Sizing.for_job(job),
+      sizing: sizing,
+      sizing_issue: sizing_issue(socket.assigns.attempt, job, sizing),
+      sizing_dismissal: Sizing.dismissal(job, sizing),
       durations: Sizing.durations(job),
       status: JobStatus.of(job, DateTime.utc_now())
     )
+  end
+
+  defp sizing_issue(_attempt, _job, nil), do: nil
+
+  defp sizing_issue(attempt, job, hint) do
+    SizingIssue.for_hint(%{
+      repo: attempt.repo,
+      workflow_name: job.workflow_name,
+      name: job.name,
+      workflow_path: attempt.workflow_path,
+      hint: hint,
+      job: job
+    })
   end
 
   defp available?("github", job, _vm), do: job.log_source == "github"
@@ -222,7 +241,24 @@ defmodule CrewWeb.JobLive.Show do
     end
   end
 
+  def handle_event(event, params, socket) when event in @sizing_events do
+    case allowed(socket) do
+      :ok -> SizingActions.handle(event, params, socket, &reload_sizing/1)
+      {:error, _} -> {:noreply, push_navigate(socket, to: ~p"/runs")}
+    end
+  end
+
   def handle_event(_event, _params, socket), do: {:noreply, socket}
+
+  defp reload_sizing(%{assigns: %{attempt: attempt, job: job}} = socket) do
+    sizing = Sizing.for_job(job)
+
+    assign(socket,
+      sizing: sizing,
+      sizing_issue: sizing_issue(attempt, job, sizing),
+      sizing_dismissal: Sizing.dismissal(job, sizing)
+    )
+  end
 
   defp allowed(socket) do
     if Repos.can_read?(socket.assigns.current_scope, socket.assigns.job.repo_id),
@@ -622,6 +658,11 @@ defmodule CrewWeb.JobLive.Show do
               hint={@sizing}
               job={@job}
               admin={Scope.admin?(@current_scope)}
+              repo={@attempt.repo}
+              workflow_path={@attempt.workflow_path}
+              issue={@sizing_issue}
+              dismissal={@sizing_dismissal}
+              dismissing={@dismissing == @job.id}
             />
             <div
               :if={@durations != []}
