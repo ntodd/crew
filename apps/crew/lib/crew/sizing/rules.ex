@@ -18,7 +18,13 @@ defmodule Crew.Sizing.Rules do
     * **larger** when a run had a process killed for memory, when most
       stalled on memory, or when one peaked at 90% of the VM's memory;
     * **faster** when most runs had tasks waiting for a CPU a quarter of
-      the time or more, and a size with more vCPUs fits;
+      the time or more, a size with more vCPUs fits, and the job was on
+      its run's critical path (`Crew.Sizing.CriticalPath`) in at least
+      half the starved runs whose path is known (with fewer than 3
+      known, as if it were): only that
+      chain sets how long the run takes, so off it more vCPUs take
+      capacity and finish nothing sooner. A larger size adds vCPUs on
+      the same terms;
     * **smaller** to the allowed size with the least memory that holds the
       highest peak plus 25% (at least 512 MiB), the highest disk use plus
       25% (at least 2 GiB), and enough vCPUs to keep every run's estimated
@@ -78,11 +84,18 @@ defmodule Crew.Sizing.Rules do
            runs,
          shape = %{vcpus: vcpus, memory_mib: memory, name: name_of(vcpus, memory, sizes)},
          [_ | _] = counted <- counted(runs, shape) do
-      decide(counted, shape, sizes)
+      counted |> decide(shape, sizes) |> off_path(counted)
     else
       _ -> nil
     end
   end
+
+  @doc "The runs among `runs` (newest first) that a hint counts."
+  def counted_runs([%{vcpus: vcpus, memory_mib: memory} | _] = runs)
+      when is_integer(vcpus) and is_integer(memory),
+      do: counted(runs, %{vcpus: vcpus, memory_mib: memory})
+
+  def counted_runs(_runs), do: []
 
   # The newest runs on the shape the newest one ran on, those a newer
   # guest summarized.
@@ -185,7 +198,7 @@ defmodule Crew.Sizing.Rules do
             &1.vcpus >= shape.vcpus)
       )
 
-    least = if cpu_starved?(runs), do: shape.vcpus + 1, else: shape.vcpus
+    least = if more_vcpus?(runs), do: shape.vcpus + 1, else: shape.vcpus
 
     to =
       Enum.find_value([least, shape.vcpus], fn v ->
@@ -209,19 +222,75 @@ defmodule Crew.Sizing.Rules do
     }
   end
 
-  defp starved_runs(runs),
-    do: Enum.filter(runs, &((&1[:cpu_pressure_pct] || 0) >= @cpu_starved_pct))
+  @doc "Whether tasks in a run waited for a CPU a quarter of the time or more."
+  def starved?(run), do: (run[:cpu_pressure_pct] || 0) >= @cpu_starved_pct
+
+  defp starved_runs(runs), do: Enum.filter(runs, &starved?/1)
 
   defp cpu_starved?(runs) do
     starved = length(starved_runs(runs))
     starved >= @min_starved and starved * 2 >= length(runs)
   end
 
+  # Whether the job was on its run's critical path when it waited on a
+  # CPU (§7.5): `{:on | :off, count, basis}` for most of the starved runs
+  # whose path is known (half counts as on), nil with fewer than 3 known.
+  defp path(runs) do
+    starved = starved_runs(runs)
+    known = Enum.filter(starved, &is_boolean(&1[:critical]))
+    on = Enum.count(known, & &1.critical)
+    k = length(known)
+
+    basis =
+      if k == length(starved),
+        do: "the #{k} runs where it waited",
+        else: "the #{k} runs where it waited that Crew could trace"
+
+    cond do
+      k < @min_starved -> nil
+      on * 2 >= k -> {:on, on, basis}
+      true -> {:off, k - on, basis}
+    end
+  end
+
+  # More vCPUs shorten the run only for a job on its critical path; for
+  # one off it they take capacity. Without a path to go on, as before.
+  defp more_vcpus?(runs), do: cpu_starved?(runs) and not match?({:off, _, _}, path(runs))
+
+  defp path_reasons(runs) do
+    case path(runs) do
+      {:on, on, basis} ->
+        [
+          "It was on its run's critical path in #{on} of #{basis}, so more vCPUs could finish the run sooner."
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  # A starved job off its run's critical path keeps its vCPUs, and says why.
+  defp off_path(nil, _runs), do: nil
+
+  defp off_path(%Hint{} = hint, runs) do
+    case {cpu_starved?(runs), path(runs)} do
+      {true, {:off, off, basis}} ->
+        line =
+          "Its tasks waited for a CPU, but it was off its run's critical path in #{off} of #{basis}, " <>
+            "so more vCPUs would take capacity without finishing the run sooner."
+
+        %{hint | reasons: hint.reasons ++ [line]}
+
+      _ ->
+        hint
+    end
+  end
+
   defp faster(runs, shape, sizes) do
     starved = starved_runs(runs)
     n = length(runs)
 
-    with true <- cpu_starved?(runs),
+    with true <- more_vcpus?(runs),
          %{} = to <-
            sizes
            |> Enum.filter(&(&1.vcpus > shape.vcpus and fits_memory_and_disk?(&1, runs, shape)))
@@ -235,6 +304,7 @@ defmodule Crew.Sizing.Rules do
         runs: n,
         reasons: [
           "In #{length(starved)} of the last #{n} runs, tasks waited for a CPU #{pct(least)} of the time or more."
+          | path_reasons(runs)
         ],
         saved_mib: shape.memory_mib - to.memory_mib
       }

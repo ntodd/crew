@@ -7,7 +7,10 @@
 #   - CI · e2e had a process killed for memory: larger;
 #   - Nightly · integration waits on its CPUs: faster;
 #   - CI · lint fits m, so the repo page doesn't list it; it moved there
-#     from l, so its page shows its time on each.
+#     from l, so its page shows its time on each;
+#   - Release · docs waits on its CPUs too, but a GitHub-hosted package
+#     job in the same runs takes longer: it's off their critical path, so
+#     it fits m and its page says why it isn't faster.
 import Ecto.Query
 
 alias Crew.Jobs
@@ -178,3 +181,74 @@ for h <- 1..3,
         Map.merge(on_l, %{label: "crew-l", peak_mem_mib: 5200, duration: 500}),
         "success"
       )
+
+# Release runs: docs (Crew, starved, 5 minutes) and package (GitHub's,
+# 15 minutes), both queued at the start.
+for h <- 1..5 do
+  run_id = 7_790_000 + h
+  started = DateTime.add(now, -(30 + h) * 3600)
+  at = &DateTime.to_iso8601(DateTime.add(started, &1))
+
+  {:ok, _} =
+    Jobs.handle_workflow_run(
+      hook.("completed", %{
+        "workflow_run" => %{
+          "id" => run_id,
+          "run_attempt" => 1,
+          "run_number" => 200 + h,
+          "name" => "Release",
+          "event" => "push",
+          "status" => "completed",
+          "conclusion" => "success",
+          "head_branch" => "main",
+          "head_sha" => "7e1ea5e#{h}",
+          "head_commit" => %{"message" => "Release the cart page"},
+          "actor" => %{"login" => "mona", "id" => 1},
+          "pull_requests" => [],
+          "head_repository" => %{"full_name" => repo.full_name},
+          "created_at" => at.(-20),
+          "updated_at" => at.(900)
+        }
+      })
+    )
+
+  job = fn id, name, label, seconds ->
+    {:ok, job} =
+      Jobs.handle_workflow_job(
+        hook.("completed", %{
+          "workflow_job" => %{
+            "id" => id,
+            "run_id" => run_id,
+            "run_attempt" => 1,
+            "name" => name,
+            "workflow_name" => "Release",
+            "labels" => [label],
+            "status" => "completed",
+            "conclusion" => "success",
+            "created_at" => at.(-20),
+            "started_at" => at.(0),
+            "completed_at" => at.(seconds),
+            "runner_name" => nil,
+            "head_branch" => "main",
+            "head_sha" => "7e1ea5e#{h}",
+            "steps" => []
+          }
+        })
+      )
+
+    job
+  end
+
+  job.(8_895_000 + h, "package", "ubuntu-latest", 900)
+  docs = job.(8_890_000 + h, "docs", "crew-m", 300)
+
+  Repo.update_all(from(j in Job, where: j.id == ^docs.id),
+    set:
+      Map.to_list(%{
+        on_m
+        | peak_mem_mib: 5200,
+          cpu_excess: [2000.0, 1200.0, 500.0],
+          cpu_pressure_pct: 41.0
+      })
+  )
+end
