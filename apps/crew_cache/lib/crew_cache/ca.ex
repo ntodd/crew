@@ -40,9 +40,6 @@ defmodule CrewCache.CA do
   @doc "The same, from the cache directory (they exist once the CA has started)."
   def files(dir), do: %{certfile: file(dir, "leaf.pem"), keyfile: file(dir, "leaf.key")}
 
-  @doc "Where the root certificate is kept."
-  def root_file(dir), do: file(dir, "root.pem")
-
   # -- files ------------------------------------------------------------------
 
   defp ca_dir(dir), do: Path.join(dir, "ca")

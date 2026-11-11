@@ -27,7 +27,6 @@ defmodule CrewProtocol.Guest do
 
   @type life :: {integer(), integer()}
 
-  def states, do: @states
   def max_steps, do: @max_steps
 
   @spec cast_state(term(), life()) :: {:ok, map()} | {:error, atom()}
@@ -176,9 +175,6 @@ defmodule CrewProtocol.Guest do
                          console_flood api_flood)
   @label ~r/\A[a-z0-9][a-z0-9_.:-]{0,63}\z/
   @token ~r/\A[A-Za-z0-9_-]{16,128}\z/
-
-  @doc "The checks a conformance object may name: the guest image's script runs only these."
-  def conformance_checks, do: @conformance_checks
 
   @doc """
   Checks a `conformance` object (conformance mode, §11.6). It goes from

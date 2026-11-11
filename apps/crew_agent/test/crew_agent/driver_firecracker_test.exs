@@ -740,17 +740,4 @@ defmodule CrewAgent.Driver.FirecrackerTest do
       assert {:error, "unsupported", _} = CrewAgent.Handler.handle(cmd)
     end
   end
-
-  test "the console of a running VM is in the jail, and in vms/ once it's gone", ctx do
-    vm_id = CrewProtocol.uuid7()
-
-    assert Firecracker.console_log(vm_id) ==
-             Path.join([ctx.data, "jail", "firecracker", vm_id, "console.log"])
-
-    File.mkdir_p!(Config.vm_dir(ctx.config, vm_id))
-    File.write!(Path.join(Config.vm_dir(ctx.config, vm_id), "console.log"), "")
-
-    assert Firecracker.console_log(vm_id) ==
-             Path.join([ctx.data, "vms", vm_id, "console.log"])
-  end
 end

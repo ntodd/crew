@@ -22,9 +22,6 @@ defmodule CrewCache.Net do
   @type cidr :: {:inet.ip4_address(), 0..32}
   @type policy :: %{refused: [cidr], except: [cidr]}
 
-  @doc "blocked4 (§14.2) as CIDR strings."
-  def blocked4_cidrs, do: @blocked4
-
   @doc "The CIDRs in blocked4."
   def blocked4, do: Enum.map(@blocked4, &parse_cidr!/1)
 

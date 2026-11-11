@@ -20,8 +20,6 @@ defmodule Crew.Activity do
             box_approved box_reboot_required box_rebooted box_rolled_back class_stalled
             image_rollout ca_rotated fork_refused vm_killed notice)
 
-  def kinds, do: @kinds
-
   @doc "Subscribes the caller to new events."
   def subscribe, do: Phoenix.PubSub.subscribe(Crew.PubSub, @topic)
 

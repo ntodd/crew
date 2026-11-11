@@ -17,8 +17,6 @@ defmodule Crew.Boxes.Launcher do
   # can't hold anything sh or a line break would act on.
   @url ~r"\Ahttps?://[A-Za-z0-9.\-\[\]:]+(/[A-Za-z0-9._~/-]*)?\z"
 
-  def types, do: @types
-
   @doc "The launcher for `type`, for a control plane at `base_url`."
   def script(type, base_url) when type in @types do
     if is_binary(base_url) and Regex.match?(@url, base_url) do

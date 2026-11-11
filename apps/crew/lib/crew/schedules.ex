@@ -42,8 +42,6 @@ defmodule Crew.Schedules do
   def list(repo_id),
     do: Repo.all(from s in Schedule, where: s.repo_id == ^repo_id, order_by: s.inserted_at)
 
-  def get!(id), do: Repo.get!(Schedule, id)
-
   def change(%Schedule{} = schedule, attrs \\ %{}), do: Schedule.changeset(schedule, attrs)
 
   @doc "Adds a schedule to a repo (admins). Its clock starts now: the first fire is the next match."

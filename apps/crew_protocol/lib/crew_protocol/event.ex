@@ -186,10 +186,6 @@ defmodule CrewProtocol.Event do
   }
 
   def types, do: Map.keys(@specs)
-  def vm_states, do: @vm_states
-  def exit_reasons, do: @exit_reasons
-  def image_states, do: @image_states
-  def max_log_message, do: @max_log_message
 
   @spec new(String.t(), map()) :: {:ok, t()} | {:error, term()}
   def new(type, payload) do
