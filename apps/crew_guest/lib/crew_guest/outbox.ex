@@ -24,6 +24,11 @@ defmodule CrewGuest.Outbox do
 
   **Other answers:** a 413 on `/v1/log` means the VM's log limit is
   reached, so logs stop for good. Any other 4xx drops that one item.
+
+  **Telemetry:** `[:crew_guest, :outbox, :start]` as each request (or
+  retry) starts, with `monotonic_time` and `%{outbox, lane, kind}`. That's
+  the instant the lanes are paced from; the request reaches the client a
+  little later, once its task gets to run.
   """
 
   use GenServer
@@ -236,7 +241,10 @@ defmodule CrewGuest.Outbox do
   defp start(s, lane_name, item, fun) do
     client = s.client
     task = Task.Supervisor.async_nolink(s.sup, fn -> fun.(client) end)
-    now = now()
+    at = System.monotonic_time()
+    now = System.convert_time_unit(at, :native, :millisecond)
+    meta = %{outbox: self(), lane: lane_name, kind: elem(item, 0)}
+    :telemetry.execute([:crew_guest, :outbox, :start], %{monotonic_time: at}, meta)
 
     lane =
       s
