@@ -131,6 +131,12 @@ defmodule CrewWeb.JobStatus do
   def duration(%DateTime{} = from, %DateTime{} = to), do: max(0, DateTime.diff(to, from))
   def duration(_from, _to), do: nil
 
+  @doc "A run's seconds so far: to its last update once it's completed, else to `now`."
+  def run_duration(%{status: "completed", gh_created_at: from, gh_updated_at: to}, _now),
+    do: duration(from, to)
+
+  def run_duration(%{gh_created_at: from}, now), do: duration(from, now)
+
   @doc "45s, 3m 04s, 1h 02m."
   def format(nil), do: "–"
   def format(s) when s < 60, do: "#{s}s"
