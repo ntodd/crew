@@ -126,6 +126,41 @@ defmodule CrewGuest.TestHelpers do
     end
   end
 
+  @doc """
+  Records when each Outbox starts a request, for `outbox_starts/2`. That's
+  the moment it paces on: the client and the server see each start later,
+  by however long the request's task waited to run.
+  """
+  def record_outbox_starts do
+    id = {__MODULE__, make_ref()}
+    event = [:crew_guest, :outbox, :start]
+    :telemetry.attach(id, event, &__MODULE__.forward_outbox_start/4, self())
+    ExUnit.Callbacks.on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  @doc false
+  def forward_outbox_start(_event, %{monotonic_time: at}, %{outbox: outbox, kind: kind}, to),
+    do:
+      send(to, {:outbox_start, outbox, kind, System.convert_time_unit(at, :native, :millisecond)})
+
+  @doc """
+  The monotonic ms at which `outbox` started each request of `kind`
+  (`:state`, `:steps` or `:log`), oldest first. A request can answer
+  before the Outbox reports its start, so this waits for the Outbox first.
+  """
+  def outbox_starts(outbox, kind) do
+    :sys.get_state(outbox)
+    drain_outbox_starts(outbox, kind)
+  end
+
+  defp drain_outbox_starts(outbox, kind) do
+    receive do
+      {:outbox_start, ^outbox, ^kind, at} -> [at | drain_outbox_starts(outbox, kind)]
+    after
+      0 -> []
+    end
+  end
+
   @doc "Starts a client for `api` that reports stop requests to the test process."
   def client(api, opts \\ []) do
     test = self()
