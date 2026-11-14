@@ -133,8 +133,6 @@ defmodule CrewProtocol.Command do
   @doc "The payload spec for a command type."
   def spec(type), do: Map.fetch!(@specs, type)
 
-  def stop_reasons, do: @stop_reasons
-
   @spec new(String.t(), map(), keyword()) :: {:ok, t()} | {:error, term()}
   def new(type, payload, opts \\ []) do
     with {:ok, spec} <- fetch_spec(type),

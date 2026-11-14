@@ -411,36 +411,6 @@ defmodule CrewWeb.CrewComponents do
   defp callout_icon("warning"), do: "hero-exclamation-triangle-mini"
   defp callout_icon("danger"), do: "hero-x-circle-mini"
 
-  @doc "An operation's status as a small icon and label."
-  attr :status, :string, required: true
-
-  def op_status(assigns) do
-    ~H"""
-    <span class={["inline-flex items-center gap-1.5 text-xs font-medium", op_color(@status)]}>
-      <.icon
-        name={op_icon(@status)}
-        class={["size-4", @status in ~w(dispatched running) && "motion-safe:animate-spin"]}
-      />
-      {op_label(@status)}
-    </span>
-    """
-  end
-
-  defp op_icon("succeeded"), do: "hero-check-circle-mini"
-  defp op_icon("failed"), do: "hero-x-circle-mini"
-  defp op_icon("cancelled"), do: "hero-minus-circle-mini"
-  defp op_icon("queued"), do: "hero-clock-mini"
-  defp op_icon(_), do: "hero-arrow-path-mini"
-
-  defp op_color("succeeded"), do: "text-success"
-  defp op_color("failed"), do: "text-danger"
-  defp op_color("queued"), do: "text-ink-3"
-  defp op_color("cancelled"), do: "text-ink-3"
-  defp op_color(_), do: "text-running-ink"
-
-  defp op_label("dispatched"), do: "Sent"
-  defp op_label(status), do: String.capitalize(status)
-
   @doc "A human name for an operation's action."
   def action_label("vm.start"), do: "Start a VM"
   def action_label("vm.stop"), do: "Stop a VM"

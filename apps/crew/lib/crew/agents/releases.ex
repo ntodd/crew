@@ -34,9 +34,6 @@ defmodule Crew.Agents.Releases do
   @version ~r/\A\d{1,4}\.\d{1,4}\.\d{1,4}(-[0-9A-Za-z.]{1,32})?\z/
   @file_pattern ~r/\Acrew-(agent|cache)-(\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[0-9A-Za-z.]{1,32})?)-((?:linux|darwin)-(?:amd64|arm64))\.tar\.gz\z/
 
-  def components, do: @components
-  def targets, do: @targets
-
   def list, do: Repo.all(from r in Release, order_by: [desc: r.inserted_at])
 
   def get(component, version, target),

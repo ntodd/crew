@@ -19,9 +19,6 @@ defmodule Crew.Usage.Tally do
   ]
   @job_fields [:job_count, :success_count, :failure_count, :job_s, :job_billable_min]
 
-  @doc "The counters a VM adds to, then a job's."
-  def vm_fields, do: @vm_fields
-  def job_fields, do: @job_fields
   def fields, do: @vm_fields ++ @job_fields
 
   @doc "A timestamp as whole Unix seconds (floored), or nil."

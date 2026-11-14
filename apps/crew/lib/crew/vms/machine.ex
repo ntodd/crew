@@ -167,7 +167,4 @@ defmodule Crew.VMs.Machine do
   @doc "Failures that count toward box quarantine (§8.6): before idle, the box's fault."
   def quarantine_failure?(reason),
     do: reason in ~w(boot_failed boot_timeout runner_timeout crashed start_error)
-
-  @doc "States that hold a box's allocation: every one but destroyed."
-  def allocated?(state), do: state != "destroyed"
 end

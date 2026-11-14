@@ -20,11 +20,6 @@ defmodule Crew.Accounts.User do
     timestamps()
   end
 
-  def roles, do: @roles
-
-  def admin?(%__MODULE__{role: "admin"}), do: true
-  def admin?(_), do: false
-
   def github_changeset(user, attrs) do
     user
     |> cast(attrs, [

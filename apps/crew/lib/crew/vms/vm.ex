@@ -2,8 +2,6 @@ defmodule Crew.VMs.VM do
   @moduledoc "A single-use job VM (§8.6, §22). It holds its box's allocation until destroyed."
   use Crew.Schema
 
-  @states ~w(requested starting booted idle busy finished failed destroyed)
-
   schema "vms" do
     belongs_to :box, Crew.Boxes.Box
     field :name, :string
@@ -42,8 +40,6 @@ defmodule Crew.VMs.VM do
     field :runner_delete_since, :utc_datetime_usec
     timestamps()
   end
-
-  def states, do: @states
 
   @doc "A class key's stable hash, for indexing."
   def class_hash(key),

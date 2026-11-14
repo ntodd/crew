@@ -69,9 +69,6 @@ defmodule Crew.Sizing.Rules do
   @custom_factor 2
   @custom_min_saving_mib 4096
 
-  @doc "How many of a job's latest runs a hint looks at."
-  def window, do: @window
-
   @doc """
   The hint for `runs` (newest first) among `sizes` (what the repo may
   use: maps with `name`, `vcpus`, `memory_mib` and `disk_gib`). Nil
