@@ -81,8 +81,10 @@ defmodule Crew.Boxes.Flatcar do
   @data_disk ~r"\A/dev/(?!.*\.\.)[A-Za-z0-9._:/-]{1,120}\z"
   # One link in by-id, which names the same disk on every boot: the live
   # image's /dev/nvme0n1 can be the installed system's /dev/nvme1n1. A
-  # disk's, not one of its partitions' (-partN), which by-id lists too.
-  @os_disk ~r"\A/dev/disk/by-id/(?!.*\.\.)(?!.*-part\d+\z)[A-Za-z0-9._:-]{1,100}\z"
+  # disk's, not one of its partitions' (-partN), which by-id lists too,
+  # and not device mapper's, md's or LVM's, whose partitions aren't the
+  # link's -part10. The characters are the ones udev keeps in a serial.
+  @os_disk ~r"\A/dev/disk/by-id/(?!(?:dm|md|lvm)-)(?!.*\.\.)(?!.*-part\d+\z)[A-Za-z0-9._:#+=@-]{1,100}\z"
 
   # linux-metal's: /srv/crew on partition 10 of the OS disk, or on a disk
   # of its own (as before #140, and what a token without one means).

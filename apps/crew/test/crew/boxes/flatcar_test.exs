@@ -384,7 +384,12 @@ defmodule Crew.Boxes.FlatcarTest do
             "/dev/disk/by-id/nvme-x/../../sda",
             # A partition's link, which ls -l /dev/disk/by-id/ lists too.
             "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0W-part1",
-            "/dev/disk/by-id/ata-ST1000DM003_Z1D5-part10"
+            "/dev/disk/by-id/ata-ST1000DM003_Z1D5-part10",
+            # Device mapper, md and LVM: their partitions aren't <link>-part10.
+            "/dev/disk/by-id/dm-name-crypt-root",
+            "/dev/disk/by-id/dm-uuid-mpath-3600508b400105e210000900000490000",
+            "/dev/disk/by-id/md-uuid-1b2c3d4e:5f6a7b8c:9d0e1f2a:3b4c5d6e",
+            "/dev/disk/by-id/lvm-pv-uuid-abcdef"
           ] do
         opts = Map.merge(@opts, %{type: "linux-metal", disk_layout: "one", os_disk: bad})
         assert {:error, :bad_os_disk} = Flatcar.ignition(opts), inspect(bad)
@@ -416,7 +421,9 @@ defmodule Crew.Boxes.FlatcarTest do
             "/dev/disk/by-id/ata-ST1000DM003-1CH162_Z1D5ABCD",
             "/dev/disk/by-id/wwn-0x5000c500a1b2c3d4",
             "/dev/disk/by-id/usb-Generic_Flash_Disk_12345678-0:0",
-            "/dev/disk/by-id/nvme-WD_BLACK_SN850X_2000GB_part2_23"
+            "/dev/disk/by-id/nvme-WD_BLACK_SN850X_2000GB_part2_23",
+            # udev keeps #+=@ in a serial.
+            "/dev/disk/by-id/usb-Vendor_Disk+Pro=2@x#1-0:0"
           ] do
         assert Flatcar.os_disk?(good), good
       end

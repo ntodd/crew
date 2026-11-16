@@ -227,8 +227,8 @@ defmodule Crew.Boxes.FlatcarInstallTest do
            exit 2
            """},
           {"blockdev", ~s(echo "blockdev $*" >> "#{log}"\necho "${STUB_SIZE:?}"\n)},
-          {"wipefs", ~s(echo "wipefs $*" >> "#{log}"\n)},
-          {"mkfs.xfs", ~s(echo "mkfs.xfs $*" >> "#{log}"\n)},
+          {"wipefs", ~s(echo "wipefs $*" >> "#{log}"\n[ -z "${STUB_WIPEFS_FAILS:-}" ]\n)},
+          {"mkfs.xfs", ~s(echo "mkfs.xfs $*" >> "#{log}"\n[ -z "${STUB_MKFS_FAILS:-}" ]\n)},
           {"sync", ~s(echo "sync $*" >> "#{log}"\n)},
           {"udevadm", "exit 0\n"}
         ] do
@@ -332,6 +332,18 @@ defmodule Crew.Boxes.FlatcarInstallTest do
       assert {_, 0} = format_partition(ctx, env)
       assert File.read!(ctx.log) =~ "mkfs.xfs"
       refute fresh?(ctx)
+    end
+
+    for {what, env, says} <- [
+          {"wipefs", "STUB_WIPEFS_FAILS", "couldn't wipe the data partition"},
+          {"mkfs.xfs", "STUB_MKFS_FAILS", "couldn't format the data partition"}
+        ] do
+      test "a first boot says why when #{what} fails, and keeps the marker", ctx do
+        env = [{"STUB_SIZE", "#{@size}"}, {unquote(env), "1"}]
+        assert {out, 1} = format_partition(ctx, env)
+        assert out =~ "crew-box: #{unquote(says)} #{ctx.part}"
+        assert fresh?(ctx)
+      end
     end
 
     test "a first boot refuses a disk under 128 GiB", ctx do

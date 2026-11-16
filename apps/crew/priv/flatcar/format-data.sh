@@ -57,10 +57,11 @@ partition() {
     fail "the OS disk is under 128 GiB (its data partition is $mib MiB); add the box with a separate data disk"
 
   say "formatting the data partition $part (XFS, reflink)"
-  wipefs -a "$part" >/dev/null
+  wipefs -a "$part" >/dev/null || fail "couldn't wipe the data partition $part"
   # 16 MiB short of the partition's end, which is the disk's: a reinstall
   # zeroes the last 512 KiB.
-  mkfs.xfs -q -K -f -L "$label" -m reflink=1 -d size=$((mib - 16))m "$part"
+  mkfs.xfs -q -K -f -L "$label" -m reflink=1 -d size=$((mib - 16))m "$part" ||
+    fail "couldn't format the data partition $part"
   udevadm trigger --settle "$part" 2>/dev/null || udevadm settle || true
   rm -f "$fresh"
   # On disk before the box writes anything to the partition: back after
