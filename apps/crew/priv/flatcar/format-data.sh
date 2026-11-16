@@ -8,26 +8,72 @@
 # mounted, whatever is or isn't at the configured device now.
 #
 #   format-data.sh <device>
+#   format-data.sh --partition <partition>
 #
-# CREW_BOX_ETC moves /etc/crew-box, and CREW_BOX_DEVICE_WAIT the 90 s
-# this waits for the device, for the control plane's tests.
+# --partition is a one-disk box's partition 10 of the OS disk, which a
+# reinstall keeps. Its first boot (the Ignition's fresh-data marker)
+# formats it whatever is on it, so a machine added again starts clean;
+# nothing after that ever formats it.
+#
+# CREW_BOX_ETC moves /etc/crew-box, CREW_BOX_DEVICE_WAIT the 90 s this
+# waits for the device, and CREW_BOX_FAKE_DEVICES takes a regular file
+# for one, for the control plane's tests.
 set -eu
 
 # shellcheck source=SCRIPTDIR/lib.sh
 . "${CREW_BOX_ETC:-/etc/crew-box}/lib.sh"
 
-dev=$1
 label=crew-data
 wait=${CREW_BOX_DEVICE_WAIT:-90}
+fresh=${CREW_BOX_ETC:-/etc/crew-box}/fresh-data
+
+device() { [ -b "$1" ] || { [ -n "${CREW_BOX_FAKE_DEVICES:-}" ] && [ -f "$1" ]; }; }
 
 # Crew's already, on any disk under any name: a scan of every block
 # device, not udev's links, which may not be there this early.
 labelled() { [ -n "$(blkid -c /dev/null -t "LABEL=$label" -o device 2>/dev/null || true)" ]; }
 
+partition() {
+  part=$1
+  i=0
+  until device "$part"; do
+    i=$((i + 1))
+    [ "$i" -lt "$wait" ] || fail "there's no data partition at $part; the box's Ignition adds it"
+    sleep 1
+  done
+
+  if [ ! -e "$fresh" ]; then
+    # A reprovision, or any boot after the first: the box's data is here,
+    # or the box is gone. Formatting it would make a box with no identity
+    # under the old one's name.
+    [ "$(blkid -p -s LABEL -o value "$part" 2>/dev/null || true)" = "$label" ] ||
+      fail "the data partition $part has no crew-data filesystem, so there's no box here to bring back; add the box again"
+    exit 0
+  fi
+
+  mib=$(($(blockdev --getsize64 "$part") / 1048576))
+  # Partition 10 starts at 32 GiB and ends 33 sectors short of the disk's.
+  [ "$mib" -ge $((96 * 1024 - 1)) ] ||
+    fail "the OS disk is under 128 GiB (its data partition is $mib MiB); add the box with a separate data disk"
+
+  say "formatting the data partition $part (XFS, reflink)"
+  wipefs -a "$part" >/dev/null
+  # 16 MiB short of the partition's end, which is the disk's: a reinstall
+  # zeroes the last 512 KiB.
+  mkfs.xfs -q -K -f -L "$label" -m reflink=1 -d size=$((mib - 16))m "$part"
+  udevadm trigger --settle "$part" 2>/dev/null || udevadm settle || true
+  rm -f "$fresh"
+  exit 0
+}
+
+if [ "${1:-}" = --partition ]; then partition "$2"; fi
+
+dev=$1
+
 i=0
 while :; do
   if labelled; then exit 0; fi
-  if [ -b "$dev" ]; then break; fi
+  if device "$dev"; then break; fi
   i=$((i + 1))
   [ "$i" -lt "$wait" ] || fail "there's no data disk at $dev, and no disk is labelled $label"
   sleep 1

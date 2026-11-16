@@ -291,6 +291,130 @@ defmodule Crew.Boxes.FlatcarTest do
     end
   end
 
+  # A machine with one disk (§12.2): /srv/crew is partition 10 of the OS
+  # disk, at a start that doesn't depend on Flatcar's image, so a reinstall
+  # (which writes the image over the disk's first 8.5 GB and zeroes its
+  # last 512 KiB) finds it again.
+  describe "one disk on bare metal (§12.2)" do
+    @os_disk "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0W"
+
+    defp one_disk(overrides \\ %{}) do
+      ignition(
+        Map.merge(
+          %{type: "linux-metal", disk_layout: "one", os_disk: @os_disk},
+          Map.new(overrides)
+        )
+      )
+    end
+
+    defp one_disk_reprovision,
+      do: reprovision(type: "linux-metal", disk_layout: "one", os_disk: @os_disk)
+
+    test "adds crew-data to the OS disk at 32 GiB, keeping Flatcar's partitions" do
+      assert [disk] = one_disk()["storage"]["disks"]
+      assert disk["device"] == @os_disk
+      assert disk["wipeTable"] == false
+
+      assert disk["partitions"] == [
+               %{"number" => 10, "label" => "crew-data", "startMiB" => 32_768, "sizeMiB" => 0}
+             ]
+    end
+
+    # Flatcar's extend-filesystems grows ROOT on every boot, up to the
+    # next partition, and grows ext4 with it only if it moved the end
+    # itself. Resizing it here would leave ext4 at 1.75 GiB.
+    test "leaves ROOT to Flatcar, which grows it up to crew-data" do
+      [disk] = one_disk()["storage"]["disks"]
+      refute Enum.any?(disk["partitions"], &(&1["number"] == 9))
+      refute one_disk()["storage"]["filesystems"]
+    end
+
+    test "the reprovision Ignition finds the same partition" do
+      assert one_disk_reprovision()["storage"]["disks"] == one_disk()["storage"]["disks"]
+    end
+
+    # By id, not by label: a data disk left from a box added with one has
+    # the label too.
+    test "formats and mounts the partition, by its id" do
+      for config <- [one_disk(), one_disk_reprovision()] do
+        format = body(config, "crew-format-data.service")
+
+        assert format =~
+                 "ExecStart=/bin/sh /etc/crew-box/format-data.sh --partition #{@os_disk}-part10\n"
+
+        refute format =~ "Condition"
+
+        mount = body(config, "srv-crew.mount")
+        assert mount =~ "What=#{@os_disk}-part10\n"
+        refute mount =~ "by-label"
+        assert mount =~ "Where=/srv/crew\n"
+        assert mount =~ ~r/^Options=.*prjquota/m
+      end
+    end
+
+    # The partition survives a reinstall, so a machine added again would
+    # otherwise come back as the box it was, with its identity and node.
+    test "a first boot wipes whatever is on the partition" do
+      assert file(one_disk(), "/etc/crew-box/fresh-data")["mode"] == 0o600
+    end
+
+    test "a reprovision never does" do
+      refute file?(one_disk_reprovision(), "/etc/crew-box/fresh-data")
+    end
+
+    test "has no data disk of its own" do
+      config = one_disk(data_disk: "/dev/sdb")
+      refute Jason.encode!(config) =~ "/dev/sdb"
+    end
+
+    test "needs the OS disk by its id, which doesn't change between boots" do
+      for bad <- [
+            nil,
+            "/dev/nvme0n1",
+            "/dev/sda",
+            "/dev/disk/by-partlabel/ROOT",
+            "/dev/disk/by-id/",
+            "/dev/disk/by-id/../sda",
+            "/dev/disk/by-id/nvme-x; reboot",
+            "/dev/disk/by-id/nvme-x/../../sda"
+          ] do
+        opts = Map.merge(@opts, %{type: "linux-metal", disk_layout: "one", os_disk: bad})
+        assert {:error, :bad_os_disk} = Flatcar.ignition(opts), inspect(bad)
+      end
+    end
+
+    test "a separate data disk is as before" do
+      for layout <- ["separate", nil] do
+        config =
+          ignition(
+            type: "linux-metal",
+            disk_layout: layout,
+            os_disk: @os_disk,
+            data_disk: "/dev/sdb"
+          )
+
+        refute config["storage"]["disks"]
+        refute file?(config, "/etc/crew-box/fresh-data")
+        format = body(config, "crew-format-data.service")
+        assert format =~ "ExecStart=/bin/sh /etc/crew-box/format-data.sh /dev/sdb\n"
+        assert format =~ "ConditionPathExists=!/dev/disk/by-label/crew-data\n"
+        assert body(config, "srv-crew.mount") =~ "What=/dev/disk/by-label/crew-data\n"
+      end
+    end
+
+    test "refuses a layout it doesn't know" do
+      opts = Map.merge(@opts, %{type: "linux-metal", disk_layout: "two", os_disk: @os_disk})
+      assert {:error, :bad_disk_layout} = Flatcar.ignition(opts)
+    end
+
+    test "is bare metal's only: the VMs' disks are the launchers'" do
+      config = ignition(type: "linux-vm", disk_layout: "one", os_disk: @os_disk)
+      refute config["storage"]["disks"]
+      refute file?(config, "/etc/crew-box/fresh-data")
+      assert body(config, "crew-format-data.service") =~ "format-data.sh /dev/vdb\n"
+    end
+  end
+
   describe "the network" do
     test "leaves Crew's interfaces to Crew" do
       assert contents(ignition(), "/etc/systemd/network/00-crew.network") ==

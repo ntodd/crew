@@ -16,7 +16,9 @@ defmodule Crew.Boxes.Flatcar do
     daily and flagged like an OS update; its state on the data disk.
   - **The data disk** at `/srv/crew` (XFS, reflink, project quotas),
     formatted only when it's empty and mounted by its label, laid out
-    with three quota areas (§12.4) on every boot.
+    with three quota areas (§12.4) on every boot. On a `linux-metal` box
+    with one disk it's partition 10 of the OS disk, which the Ignition
+    adds at a fixed start and a first boot always formats.
   - **The first boot** (`crew-provision`): the tailnet, the control
     plane, the agent's install from the release (checked against its
     SHA-256s and the release key the Ignition embeds), the enrollment,
@@ -77,6 +79,20 @@ defmodule Crew.Boxes.Flatcar do
 
   @ssh_key ~r/\A(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+\/=]+( [^\r\n]*)?\z/
   @data_disk ~r"\A/dev/(?!.*\.\.)[A-Za-z0-9._:/-]{1,120}\z"
+  # One link in by-id, which names the same disk on every boot: the live
+  # image's /dev/nvme0n1 can be the installed system's /dev/nvme1n1.
+  @os_disk ~r"\A/dev/disk/by-id/(?!.*\.\.)[A-Za-z0-9._:-]{1,100}\z"
+
+  # linux-metal's: /srv/crew on partition 10 of the OS disk, or on a disk
+  # of its own (as before #140, and what a token without one means).
+  @disk_layouts ~w(one separate)
+  # Where partition 10 starts, whatever the Flatcar image's layout: well
+  # past its end (8.5 GB), so ROOT grows into the rest, and the same on
+  # every reinstall, which is how one finds the other's data.
+  @data_start_mib 32_768
+  # A one-disk box's first boot, until crew-format-data has formatted
+  # partition 10: whatever's on it (an old box's /srv/crew) goes.
+  @fresh_data "/etc/crew-box/fresh-data"
 
   @type artifact :: %{url: String.t(), sha256: String.t(), signature: String.t()}
   @type opts :: %{
@@ -85,6 +101,8 @@ defmodule Crew.Boxes.Flatcar do
           required(:type) => String.t(),
           required(:arch) => String.t(),
           optional(:data_disk) => String.t() | nil,
+          optional(:disk_layout) => String.t() | nil,
+          optional(:os_disk) => String.t() | nil,
           optional(:ssh_keys) => [String.t()],
           optional(:url) => String.t(),
           optional(:join_token) => String.t(),
@@ -110,6 +128,12 @@ defmodule Crew.Boxes.Flatcar do
   @doc "Whether `path` is a data disk device Add box accepts (`/dev/...`)."
   def data_disk?(path), do: is_binary(path) and Regex.match?(@data_disk, path)
 
+  @doc "Whether `path` will do as a one-disk box's OS disk: a `/dev/disk/by-id/` link."
+  def os_disk?(path), do: is_binary(path) and Regex.match?(@os_disk, path)
+
+  @doc "A `linux-metal` box's disk layouts: `one` (the default) or `separate`."
+  def disk_layouts, do: @disk_layouts
+
   @doc "Whether `key` is one SSH public key line."
   def ssh_key?(key), do: is_binary(key) and Regex.match?(@ssh_key, key)
 
@@ -119,8 +143,12 @@ defmodule Crew.Boxes.Flatcar do
 
   @doc """
   The Ignition config for a box (a map, JSON-ready). See `t:opts/0`;
-  `:data_disk` is for `linux-metal` only (the VMs' is `/dev/vdb`), and
   `:ssh_keys` go to `core`.
+
+  `:disk_layout`, `:os_disk` and `:data_disk` are for `linux-metal` only
+  (the VMs' data disk is `/dev/vdb`). With `disk_layout: "one"`, `/srv/crew`
+  is partition 10 of `:os_disk`, a `/dev/disk/by-id/` link; with
+  `"separate"` (or none), it's the disk at `:data_disk`.
   """
   @spec ignition(opts()) :: {:ok, map()} | {:error, atom()}
   def ignition(opts) do
@@ -133,6 +161,8 @@ defmodule Crew.Boxes.Flatcar do
         bad_type: opts.type in @types,
         bad_arch: Map.has_key?(@bakery_arch, opts.arch),
         bad_ssh_key: Enum.all?(opts.ssh_keys, &ssh_key?/1),
+        bad_disk_layout: opts.type != "linux-metal" or disk_layout(opts) in @disk_layouts,
+        bad_os_disk: not one_disk?(opts) or os_disk?(opts[:os_disk]),
         bad_data_disk: data_disk?(data_disk(opts))
       ] ++ if(opts.mode == :provision, do: provision_checks(opts), else: [])
 
@@ -153,8 +183,23 @@ defmodule Crew.Boxes.Flatcar do
     ]
   end
 
-  defp data_disk(%{type: "linux-metal"} = opts), do: opts[:data_disk]
+  defp disk_layout(opts), do: opts[:disk_layout] || "separate"
+
+  defp one_disk?(opts), do: opts.type == "linux-metal" and disk_layout(opts) == "one"
+
+  defp data_disk(%{type: "linux-metal"} = opts) do
+    cond do
+      not one_disk?(opts) -> opts[:data_disk]
+      is_binary(opts[:os_disk]) -> data_partition(opts)
+      true -> nil
+    end
+  end
+
   defp data_disk(_opts), do: vm_data_disk()
+
+  # by-id's link for partition 10 of the OS disk: the one partition, where
+  # a partition label could be another disk's too.
+  defp data_partition(opts), do: opts.os_disk <> "-part10"
 
   defp url?(url) do
     case is_binary(url) && URI.parse(url) do
@@ -465,18 +510,51 @@ defmodule Crew.Boxes.Flatcar do
       ] ++
         for({name, script} <- @scripts, do: text("/etc/crew-box/#{name}", script)) ++
         release_key_file(opts[:release_key]) ++
-        if(provision?, do: provision_files(opts), else: [])
+        if(provision?, do: provision_files(opts), else: []) ++
+        if(provision? and one_disk?(opts), do: [fresh_data()], else: [])
+
+    storage =
+      %{
+        "directories" => [%{"path" => "/etc/crew-box", "mode" => 0o700}],
+        "files" => files,
+        "links" => [sysext_link, resolv_conf_link()]
+      }
+      |> then(&if(one_disk?(opts), do: Map.put(&1, "disks", [os_disk(opts)]), else: &1))
 
     %{
       "ignition" => %{"version" => "3.4.0"},
       "passwd" => passwd(opts.ssh_keys),
-      "storage" => %{
-        "directories" => [%{"path" => "/etc/crew-box", "mode" => 0o700}],
-        "files" => files,
-        "links" => [sysext_link, resolv_conf_link()]
-      },
+      "storage" => storage,
       "systemd" => %{"units" => units(opts, provision?)}
     }
+  end
+
+  # Partition 10 after Flatcar's nine, whose table flatcar-install has just
+  # written: added at a first boot, and found again (the same start and
+  # the rest of the same disk, its contents untouched) after a reinstall.
+  # ROOT is left to Flatcar's extend-filesystems, which grows it, and its
+  # ext4, up to partition 10 on every boot; resized here, its ext4 would
+  # stay at 1.75 GiB (flatcar/Flatcar#462).
+  defp os_disk(opts) do
+    %{
+      "device" => opts.os_disk,
+      "wipeTable" => false,
+      "partitions" => [
+        %{
+          "number" => 10,
+          "label" => "crew-data",
+          "startMiB" => @data_start_mib,
+          "sizeMiB" => 0
+        }
+      ]
+    }
+  end
+
+  defp fresh_data do
+    secret(@fresh_data, """
+    # Crew: this box's first boot. crew-format-data formats partition 10
+    # whatever is on it, then deletes this.
+    """)
   end
 
   defp provision_files(opts) do
@@ -646,11 +724,14 @@ defmodule Crew.Boxes.Flatcar do
   # -- units ---------------------------------------------------------------------
 
   defp units(opts, provision?) do
-    disk = data_disk(opts)
+    {mount, format} =
+      if one_disk?(opts),
+        do: {srv_crew_mount(data_partition(opts)), format_data_partition(data_partition(opts))},
+        else: {srv_crew_mount(), format_data(data_disk(opts))}
 
     [
-      unit("srv-crew.mount", srv_crew_mount()),
-      unit("crew-format-data.service", format_data(disk), enabled: false),
+      unit("srv-crew.mount", mount),
+      unit("crew-format-data.service", format, enabled: false),
       unit("crew-quota.service", quota()),
       unit("crew-agent-install.service", agent_install(), enabled: false),
       unit("crew-root-units.service", root_units()),
@@ -688,8 +769,9 @@ defmodule Crew.Boxes.Flatcar do
   # By label, and wanting the formatter rather than requiring it: a disk
   # that comes back under another name still mounts, whatever is at the
   # configured device. After= only so a first boot mounts what was just
-  # formatted.
-  defp srv_crew_mount do
+  # formatted. A one-disk box's partition is by id, which doesn't change,
+  # and which a data disk left from a box added with one doesn't share.
+  defp srv_crew_mount(what \\ "/dev/disk/by-label/crew-data") do
     """
     [Unit]
     Description=Crew's data disk
@@ -697,7 +779,7 @@ defmodule Crew.Boxes.Flatcar do
     After=crew-format-data.service
 
     [Mount]
-    What=/dev/disk/by-label/crew-data
+    What=#{what}
     Where=/srv/crew
     Type=xfs
     Options=defaults,noatime,prjquota,nofail
@@ -722,6 +804,24 @@ defmodule Crew.Boxes.Flatcar do
     Type=oneshot
     RemainAfterExit=yes
     ExecStart=/bin/sh /etc/crew-box/format-data.sh #{disk}
+    """
+  end
+
+  # A one-disk box's partition 10, on every boot: on its first (the
+  # Ignition's marker), formatted whatever is on it; after, only checked,
+  # since a reprovision never formats it.
+  defp format_data_partition(partition) do
+    """
+    [Unit]
+    Description=Format Crew's data partition on a first boot
+    DefaultDependencies=no
+    Before=srv-crew.mount shutdown.target
+    Conflicts=shutdown.target
+
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStart=/bin/sh /etc/crew-box/format-data.sh --partition #{partition}
     """
   end
 
