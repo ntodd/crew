@@ -103,14 +103,19 @@ jobs:
         env:
           IGNITION_VALIDATE: quay.io/coreos/ignition-validate:v2.24.0@sha256:b951f790f0ec6ae3a440ba67f2121e4ed19017d3f5024e45dd5c5916602687b2
         run: |
-          for type in linux-metal linux-vm mac-vm; do
+          # linux-metal in both disk layouts (one disk, the default, and
+          # a separate data disk).
+          for box in linux-metal:one linux-metal:separate linux-vm mac-vm; do
+            type=${box%%:*}
+            layout=""
+            case "$box" in *:*) layout="--layout ${box#*:}" ;; esac
             for arch in amd64 arm64; do
               for mode in provision reprovision; do
                 flag=""
                 if [ "$mode" = reprovision ]; then flag=--reprovision; fi
-                out="$RUNNER_TEMP/$type-$arch-$mode.ign"
-                mix crew.ignition --type "$type" --arch "$arch" $flag --out "$out"
-                echo "$type $arch $mode"
+                out="$RUNNER_TEMP/${box%%:*}${layout:+-${box#*:}}-$arch-$mode.ign"
+                mix crew.ignition --type "$type" $layout --arch "$arch" $flag --out "$out"
+                echo "$box $arch $mode"
                 docker run --rm -i "$IGNITION_VALIDATE" - < "$out"
               done
             done

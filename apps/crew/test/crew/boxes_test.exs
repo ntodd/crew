@@ -41,7 +41,7 @@ defmodule Crew.BoxesTest do
         Boxes.create_join_token(admin, %{
           "box_name" => "late",
           "box_type" => "linux-metal",
-          "data_disk" => "/dev/sdb"
+          "os_disk" => "/dev/disk/by-id/nvme-Samsung_SSD_990"
         })
 
       Repo.update_all(Crew.Boxes.JoinToken,

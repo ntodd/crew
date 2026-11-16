@@ -19,7 +19,8 @@ defmodule CrewWeb.BoxController do
       )
       |> json(config)
     else
-      {:error, reason} when reason in [:bad_arch, :bad_data_disk, :bad_ssh_key, :not_flatcar] ->
+      {:error, reason}
+      when reason in [:bad_arch, :bad_data_disk, :bad_os_disk, :bad_ssh_key, :not_flatcar] ->
         conn |> put_status(:bad_request) |> json(%{error: error(reason)})
 
       _ ->
@@ -56,6 +57,7 @@ defmodule CrewWeb.BoxController do
   defp error(:not_mac_vz), do: "only a mac-vz box has a cache VM"
   defp error(:bad_arch), do: "arch must be amd64 or arm64"
   defp error(:bad_data_disk), do: "the data disk must be a device like /dev/sdb"
+  defp error(:bad_os_disk), do: "the OS disk must be a /dev/disk/by-id/... link"
   defp error(:bad_ssh_key), do: "that isn't an SSH public key"
   defp error(:not_flatcar), do: "this box doesn't run Flatcar"
 end
