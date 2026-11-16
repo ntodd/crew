@@ -650,8 +650,14 @@ defmodule Crew.Boxes.FlatcarTest do
         assert path["contents"] =~ "PathExists=/srv/crew/agent/update/request"
         assert path["contents"] =~ "Unit=crew-root-install.service"
         assert path["contents"] =~ "RequiresMountsFor=/srv/crew"
+        # A path unit comes before paths.target, and so before basic.target,
+        # which crew-quota (a service with the default dependencies) comes
+        # after: ordered after crew-quota, the watch is a cycle, which
+        # systemd breaks by dropping a job, some boots crew-quota's.
+        refute path["contents"] =~ "crew-quota"
 
         service = body(config, "crew-root-install.service")
+        assert service =~ "After=crew-quota.service"
         assert service =~ "ExecStart=/bin/sh /etc/crew-box/root-install.sh"
         assert service =~ "Type=oneshot"
         refute service =~ ~r/^User=/m

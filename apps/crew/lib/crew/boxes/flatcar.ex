@@ -872,12 +872,14 @@ defmodule Crew.Boxes.Flatcar do
   # Firecracker, the ruleset and the units from them, checked against its
   # own copy of the release key. PathExists, so a request made before a
   # reboot is still acted on; the script takes it, so it can't loop.
+  # Not ordered after crew-quota: a path unit comes before paths.target,
+  # and so before basic.target, which crew-quota comes after. The service
+  # it starts is.
   defp root_install_path do
     """
     [Unit]
     Description=Watch for an agent update's root half to install
     RequiresMountsFor=/srv/crew
-    After=crew-quota.service
 
     [Path]
     PathExists=/srv/crew/agent/update/request
@@ -893,6 +895,7 @@ defmodule Crew.Boxes.Flatcar do
     [Unit]
     Description=Install an agent update's root half from its signed tarballs
     RequiresMountsFor=/srv/crew
+    After=crew-quota.service
 
     [Service]
     Type=oneshot
