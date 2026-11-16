@@ -5,8 +5,9 @@ defmodule CrewWeb.BoxLive.New do
 
   A Flatcar box (`linux-metal`, `linux-vm`, `mac-vm`) also takes an
   optional break-glass SSH key, a Tailscale auth key when the control
-  plane has no OAuth client to mint one, and on bare metal the data
-  disk. The launchers fetch the box's Ignition themselves; bare metal
+  plane has no OAuth client to mint one, and on bare metal its disks:
+  one disk (the default), which `/srv/crew` shares with Flatcar, or a
+  separate data disk. The launchers fetch the box's Ignition themselves; bare metal
   downloads it here, and so can a `linux-vm` box whose VM is built by
   hand where the launcher can't run (a TrueNAS SCALE host, say), so it
   enrolls as the nested box it is rather than as `linux-metal`.
@@ -32,7 +33,9 @@ defmodule CrewWeb.BoxLive.New do
        minted?: Crew.Tailscale.configured?(),
        token: nil,
        box_name: nil,
-       box_type: nil
+       box_type: nil,
+       os_disk: nil,
+       disk_layout: nil
      )}
   end
 
@@ -44,7 +47,13 @@ defmodule CrewWeb.BoxLive.New do
     case Boxes.create_join_token(socket.assigns.current_scope, params) do
       {:ok, token} ->
         {:noreply,
-         assign(socket, token: token, box_name: params["box_name"], box_type: params["box_type"])}
+         assign(socket,
+           token: token,
+           box_name: params["box_name"],
+           box_type: params["box_type"],
+           os_disk: params["os_disk"],
+           disk_layout: params["disk_layout"] || "one"
+         )}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :form, to_form(changeset, as: :box))}
@@ -77,6 +86,7 @@ defmodule CrewWeb.BoxLive.New do
   attr :box_name, :string, required: true
   attr :os_disk, :string, required: true
   attr :fetch_id, :string, required: true
+  attr :data_disk?, :boolean, default: true, doc: "whether there's a data disk not to install to"
 
   defp ignition_steps(assigns) do
     ~H"""
@@ -115,7 +125,8 @@ defmodule CrewWeb.BoxLive.New do
       command={"(umask 077; f=crew-#{@box_name}.ign; rm -f \"$f.new\" && curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o \"$f.new\" && mv -f \"$f.new\" \"$f\")"}
     />
     <p class="mb-2 mt-4 text-sm text-ink-2">
-      Then, from Flatcar's live image, install it to the OS disk (not the data disk) and reboot:
+      Then, from Flatcar's live image, install it to the OS disk{if @data_disk?,
+        do: " (not the data disk)"} and reboot:
     </p>
     <.command
       id="flatcar-install"
@@ -126,7 +137,11 @@ defmodule CrewWeb.BoxLive.New do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, :type, assigns.form[:box_type].value)
+    assigns =
+      assign(assigns,
+        type: assigns.form[:box_type].value,
+        layout: assigns.form[:disk_layout].value || "one"
+      )
 
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope} current_path={@current_path}>
@@ -163,17 +178,64 @@ defmodule CrewWeb.BoxLive.New do
 
           <div :if={@type in Flatcar.types()} id="flatcar-fields" class="space-y-2">
             <div :if={@type == "linux-metal"}>
+              <fieldset id="disk-layout" class="mb-3">
+                <legend class="label">Disks</legend>
+                <div class="space-y-2">
+                  <label
+                    :for={
+                      {value, label, help} <- [
+                        {"one", "One disk",
+                         "Crew's images, job VMs and cache go on the OS disk, after Flatcar."},
+                        {"separate", "Separate data disk",
+                         "They go on a disk of their own, which Crew formats only if it's empty."}
+                      ]
+                    }
+                    class="flex items-start gap-2 text-sm text-ink"
+                  >
+                    <input
+                      type="radio"
+                      class="radio mt-0.5"
+                      name="box[disk_layout]"
+                      value={value}
+                      checked={@layout == value}
+                    />
+                    <span>{label} <span class="text-xs text-ink-3">{help}</span></span>
+                  </label>
+                </div>
+              </fieldset>
+
               <.input
-                field={@form[:data_disk]}
-                label="Data disk"
-                placeholder="/dev/sdb"
+                field={@form[:os_disk]}
+                label="OS disk"
+                placeholder={if @layout == "one", do: "/dev/disk/by-id/nvme-…", else: "/dev/sda"}
                 autocomplete="off"
               />
-              <p class="-mt-2 mb-3 text-xs text-ink-3">
-                The disk for images, job VMs and the cache (XFS). Crew formats it only if it's empty. A
-                <span class="font-mono">/dev/disk/by-id/…</span>
-                path survives disks being renamed.
+              <p id="os-disk-help" class="-mt-2 mb-3 text-xs text-ink-3">
+                <%= if @layout == "one" do %>
+                  Its <span class="font-mono">/dev/disk/by-id/…</span>
+                  name, from <span class="font-mono">ls -l /dev/disk/by-id/</span>
+                  in Flatcar's live image: <span class="font-mono">/dev/nvme0n1</span>
+                  can be another disk once the box boots. At least 128 GiB.
+                  Crew's data is partition 10, which a reinstall keeps.
+                <% else %>
+                  Where Flatcar goes. A <span class="font-mono">/dev/disk/by-id/…</span>
+                  path survives disks being renamed.
+                <% end %>
               </p>
+
+              <div :if={@layout == "separate"}>
+                <.input
+                  field={@form[:data_disk]}
+                  label="Data disk"
+                  placeholder="/dev/sdb"
+                  autocomplete="off"
+                />
+                <p class="-mt-2 mb-3 text-xs text-ink-3">
+                  The disk for images, job VMs and the cache (XFS). Crew formats it only if it's empty. A
+                  <span class="font-mono">/dev/disk/by-id/…</span>
+                  path survives disks being renamed.
+                </p>
+              </div>
             </div>
 
             <.input
@@ -271,8 +333,9 @@ defmodule CrewWeb.BoxLive.New do
             <.ignition_steps
               token={@token}
               box_name={@box_name}
-              os_disk="/dev/sda"
+              os_disk={@os_disk}
               fetch_id="join-command"
+              data_disk?={@disk_layout == "separate"}
             />
         <% end %>
 

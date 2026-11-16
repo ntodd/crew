@@ -28,7 +28,7 @@ defmodule CrewWeb.BoxLive.Show do
     {:ok,
      socket
      |> assign(:page_title, box.name)
-     |> assign(:data_disk, if(box.type == "linux-metal", do: Boxes.data_disk(box)))
+     |> assign(:disks, if(box.type == "linux-metal", do: Boxes.disks(box)))
      |> load(box)
      |> load_usage()}
   end
@@ -787,12 +787,24 @@ defmodule CrewWeb.BoxLive.Show do
               options={[{"x86_64 (amd64)", "amd64"}, {"arm64", "arm64"}]}
             />
           </div>
-          <div :if={@box.type == "linux-metal"} class="w-full sm:w-56">
+          <div :if={@disks} class="w-full sm:w-72">
+            <.input
+              name="os_disk"
+              id="reprovision-os-disk"
+              label="OS disk"
+              value={@disks.os_disk}
+              placeholder={
+                if @disks.disk_layout == "one", do: "/dev/disk/by-id/nvme-…", else: "/dev/sda"
+              }
+              autocomplete="off"
+            />
+          </div>
+          <div :if={@disks && @disks.disk_layout == "separate"} class="w-full sm:w-56">
             <.input
               name="data_disk"
               id="reprovision-data-disk"
               label="Data disk"
-              value={@data_disk}
+              value={@disks.data_disk}
               placeholder="/dev/sdb"
               autocomplete="off"
             />
@@ -814,10 +826,16 @@ defmodule CrewWeb.BoxLive.Show do
           </div>
         </form>
         <%= if @box.type == "linux-metal" do %>
-          <p class="mb-2 text-sm text-ink-2">From Flatcar's live image, onto the OS disk:</p>
+          <p :if={@disks.disk_layout == "one"} class="mb-2 text-sm text-ink-2">
+            Crew's data is partition 10 of the OS disk, which the reinstall keeps.
+          </p>
+          <p class="mb-2 text-sm text-ink-2">
+            From Flatcar's live image, onto the OS disk{if !@disks.os_disk,
+              do: " (OS_DISK: its /dev/disk/by-id/… name)"}:
+          </p>
           <.command
             id="reprovision-command"
-            command={"sudo flatcar-install -d /dev/sda -i crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign && sudo reboot"}
+            command={"sudo flatcar-install -d #{@disks.os_disk || "OS_DISK"} -i crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign && sudo reboot"}
           />
         <% else %>
           <p class="mb-2 text-sm text-ink-2">On the host:</p>

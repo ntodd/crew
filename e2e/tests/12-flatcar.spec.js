@@ -1,7 +1,8 @@
 // Flatcar boxes (§12.2, §12.3) in a real browser, under production's
-// style policy: Add box for linux-vm, mac-vm and linux-metal, the
-// launcher and Ignition the control plane serves for a join token, the
-// Ignition download, and the box page's reprovision Ignition. The
+// style policy: Add box for linux-vm, mac-vm and linux-metal (one disk
+// and a separate data disk), the launcher and Ignition the control plane
+// serves for a join token, the Ignition download, and the box page's
+// reprovision Ignition. The
 // release the Ignition names is crew-server.sh's placeholder one, signed
 // with the development key.
 import {expect, test} from "@playwright/test"
@@ -128,16 +129,24 @@ test("mac-vm: the launcher's one command", async ({page, request}) => {
   expect(violations).toEqual([])
 })
 
-test("linux-metal: the data disk, then the Ignition to download", async ({page}) => {
+const osDisk = "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0W"
+
+test("linux-metal: one disk by default, then the Ignition to download", async ({page, request}) => {
   const violations = watchCsp(page)
   await signIn(page)
   await startAdding(page, "rack1", "linux-metal")
-  await expect(page.locator("#box_data_disk")).toBeVisible()
+  await expect(page.locator('#disk-layout input[value="one"]')).toBeChecked()
+  await expect(page.locator("#box_os_disk")).toBeVisible()
+  await expect(page.locator("#os-disk-help")).toContainText("ls -l /dev/disk/by-id/")
+  await expect(page.locator("#box_data_disk")).toHaveCount(0)
 
-  // The data disk is needed.
+  // The OS disk is needed, by its id: the Ignition partitions it.
   await page.getByRole("button", {name: "Create join token"}).click()
   await expect(page.locator("#add-box")).toContainText("is needed for a dedicated Linux machine")
-  await page.locator("#box_data_disk").fill("/dev/nvme1n1")
+  await page.locator("#box_os_disk").fill("/dev/nvme0n1")
+  await page.getByRole("button", {name: "Create join token"}).click()
+  await expect(page.locator("#add-box")).toContainText("must be a /dev/disk/by-id/... link")
+  await page.locator("#box_os_disk").fill(osDisk)
   await page.locator("#box_ssh_keys").fill(breakGlass)
   await shot(page, layer, "add-box-linux-metal")
 
@@ -148,7 +157,8 @@ test("linux-metal: the data disk, then the Ignition to download", async ({page})
 
   await page.getByRole("button", {name: "Create join token"}).click()
   await expect(page.locator("#ignition-download")).toBeVisible()
-  await expect(page.locator("#flatcar-install")).toContainText("flatcar-install -d /dev/sda -i crew-rack1.ign")
+  await expect(page.locator("#flatcar-install")).toContainText(`flatcar-install -d ${osDisk} -i crew-rack1.ign`)
+  await expect(page.locator("#join-instructions")).not.toContainText("not the data disk")
   // The file holds the token: the command makes it 0600.
   await expect(page.locator("#join-command")).toContainText("(umask 077; f=crew-")
   await expect(page.locator("#join-instructions")).toContainText("Delete it once the box has enrolled")
@@ -164,13 +174,67 @@ test("linux-metal: the data disk, then the Ignition to download", async ({page})
   expect(ign.ignition.version).toBe("3.4.0")
   expect(decode(files(ign)["/etc/hostname"])).toBe("rack1\n")
   expect(decode(files(ign)["/etc/crew-box/release.env"])).toContain('CREW_TARGET="linux-arm64"')
-  expect(unit(ign, "crew-format-data.service").contents).toContain("format-data.sh /dev/nvme1n1")
+  // /srv/crew is partition 10 of the OS disk, which its first boot formats.
+  expect(ign.storage.disks).toEqual([
+    {device: osDisk, wipeTable: false, partitions: [{number: 10, label: "crew-data", startMiB: 32768, sizeMiB: 0}]},
+  ])
+  expect(unit(ign, "crew-format-data.service").contents).toContain(`format-data.sh --partition ${osDisk}-part10`)
+  expect(unit(ign, "srv-crew.mount").contents).toContain(`What=${osDisk}-part10`)
+  expect(files(ign)["/etc/crew-box/fresh-data"].mode).toBe(0o600)
   // The download leaves the page as it was.
   await expect(page.locator("#join-instructions")).toBeVisible()
 
   await toMobile(page)
   expect(await fitsWidth(page)).toBe(true)
   await shot(page, layer, "linux-metal-ignition-mobile")
+  await page.setViewportSize({width: 1440, height: 900})
+
+  // Enrolled, its box page reinstalls Flatcar over the same OS disk and
+  // keeps partition 10.
+  const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  const enroll = await request.post("/api/agents/enroll", {
+    data: {join_token: token, public_key: randomBytes(32).toString("base64")},
+  })
+  expect(enroll.status()).toBe(201)
+  const {agent_id: id} = await enroll.json()
+  await page.goto(`/boxes/${id}`)
+  const panel = page.locator("#reprovision")
+  await expect(panel.locator('input[name="os_disk"]')).toHaveValue(osDisk)
+  await expect(panel.locator('input[name="data_disk"]')).toHaveCount(0)
+  await expect(panel).toContainText("partition 10")
+  await expect(page.locator("#reprovision-command")).toContainText(`flatcar-install -d ${osDisk} -i crew-rack1-amd64-reprovision.ign`)
+  await shot(page, layer, "box-reprovision-linux-metal")
+
+  const [again] = await Promise.all([
+    page.waitForEvent("download"),
+    panel.getByRole("button", {name: "Download Ignition"}).click(),
+  ])
+  const re = JSON.parse(readFileSync(await again.path(), "utf8"))
+  expect(re.storage.disks).toEqual(ign.storage.disks)
+  expect(files(re)["/etc/crew-box/fresh-data"]).toBeUndefined()
+  expect(violations).toEqual([])
+})
+
+test("linux-metal: a separate data disk", async ({page, request}) => {
+  const violations = watchCsp(page)
+  await signIn(page)
+  await startAdding(page, "rack3", "linux-metal")
+  await page.locator('#disk-layout input[value="separate"]').check()
+  await expect(page.locator("#box_data_disk")).toBeVisible()
+  await page.locator("#box_os_disk").fill("/dev/nvme0n1")
+  await page.locator("#box_data_disk").fill("/dev/nvme1n1")
+  await shot(page, layer, "add-box-linux-metal-separate")
+
+  await page.getByRole("button", {name: "Create join token"}).click()
+  await expect(page.locator("#flatcar-install")).toContainText("flatcar-install -d /dev/nvme0n1 -i crew-rack3.ign")
+  await expect(page.locator("#join-instructions")).toContainText("(not the data disk)")
+
+  const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  const resp = await request.post("/agent/flatcar/ignition", {form: {join_token: token, arch: "amd64"}})
+  expect(resp.status()).toBe(200)
+  const ign = await resp.json()
+  expect(ign.storage.disks).toBeUndefined()
+  expect(unit(ign, "crew-format-data.service").contents).toContain("format-data.sh /dev/nvme1n1")
   expect(violations).toEqual([])
 })
 
