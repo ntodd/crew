@@ -19,6 +19,7 @@ defmodule CrewWeb.BoxLive.Show do
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     box = Boxes.get!(id)
+    disks = if box.type == "linux-metal", do: Boxes.disks(box)
 
     if connected?(socket) do
       Boxes.subscribe(box.id)
@@ -28,7 +29,9 @@ defmodule CrewWeb.BoxLive.Show do
     {:ok,
      socket
      |> assign(:page_title, box.name)
-     |> assign(:disks, if(box.type == "linux-metal", do: Boxes.disks(box)))
+     |> assign(:disks, disks)
+     |> assign(:reprovision_arch, default_arch(box))
+     |> assign_reprovision_os_disk(disks && disks.os_disk)
      |> load(box)
      |> load_usage()}
   end
@@ -52,6 +55,21 @@ defmodule CrewWeb.BoxLive.Show do
 
   # The arch a reprovision Ignition is for, by default: a Mac's VM is
   # arm64, and otherwise the guests' arch is the box's.
+  # The form's OS disk, and the one the reprovision Ignition is for: the
+  # form's, or the box's own. OS_DISK when neither is known (a box added
+  # before it was asked for).
+  defp assign_reprovision_os_disk(socket, input) do
+    disks = socket.assigns.disks
+
+    target =
+      case input && String.trim(input) do
+        disk when disk not in [nil, ""] -> disk
+        _ -> (disks && disks.os_disk) || "OS_DISK"
+      end
+
+    assign(socket, reprovision_os_disk: input, reprovision_target: target)
+  end
+
   defp default_arch(%{type: "mac-vm"}), do: "arm64"
   defp default_arch(%{guest_arch: "arm64"}), do: "arm64"
   defp default_arch(_), do: "amd64"
@@ -151,6 +169,16 @@ defmodule CrewWeb.BoxLive.Show do
   def handle_info(_message, socket), do: {:noreply, socket}
 
   @impl true
+  # The reprovision form, so its command installs onto the disk, and names
+  # the file, the download is for. An empty OS disk is the box's own, as
+  # the download has it.
+  def handle_event("reprovision", params, socket) do
+    arch = if params["arch"] in Flatcar.arches(), do: params["arch"], else: "amd64"
+
+    {:noreply,
+     socket |> assign(:reprovision_arch, arch) |> assign_reprovision_os_disk(params["os_disk"])}
+  end
+
   def handle_event("approve", _params, socket) do
     case Boxes.approve_capabilities(socket.assigns.current_scope, socket.assigns.box) do
       {:ok, box} ->
@@ -773,8 +801,10 @@ defmodule CrewWeb.BoxLive.Show do
           the box keeps its agent, identity and tailnet node from the data disk, and Flatcar updates itself from there.
         </:subtitle>
         <form
+          id="reprovision-form"
           action={~p"/boxes/#{@box.id}/reprovision.ign"}
           method="get"
+          phx-change="reprovision"
           class="flex flex-wrap items-end gap-x-3"
         >
           <div class="w-40">
@@ -783,7 +813,7 @@ defmodule CrewWeb.BoxLive.Show do
               name="arch"
               id="reprovision-arch"
               label="Architecture"
-              value={default_arch(@box)}
+              value={@reprovision_arch}
               options={[{"x86_64 (amd64)", "amd64"}, {"arm64", "arm64"}]}
             />
           </div>
@@ -792,7 +822,7 @@ defmodule CrewWeb.BoxLive.Show do
               name="os_disk"
               id="reprovision-os-disk"
               label="OS disk"
-              value={@disks.os_disk}
+              value={@reprovision_os_disk}
               placeholder={
                 if @disks.disk_layout == "one", do: "/dev/disk/by-id/nvme-…", else: "/dev/sda"
               }
@@ -830,18 +860,18 @@ defmodule CrewWeb.BoxLive.Show do
             Crew's data is partition 10 of the OS disk, which the reinstall keeps.
           </p>
           <p class="mb-2 text-sm text-ink-2">
-            From Flatcar's live image, onto the OS disk{if !@disks.os_disk,
+            From Flatcar's live image, onto the OS disk{if @reprovision_target == "OS_DISK",
               do: " (OS_DISK: its /dev/disk/by-id/… name)"}:
           </p>
           <.command
             id="reprovision-command"
-            command={"sudo flatcar-install -d #{@disks.os_disk || "OS_DISK"} -i crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign && sudo reboot"}
+            command={"sudo flatcar-install -d #{@reprovision_target} -i crew-#{@box.name}-#{@reprovision_arch}-reprovision.ign && sudo reboot"}
           />
         <% else %>
           <p class="mb-2 text-sm text-ink-2">On the host:</p>
           <.command
             id="reprovision-command"
-            command={"sudo crew-box reimage crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign"}
+            command={"sudo crew-box reimage crew-#{@box.name}-#{@reprovision_arch}-reprovision.ign"}
           />
           <div :if={@box.type == "linux-vm"}>
             <p class="mb-2 mt-4 text-sm text-ink-2">
@@ -849,7 +879,7 @@ defmodule CrewWeb.BoxLive.Show do
             </p>
             <.command
               id="reprovision-install-command"
-              command={"sudo flatcar-install -d /dev/vda -i crew-#{@box.name}-#{default_arch(@box)}-reprovision.ign && sudo reboot"}
+              command={"sudo flatcar-install -d /dev/vda -i crew-#{@box.name}-#{@reprovision_arch}-reprovision.ign && sudo reboot"}
             />
           </div>
         <% end %>

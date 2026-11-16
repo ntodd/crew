@@ -542,6 +542,29 @@ defmodule CrewWeb.BoxLiveTest do
              )
     end
 
+    # The command installs onto the disk the downloaded Ignition is for.
+    test "the command follows the form", %{conn: conn, admin: admin} do
+      box = metal_box(admin, %{"os_disk" => @os_disk})
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+      other = "/dev/disk/by-id/nvme-eui.0025385b71b0e2c1"
+
+      view
+      |> form("#reprovision-form", %{"arch" => "arm64", "os_disk" => other})
+      |> render_change()
+
+      assert has_element?(
+               view,
+               "#reprovision-command",
+               "flatcar-install -d #{other} -i crew-rack2-arm64-reprovision.ign"
+             )
+
+      assert has_element?(view, "#reprovision input[name=os_disk][value='#{other}']")
+
+      # Emptied, it's the box's own again, which the download falls back to.
+      view |> form("#reprovision-form", %{"os_disk" => ""}) |> render_change()
+      assert has_element?(view, "#reprovision-command", "flatcar-install -d #{@os_disk} -i")
+    end
+
     test "a one-disk box's keeps its data on the OS disk", %{conn: conn, admin: admin} do
       box = metal_box(admin, %{"os_disk" => @os_disk})
       {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
