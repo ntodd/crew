@@ -376,7 +376,10 @@ defmodule Crew.Boxes.FlatcarTest do
             "/dev/disk/by-id/",
             "/dev/disk/by-id/../sda",
             "/dev/disk/by-id/nvme-x; reboot",
-            "/dev/disk/by-id/nvme-x/../../sda"
+            "/dev/disk/by-id/nvme-x/../../sda",
+            # A partition's link, which ls -l /dev/disk/by-id/ lists too.
+            "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0W-part1",
+            "/dev/disk/by-id/ata-ST1000DM003_Z1D5-part10"
           ] do
         opts = Map.merge(@opts, %{type: "linux-metal", disk_layout: "one", os_disk: bad})
         assert {:error, :bad_os_disk} = Flatcar.ignition(opts), inspect(bad)
@@ -399,6 +402,18 @@ defmodule Crew.Boxes.FlatcarTest do
         assert format =~ "ExecStart=/bin/sh /etc/crew-box/format-data.sh /dev/sdb\n"
         assert format =~ "ConditionPathExists=!/dev/disk/by-label/crew-data\n"
         assert body(config, "srv-crew.mount") =~ "What=/dev/disk/by-label/crew-data\n"
+      end
+    end
+
+    test "takes the links udev makes for disks" do
+      for good <- [
+            "/dev/disk/by-id/nvme-eui.0025385b71b0e2c1",
+            "/dev/disk/by-id/ata-ST1000DM003-1CH162_Z1D5ABCD",
+            "/dev/disk/by-id/wwn-0x5000c500a1b2c3d4",
+            "/dev/disk/by-id/usb-Generic_Flash_Disk_12345678-0:0",
+            "/dev/disk/by-id/nvme-WD_BLACK_SN850X_2000GB_part2_23"
+          ] do
+        assert Flatcar.os_disk?(good), good
       end
     end
 

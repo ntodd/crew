@@ -80,8 +80,9 @@ defmodule Crew.Boxes.Flatcar do
   @ssh_key ~r/\A(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) [A-Za-z0-9+\/=]+( [^\r\n]*)?\z/
   @data_disk ~r"\A/dev/(?!.*\.\.)[A-Za-z0-9._:/-]{1,120}\z"
   # One link in by-id, which names the same disk on every boot: the live
-  # image's /dev/nvme0n1 can be the installed system's /dev/nvme1n1.
-  @os_disk ~r"\A/dev/disk/by-id/(?!.*\.\.)[A-Za-z0-9._:-]{1,100}\z"
+  # image's /dev/nvme0n1 can be the installed system's /dev/nvme1n1. A
+  # disk's, not one of its partitions' (-partN), which by-id lists too.
+  @os_disk ~r"\A/dev/disk/by-id/(?!.*\.\.)(?!.*-part\d+\z)[A-Za-z0-9._:-]{1,100}\z"
 
   # linux-metal's: /srv/crew on partition 10 of the OS disk, or on a disk
   # of its own (as before #140, and what a token without one means).
