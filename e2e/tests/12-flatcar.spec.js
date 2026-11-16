@@ -202,6 +202,7 @@ test("linux-metal: one disk by default, then the Ignition to download", async ({
   await expect(panel.locator('input[name="os_disk"]')).toHaveValue(osDisk)
   await expect(panel.locator('input[name="data_disk"]')).toHaveCount(0)
   await expect(panel).toContainText("partition 10")
+  await expect(panel).toContainText("installing Flatcar any other way erases it")
   await expect(page.locator("#reprovision-command")).toContainText(`flatcar-install -d ${osDisk} -i crew-rack1-amd64-reprovision.ign`)
   await shot(page, layer, "box-reprovision-linux-metal")
 
@@ -221,12 +222,12 @@ test("linux-metal: a separate data disk", async ({page, request}) => {
   await startAdding(page, "rack3", "linux-metal")
   await page.locator('#disk-layout input[value="separate"]').check()
   await expect(page.locator("#box_data_disk")).toBeVisible()
-  await page.locator("#box_os_disk").fill("/dev/nvme0n1")
+  await page.locator("#box_os_disk").fill(osDisk)
   await page.locator("#box_data_disk").fill("/dev/nvme1n1")
   await shot(page, layer, "add-box-linux-metal-separate")
 
   await page.getByRole("button", {name: "Create join token"}).click()
-  await expect(page.locator("#flatcar-install")).toContainText("flatcar-install -d /dev/nvme0n1 -i crew-rack3.ign")
+  await expect(page.locator("#flatcar-install")).toContainText(`flatcar-install -d ${osDisk} -i crew-rack3.ign`)
   await expect(page.locator("#join-instructions")).toContainText("(not the data disk)")
 
   const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]

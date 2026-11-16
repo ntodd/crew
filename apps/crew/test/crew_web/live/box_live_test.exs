@@ -326,6 +326,7 @@ defmodule CrewWeb.BoxLiveTest do
       assert has_element?(view, "#box_os_disk")
       assert has_element?(view, "#os-disk-help", "ls -l /dev/disk/by-id/")
       assert has_element?(view, "#os-disk-help", "128 GiB")
+      assert has_element?(view, "#os-disk-help", "reprovision Ignition")
       refute has_element?(view, "#box_data_disk")
 
       html =
@@ -377,6 +378,7 @@ defmodule CrewWeb.BoxLiveTest do
 
       assert has_element?(view, "#box_data_disk")
       assert has_element?(view, "#box_os_disk")
+      assert has_element?(view, "#os-disk-help", "ls -l /dev/disk/by-id/")
       refute has_element?(view, "#os-disk-help", "128 GiB")
 
       html =
@@ -386,7 +388,7 @@ defmodule CrewWeb.BoxLiveTest do
             "box_name" => "rack1",
             "box_type" => "linux-metal",
             "disk_layout" => "separate",
-            "os_disk" => "/dev/nvme0n1",
+            "os_disk" => @os_disk,
             "data_disk" => "/dev/nvme1n1"
           }
         })
@@ -449,10 +451,10 @@ defmodule CrewWeb.BoxLiveTest do
       assert File.read!(Path.join(dir, "crew-rack1.ign")) =~ "ignition"
       assert File.stat!(Path.join(dir, "crew-rack1.ign")).mode |> Bitwise.band(0o777) == 0o600
       assert has_element?(view, "#join-instructions", "Delete it once the box has enrolled")
-      assert has_element?(view, "#flatcar-install", "flatcar-install -d /dev/nvme0n1 -i")
+      assert has_element?(view, "#flatcar-install", "flatcar-install -d #{@os_disk} -i")
       assert has_element?(view, "#join-instructions", "not the data disk")
 
-      assert %{disk_layout: "separate", os_disk: "/dev/nvme0n1", data_disk: "/dev/nvme1n1"} =
+      assert %{disk_layout: "separate", os_disk: @os_disk, data_disk: "/dev/nvme1n1"} =
                Crew.Repo.get_by!(Crew.Boxes.JoinToken, box_name: "rack1")
 
       assert String.starts_with?(token, "cj_")
@@ -521,7 +523,7 @@ defmodule CrewWeb.BoxLiveTest do
       box =
         metal_box(admin, %{
           "disk_layout" => "separate",
-          "os_disk" => "/dev/nvme0n1",
+          "os_disk" => @os_disk,
           "data_disk" => "/dev/sdb"
         })
 
@@ -533,12 +535,12 @@ defmodule CrewWeb.BoxLiveTest do
              )
 
       assert has_element?(view, "#reprovision input[name=data_disk][value='/dev/sdb']")
-      assert has_element?(view, "#reprovision input[name=os_disk][value='/dev/nvme0n1']")
+      assert has_element?(view, "#reprovision input[name=os_disk][value='#{@os_disk}']")
 
       assert has_element?(
                view,
                "#reprovision-command",
-               "flatcar-install -d /dev/nvme0n1 -i crew-rack2-amd64-reprovision.ign"
+               "flatcar-install -d #{@os_disk} -i crew-rack2-amd64-reprovision.ign"
              )
     end
 
@@ -573,6 +575,7 @@ defmodule CrewWeb.BoxLiveTest do
       refute has_element?(view, "#reprovision input[name=data_disk]")
       assert has_element?(view, "#reprovision-command", "flatcar-install -d #{@os_disk} -i")
       assert has_element?(view, "#reprovision", "partition 10")
+      assert has_element?(view, "#reprovision", "any other way erases it")
     end
 
     # Added before the OS disk was asked for: no /dev/sda guess, which is
@@ -581,7 +584,7 @@ defmodule CrewWeb.BoxLiveTest do
       box =
         metal_box(admin, %{
           "disk_layout" => "separate",
-          "os_disk" => "/dev/nvme0n1",
+          "os_disk" => @os_disk,
           "data_disk" => "/dev/sdb"
         })
 

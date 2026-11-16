@@ -86,7 +86,7 @@ defmodule Crew.BoxesFlatcarTest do
       token(admin, %{
         "box_type" => "linux-metal",
         "disk_layout" => "separate",
-        "os_disk" => "/dev/nvme0n1",
+        "os_disk" => @os_disk,
         "data_disk" => "/dev/nvme1n1"
       })
 
@@ -256,35 +256,31 @@ defmodule Crew.BoxesFlatcarTest do
                Repo.one!(JoinToken)
     end
 
-    test "a separate data disk needs both disks, as devices, and two of them", %{admin: admin} do
+    # The OS disk is by id with a data disk too: the live image a
+    # reprovision boots can number the disks the other way round, and
+    # flatcar-install writes over whichever its command names.
+    test "a separate data disk needs both disks, the OS disk by id, and two of them", %{
+      admin: admin
+    } do
       separate = &metal(admin, Map.put(&1, "disk_layout", "separate"))
 
       assert {:error, cs} = separate.(%{})
       assert errors_on(cs)[:os_disk]
       assert errors_on(cs)[:data_disk]
 
-      assert {:error, cs} =
-               separate.(%{"os_disk" => "/dev/sda", "data_disk" => "/dev/sdb; reboot"})
-
+      assert {:error, cs} = separate.(%{"os_disk" => @os_disk, "data_disk" => "/dev/sdb; reboot"})
       assert errors_on(cs)[:data_disk]
 
-      assert {:error, cs} = separate.(%{"os_disk" => "sda", "data_disk" => "/dev/sdb"})
-      assert errors_on(cs)[:os_disk]
+      assert {:error, cs} = separate.(%{"os_disk" => "/dev/sda", "data_disk" => "/dev/sdb"})
+      assert errors_on(cs)[:os_disk] == ["must be a /dev/disk/by-id/... link"]
 
-      assert {:error, cs} = separate.(%{"os_disk" => "/dev/sda", "data_disk" => "/dev/sda"})
+      assert {:error, cs} = separate.(%{"os_disk" => @os_disk, "data_disk" => @os_disk})
       assert errors_on(cs)[:data_disk] == ["must be another disk than the OS disk"]
 
-      assert {:ok, _} =
-               separate.(%{
-                 "os_disk" => "/dev/sda",
-                 "data_disk" => "/dev/disk/by-id/nvme-Samsung_SSD_990"
-               })
+      assert {:ok, _} = separate.(%{"os_disk" => @os_disk, "data_disk" => "/dev/sdb"})
 
-      assert %JoinToken{
-               disk_layout: "separate",
-               os_disk: "/dev/sda",
-               data_disk: "/dev/disk/by-id/nvme-Samsung_SSD_990"
-             } = Repo.one!(JoinToken)
+      assert %JoinToken{disk_layout: "separate", os_disk: @os_disk, data_disk: "/dev/sdb"} =
+               Repo.one!(JoinToken)
     end
 
     test "knows the two layouts", %{admin: admin} do
@@ -323,7 +319,7 @@ defmodule Crew.BoxesFlatcarTest do
           "box_name" => "metal",
           "box_type" => "linux-metal",
           "disk_layout" => "separate",
-          "os_disk" => "/dev/sda",
+          "os_disk" => @os_disk,
           "data_disk" => "/dev/sdb"
         })
 
@@ -343,7 +339,7 @@ defmodule Crew.BoxesFlatcarTest do
 
       assert Boxes.disks(box) == %{
                disk_layout: "separate",
-               os_disk: "/dev/sda",
+               os_disk: @os_disk,
                data_disk: "/dev/sdb"
              }
     end
@@ -411,7 +407,34 @@ defmodule Crew.BoxesFlatcarTest do
                  "arch" => "amd64",
                  "os_disk" => "/dev/sda"
                })
+
+      # Blank is the box's own.
+      assert {:ok, config} =
+               Boxes.reprovision_ignition(admin, box, %{"arch" => "amd64", "os_disk" => "   "})
+
+      assert [%{"device" => @os_disk}] = config["storage"]["disks"]
     end
+  end
+
+  # The token that enrolled the box last says how it's laid out, whichever
+  # was made first: two made within the hour, the older one used later.
+  test "a box's disks are the last-used token's", %{admin: admin} do
+    first =
+      token(admin, %{"box_name" => "metal", "box_type" => "linux-metal", "os_disk" => @os_disk})
+
+    second =
+      token(admin, %{
+        "box_name" => "metal",
+        "box_type" => "linux-metal",
+        "disk_layout" => "separate",
+        "os_disk" => @os_disk,
+        "data_disk" => "/dev/sdb"
+      })
+
+    enroll(second)
+    box = enroll(first)
+
+    assert Boxes.disks(box).disk_layout == "one"
   end
 
   # Boxes added before one disk was the default (#140) have a data disk

@@ -151,9 +151,10 @@ defmodule Crew.Boxes do
 
   defp disk_layout(data), do: data[:disk_layout] || "one"
 
-  # linux-metal's disks. With one, the Ignition partitions the OS disk at
-  # first boot, so it has to be the same disk under the same name then as
-  # in the live image: a by-id link.
+  # linux-metal's disks. The OS disk is a by-id link, the same disk under
+  # the same name in every live image and at first boot: with one disk the
+  # Ignition partitions it, and either way flatcar-install writes over
+  # whatever the box page's command names.
   defp validate_disks(changeset) do
     if Ecto.Changeset.get_field(changeset, :box_type) == "linux-metal" do
       changeset
@@ -161,17 +162,16 @@ defmodule Crew.Boxes do
       |> Ecto.Changeset.validate_required([:os_disk],
         message: "is needed for a dedicated Linux machine"
       )
+      |> Ecto.Changeset.validate_change(:os_disk, fn :os_disk, disk ->
+        if Flatcar.os_disk?(disk), do: [], else: [os_disk: "must be a /dev/disk/by-id/... link"]
+      end)
       |> then(&validate_layout(&1, disk_layout(Ecto.Changeset.apply_changes(&1))))
     else
       changeset
     end
   end
 
-  defp validate_layout(changeset, "one") do
-    Ecto.Changeset.validate_change(changeset, :os_disk, fn :os_disk, disk ->
-      if Flatcar.os_disk?(disk), do: [], else: [os_disk: "must be a /dev/disk/by-id/... link"]
-    end)
-  end
+  defp validate_layout(changeset, "one"), do: changeset
 
   defp validate_layout(changeset, _separate) do
     os_disk = Ecto.Changeset.get_field(changeset, :os_disk)
@@ -180,11 +180,6 @@ defmodule Crew.Boxes do
     |> Ecto.Changeset.validate_required([:data_disk],
       message: "is needed with a separate data disk"
     )
-    |> Ecto.Changeset.validate_change(:os_disk, fn :os_disk, disk ->
-      if Flatcar.data_disk?(disk),
-        do: [],
-        else: [os_disk: "must be a device like /dev/sda or /dev/disk/by-id/..."]
-    end)
     |> Ecto.Changeset.validate_change(:data_disk, fn :data_disk, disk ->
       cond do
         not Flatcar.data_disk?(disk) ->
@@ -367,16 +362,17 @@ defmodule Crew.Boxes do
   end
 
   @doc """
-  The disks a `linux-metal` box was added with, from its newest join
-  token: `%{disk_layout: "one" | "separate", os_disk: _, data_disk: _}`.
-  A token from before layouts (#140) had a data disk of its own.
+  The disks a `linux-metal` box was added with, from the join token that
+  enrolled it last: `%{disk_layout: "one" | "separate", os_disk: _,
+  data_disk: _}`. A token from before layouts (#140) had a data disk of
+  its own.
   """
   def disks(%Box{id: id}) do
     token =
       Repo.one(
         from t in JoinToken,
           where: t.box_id == ^id and t.box_type == "linux-metal",
-          order_by: [desc: t.inserted_at],
+          order_by: [desc: t.used_at, desc: t.inserted_at],
           limit: 1
       )
 
@@ -462,7 +458,13 @@ defmodule Crew.Boxes do
     end
   end
 
-  defp present(value) when is_binary(value) and value != "", do: String.trim(value)
+  defp present(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
   defp present(_), do: nil
 
   defp upsert_enrolled_box(token, public_key, attrs) do

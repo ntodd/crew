@@ -207,19 +207,17 @@ defmodule CrewWeb.BoxLive.New do
               <.input
                 field={@form[:os_disk]}
                 label="OS disk"
-                placeholder={if @layout == "one", do: "/dev/disk/by-id/nvme-…", else: "/dev/sda"}
+                placeholder="/dev/disk/by-id/nvme-…"
                 autocomplete="off"
               />
               <p id="os-disk-help" class="-mt-2 mb-3 text-xs text-ink-3">
+                Where Flatcar goes, by its <span class="font-mono">/dev/disk/by-id/…</span>
+                name, from <span class="font-mono">ls -l /dev/disk/by-id/</span>
+                in Flatcar's live image: <span class="font-mono">/dev/nvme0n1</span>
+                can be another disk the next time.
                 <%= if @layout == "one" do %>
-                  Its <span class="font-mono">/dev/disk/by-id/…</span>
-                  name, from <span class="font-mono">ls -l /dev/disk/by-id/</span>
-                  in Flatcar's live image: <span class="font-mono">/dev/nvme0n1</span>
-                  can be another disk once the box boots. At least 128 GiB.
-                  Crew's data is partition 10, which a reinstall keeps.
-                <% else %>
-                  Where Flatcar goes. A <span class="font-mono">/dev/disk/by-id/…</span>
-                  path survives disks being renamed.
+                  At least 128 GiB (a drive sold as 128 GB is too small). Crew's data is partition 10,
+                  which reinstalling with the box's reprovision Ignition keeps.
                 <% end %>
               </p>
 

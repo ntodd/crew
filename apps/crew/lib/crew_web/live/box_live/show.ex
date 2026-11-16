@@ -823,9 +823,7 @@ defmodule CrewWeb.BoxLive.Show do
               id="reprovision-os-disk"
               label="OS disk"
               value={@reprovision_os_disk}
-              placeholder={
-                if @disks.disk_layout == "one", do: "/dev/disk/by-id/nvme-…", else: "/dev/sda"
-              }
+              placeholder="/dev/disk/by-id/nvme-…"
               autocomplete="off"
             />
           </div>
@@ -857,7 +855,8 @@ defmodule CrewWeb.BoxLive.Show do
         </form>
         <%= if @box.type == "linux-metal" do %>
           <p :if={@disks.disk_layout == "one"} class="mb-2 text-sm text-ink-2">
-            Crew's data is partition 10 of the OS disk, which the reinstall keeps.
+            Crew's data is partition 10 of the OS disk. Reinstalling with this Ignition keeps it;
+            installing Flatcar any other way erases it.
           </p>
           <p class="mb-2 text-sm text-ink-2">
             From Flatcar's live image, onto the OS disk{if @reprovision_target == "OS_DISK",

@@ -1864,11 +1864,12 @@ but they have no agent:
 - a Tailscale auth key, only when there's no Tailscale OAuth client (§5.3)
 - for `linux-metal`, its disks: **one disk** (the default), or a
   **separate data disk**. Both ask for the OS disk, which goes into the
-  `flatcar-install` command. With one disk it has to be a
-  `/dev/disk/by-id/…` link (below), and the page says to find it with
-  `ls -l /dev/disk/by-id/` in Flatcar's live image. A separate data disk
-  asks for that device too (e.g. `/dev/sdb`), another disk than the OS
-  disk. The VM launchers always give the data disk as `/dev/vdb`.
+  `flatcar-install` command, as a `/dev/disk/by-id/…` link: the page
+  says to find it with `ls -l /dev/disk/by-id/` in Flatcar's live image,
+  which can number the disks differently from one boot to the next. A
+  separate data disk asks for that device too (e.g. `/dev/sdb`), another
+  disk than the OS disk. The VM launchers always give the data disk as
+  `/dev/vdb`.
 - an optional break-glass SSH key
 
 It creates the join token and shows the release-key fingerprint, which
@@ -1942,7 +1943,9 @@ OS disk.
   when its own `cgpt resize` moved the partition's end (flatcar/Flatcar#462).
 - **The OS disk is a by-id link.** The Ignition partitions the disk it
   names at first boot, and `/dev/nvme0n1` in the live image can be
-  `/dev/nvme1n1` in the installed system. Flatcar's initrd has no stable
+  `/dev/nvme1n1` in the installed system. Not a partition's link, and
+  not device mapper's, md's or LVM's, whose partitions aren't the link's
+  `-part10`. Flatcar's initrd has no stable
   boot-disk link like Fedora CoreOS's `coreos-boot-disk`. The data
   device is that link's `-part10`, which `srv-crew.mount` mounts too: a
   data disk left from a box added with one has the `crew-data` label as
@@ -1956,9 +1959,9 @@ OS disk.
 - **The filesystem stops 16 MiB short of the disk's end**
   (`mkfs.xfs -d size=`), which `flatcar-install` zeroes (the last
   512 KiB) before it writes the image.
-- **It needs a disk of at least 128 GiB.** Under that, first boot fails
-  with a `crew-box:` line saying so: past the first 32 GiB, it barely
-  holds one `crew-m` VM.
+- **It needs a disk of at least 128 GiB** (a drive sold as 128 GB is
+  119 GiB). Under that, first boot fails with a `crew-box:` line saying
+  so: past the first 32 GiB, it barely holds one `crew-m` VM.
 - **Nothing after the first boot formats it.** Without the marker, a
   partition with no `crew-data` filesystem fails the boot with a
   `crew-box:` line saying the box has to be added again.
@@ -1969,6 +1972,12 @@ disk and starts the installed agent.
 - On a one-disk box, it carries the same `storage.disks` entry and no
   marker. Ignition adds partition 10 back at the same start without
   touching what's on it, and the box comes back with its data.
+- **Only that Ignition keeps a one-disk box's data.** `flatcar-install`
+  writes the image's own partition table, without partition 10. Booted
+  with any other config, nothing adds it back, `extend-filesystems`
+  grows ROOT to the end of the disk, and `resize2fs` writes over the old
+  XFS. The box page says so.
+- The disks are the ones on the token that enrolled the box last.
 - The box page shows the OS disk the box was added with in its
   `flatcar-install` command, and takes another. A box added before the
   OS disk was asked for shows `OS_DISK` there instead of a guess.
