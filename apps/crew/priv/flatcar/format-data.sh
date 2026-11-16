@@ -63,6 +63,9 @@ partition() {
   mkfs.xfs -q -K -f -L "$label" -m reflink=1 -d size=$((mib - 16))m "$part"
   udevadm trigger --settle "$part" 2>/dev/null || udevadm settle || true
   rm -f "$fresh"
+  # On disk before the box writes anything to the partition: back after
+  # a power cut, the marker would format the box's data.
+  sync
   exit 0
 }
 

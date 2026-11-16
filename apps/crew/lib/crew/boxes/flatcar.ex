@@ -727,7 +727,9 @@ defmodule Crew.Boxes.Flatcar do
   defp units(opts, provision?) do
     {mount, format} =
       if one_disk?(opts),
-        do: {srv_crew_mount(data_partition(opts)), format_data_partition(data_partition(opts))},
+        do:
+          {srv_crew_partition_mount(data_partition(opts)),
+           format_data_partition(data_partition(opts))},
         else: {srv_crew_mount(), format_data(data_disk(opts))}
 
     [
@@ -770,9 +772,8 @@ defmodule Crew.Boxes.Flatcar do
   # By label, and wanting the formatter rather than requiring it: a disk
   # that comes back under another name still mounts, whatever is at the
   # configured device. After= only so a first boot mounts what was just
-  # formatted. A one-disk box's partition is by id, which doesn't change,
-  # and which a data disk left from a box added with one doesn't share.
-  defp srv_crew_mount(what \\ "/dev/disk/by-label/crew-data") do
+  # formatted.
+  defp srv_crew_mount do
     """
     [Unit]
     Description=Crew's data disk
@@ -780,7 +781,29 @@ defmodule Crew.Boxes.Flatcar do
     After=crew-format-data.service
 
     [Mount]
-    What=#{what}
+    What=/dev/disk/by-label/crew-data
+    Where=/srv/crew
+    Type=xfs
+    Options=defaults,noatime,prjquota,nofail
+
+    [Install]
+    WantedBy=local-fs.target
+    """
+  end
+
+  # A one-disk box's partition 10, by id, which doesn't change, and which
+  # a data disk left from a box added with one doesn't share. Requiring
+  # the formatter: by id, the mount would take whatever is there, so only
+  # once it has formatted a first boot's or found Crew's.
+  defp srv_crew_partition_mount(partition) do
+    """
+    [Unit]
+    Description=Crew's data partition
+    Requires=crew-format-data.service
+    After=crew-format-data.service
+
+    [Mount]
+    What=#{partition}
     Where=/srv/crew
     Type=xfs
     Options=defaults,noatime,prjquota,nofail

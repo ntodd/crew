@@ -347,6 +347,11 @@ defmodule Crew.Boxes.FlatcarTest do
         mount = body(config, "srv-crew.mount")
         assert mount =~ "What=#{@os_disk}-part10\n"
         refute mount =~ "by-label"
+        # Only once the formatter has passed it: by id, the mount would
+        # take whatever is there, an old box's /srv/crew included.
+        assert mount =~ "Requires=crew-format-data.service\n"
+        assert mount =~ "After=crew-format-data.service\n"
+        refute mount =~ "Wants=crew-format-data.service"
         assert mount =~ "Where=/srv/crew\n"
         assert mount =~ ~r/^Options=.*prjquota/m
       end

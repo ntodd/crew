@@ -229,6 +229,7 @@ defmodule Crew.Boxes.FlatcarInstallTest do
           {"blockdev", ~s(echo "blockdev $*" >> "#{log}"\necho "${STUB_SIZE:?}"\n)},
           {"wipefs", ~s(echo "wipefs $*" >> "#{log}"\n)},
           {"mkfs.xfs", ~s(echo "mkfs.xfs $*" >> "#{log}"\n)},
+          {"sync", ~s(echo "sync $*" >> "#{log}"\n)},
           {"udevadm", "exit 0\n"}
         ] do
       File.write!(Path.join(bin, name), "#!/bin/sh\n" <> body)
@@ -314,6 +315,9 @@ defmodule Crew.Boxes.FlatcarInstallTest do
       # wipefs first: mkfs.xfs mustn't find anything to refuse.
       assert :binary.match(log, "wipefs") < :binary.match(log, "mkfs.xfs")
       refute fresh?(ctx)
+      # The marker's deletion is on disk before the box writes anything:
+      # back after a power cut, it would format the box's data.
+      assert log =~ ~r/mkfs\.xfs .*\nsync/
     end
 
     # The partition outlives a reinstall: a machine added again has the
