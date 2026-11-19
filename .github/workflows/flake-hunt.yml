@@ -98,6 +98,6 @@ jobs:
       shards: ${{ github.event_name == 'pull_request' && 2 || 4 }}
       runs-per-shard: ${{ github.event_name == 'pull_request' && 2 || 25 }}
       # For the CA chain and TLS client checks; without Go they are excluded.
-      go-version: "1.26.10"
+      go-version: "1.26.11"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
