@@ -60,8 +60,9 @@ defmodule CrewCache.Upstream do
   # -- tokens -------------------------------------------------------------------
 
   defp token(host, repo, resp) do
-    params = challenge(resp.headers)
-    service = Map.get(params, "service", host.upstream)
+    service =
+      CrewProtocol.Hosts.token_service(header(resp.headers, "www-authenticate"), host.upstream)
+
     query = URI.encode_query(%{"service" => service, "scope" => "repository:#{repo}:pull"})
     url = rewrite(host.realm) <> "?" <> query
 
@@ -75,16 +76,6 @@ defmodule CrewCache.Upstream do
       {:ok, %{status: status}} -> {:error, {:token_status, status}}
       {:error, _} = error -> error
       _ -> {:error, :bad_token_response}
-    end
-  end
-
-  defp challenge(headers) do
-    case List.keyfind(headers, "www-authenticate", 0) do
-      {_, "Bearer " <> params} ->
-        for [_, k, v] <- Regex.scan(~r/(\w+)="([^"]*)"/, params), into: %{}, do: {k, v}
-
-      _ ->
-        %{}
     end
   end
 

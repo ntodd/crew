@@ -236,8 +236,7 @@ defmodule CrewGuest.Main do
         :refused
 
       mode ->
-        setup_os(s, payload, resize)
-        prepare(s, mode, payload)
+        with :ok <- setup_os(s, payload, resize), do: prepare(s, mode, payload)
     end
   end
 
@@ -248,9 +247,23 @@ defmodule CrewGuest.Main do
     if pem, do: step(s, "installing the cache CA", fn -> sys.install_ca(cfg, pem) end)
     await_resize(s, resize)
     mirrors = List.wrap(payload["mirrors"])
-    step(s, "configuring Docker", fn -> sys.configure_docker(cfg, pem, mirrors) end)
-    step(s, "notifying systemd", fn -> sys.notify_ready(cfg) end)
-    step(s, "starting Docker", fn -> sys.start_docker(cfg) end)
+    strict = payload["strict_registry_cache"] == true
+
+    case sys.configure_docker(cfg, pem, mirrors, strict: strict) do
+      {:error, reason} when strict ->
+        report(
+          s,
+          "crew-guest: refusing to start without strict registry configuration: #{inspect(reason)}"
+        )
+
+        :refused
+
+      result ->
+        step(s, "configuring Docker", fn -> result end)
+        step(s, "notifying systemd", fn -> sys.notify_ready(cfg) end)
+        step(s, "starting Docker", fn -> sys.start_docker(cfg) end)
+        :ok
+    end
   end
 
   defp prepare(s, nil, payload) do

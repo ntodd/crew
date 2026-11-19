@@ -24,6 +24,15 @@ defmodule Crew.Caches do
   @doc "The deployment's cache config (the migration makes the one row)."
   def config, do: Repo.one!(from c in Config, limit: 1)
 
+  def set_strict_registry_cache(%Scope{} = scope, enabled) when is_boolean(enabled) do
+    admin(scope, fn ->
+      config = Repo.update!(Ecto.Changeset.change(config(), strict_registry_cache: enabled))
+      Audit.log(scope, "cache.strict_registry_cache", config, %{"enabled" => enabled})
+      changed()
+      {:ok, config}
+    end)
+  end
+
   # -- config (§15.3) ---------------------------------------------------------------
 
   @doc """
@@ -129,8 +138,11 @@ defmodule Crew.Caches do
       {:ok, %{status: 200}} ->
         :ok
 
-      {:ok, %{status: 401}} when is_binary(realm) ->
-        with {:ok, token} <- anonymous_token(realm, upstream, repo),
+      {:ok, %{status: 401} = response} when is_binary(realm) ->
+        challenge = response |> Req.Response.get_header("www-authenticate") |> List.first()
+        service = Hosts.token_service(challenge, upstream)
+
+        with {:ok, token} <- anonymous_token(realm, service, repo),
              {:ok, %{status: 200}} <- head(url, [{"authorization", "Bearer " <> token}]) do
           :ok
         else
