@@ -35,6 +35,25 @@ defmodule CrewCache.Upstream do
   `{:error, reason}`.
   """
   def request(host, repo, method, rest, opts \\ []) do
+    case do_request(host, repo, method, rest, opts) do
+      {:error, {:rate_limited, after_header}} = limited ->
+        # A 429 has not written to the caller's sink. Give a short throttle
+        # one retry; leave longer waits to the client with its Retry-After.
+        case Integer.parse(after_header || "1") do
+          {seconds, ""} when seconds in 0..3 ->
+            Process.sleep(seconds * 1000)
+            do_request(host, repo, method, rest, opts)
+
+          _ ->
+            limited
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp do_request(host, repo, method, rest, opts) do
     url = origin(host.upstream) <> "/v2/" <> repo <> "/" <> rest
     key = {host.host, repo}
 
@@ -96,6 +115,9 @@ defmodule CrewCache.Upstream do
       location = header(resp.headers, "location")
 
       cond do
+        resp.status == 429 ->
+          {:error, {:rate_limited, header(resp.headers, "retry-after")}}
+
         resp.status not in @redirects or location == nil ->
           {:ok, resp}
 
