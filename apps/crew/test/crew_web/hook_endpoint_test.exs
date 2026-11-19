@@ -12,8 +12,7 @@ defmodule CrewWeb.HookEndpointTest do
   setup do
     Application.put_env(:crew, :github_app, %{webhook_secret: @secret})
     on_exit(fn -> Application.delete_env(:crew, :github_app) end)
-    # A fresh client address per test: the failure limiter is in ETS.
-    %{ip: "100.64.#{:rand.uniform(250)}.#{:rand.uniform(250)}"}
+    %{ip: client_ip()}
   end
 
   defp deliver(body, opts \\ []) do
@@ -24,7 +23,7 @@ defmodule CrewWeb.HookEndpointTest do
     |> put_req_header("x-github-event", Keyword.get(opts, :event, "workflow_job"))
     |> put_req_header("x-github-delivery", Keyword.get(opts, :delivery, Ecto.UUID.generate()))
     |> then(&if signature, do: put_req_header(&1, "x-hub-signature-256", signature), else: &1)
-    |> then(&if opts[:ip], do: put_req_header(&1, "x-forwarded-for", opts[:ip]), else: &1)
+    |> put_req_header("x-forwarded-for", Keyword.get_lazy(opts, :ip, &client_ip/0))
     |> Map.put(:remote_ip, {127, 0, 0, 1})
     |> CrewWeb.HookEndpoint.call(CrewWeb.HookEndpoint.init([]))
   end
@@ -75,7 +74,7 @@ defmodule CrewWeb.HookEndpointTest do
     assert deliver(@payload, signature: bad, ip: ip).status == 429
 
     # Another client isn't affected.
-    assert deliver(@payload, signature: bad, ip: "100.64.0.1").status == 401
+    assert deliver(@payload, signature: bad, ip: client_ip()).status == 401
   end
 
   test "correctly signed requests are never rate-limited", %{ip: ip} do
