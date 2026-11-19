@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 
-add_mirrors = runpy.run_path(str(Path(__file__).with_name("crew-cache-runc")))["add_mirrors"]
+runtime = runpy.run_path(str(Path(__file__).with_name("crew-cache-runc")))
+add_mirrors = runtime["add_mirrors"]
 
 
 class MirrorMountTest(unittest.TestCase):
@@ -48,8 +49,52 @@ class MirrorMountTest(unittest.TestCase):
         self.assertEqual(self.spec["mounts"][1]["destination"],
                          "/etc/docker/certs.d/public.ecr.aws/hosts.toml")
 
+    def test_systemd_host_with_docker_volumes(self):
+        self.spec["process"]["args"] = ["/sbin/init"]
+        self.spec["mounts"] = [{"destination": path} for path in
+                               ("/run", "/run/lock", "/var/lib/docker", "/var/lib/containerd")]
+        self.assertTrue(self.configure())
+        self.assertIn("/etc/docker/certs.d/docker.io/hosts.toml",
+                      [mount["destination"] for mount in self.spec["mounts"]])
+        self.assertFalse(self.configure())
+
+    def test_strict_buildkit_transport_applies_only_to_builder_daemons(self):
+        restrict = runtime["restrict_buildkit"]
+        proc = self.spec["process"]
+        proc["args"] = ["/usr/bin/buildkitd-entrypoint"]
+        proc["env"] = ["no_proxy=*", "https_proxy=http://custom", "KEEP=1"]
+        self.assertFalse(restrict(self.spec, self.mirrors))
+        (self.mirrors / "_default").mkdir()
+        (self.mirrors / "_default/hosts.toml").touch()
+        for args in [["sh"], ["/sbin/init"]]:
+            proc["args"] = args
+            self.assertFalse(restrict(self.spec, self.mirrors))
+        for args in [["/usr/bin/buildkitd-entrypoint"], ["buildkitd"], ["rootlesskit", "buildkitd"]]:
+            proc["args"] = args
+            proc["env"] = ["no_proxy=*", "https_proxy=http://custom", "KEEP=1"]
+            self.assertTrue(restrict(self.spec, self.mirrors))
+            self.assertIn("HTTPS_PROXY=http://127.0.0.1:0", proc["env"])
+            self.assertIn("KEEP=1", proc["env"])
+            self.assertNotIn("no_proxy=*", proc["env"])
+            self.assertFalse(restrict(self.spec, self.mirrors))
+
+    def test_strict_dind_hides_baked_and_mounted_fallback(self):
+        (self.mirrors / "_default").mkdir()
+        (self.mirrors / "_default/hosts.toml").touch()
+        (self.mirrors / "docker.io/client.key").touch()
+        self.spec["mounts"].extend([{"destination": str(self.ca)},
+                                    {"destination": "/etc/docker/certs.d/unknown.example"}])
+        self.assertTrue(self.configure())
+        mounts = self.spec["mounts"]
+        self.assertEqual(mounts[0]["type"], "tmpfs")
+        self.assertEqual(mounts[0]["destination"], "/etc/docker/certs.d")
+        self.assertTrue(all("ro" in mount["options"] for mount in mounts))
+        self.assertEqual({m["source"] for m in mounts[1:]},
+                         {str(self.ca), *(str(p) for p in self.mirrors.glob("*/hosts.toml"))})
+        self.assertFalse(self.configure())
+
     def test_keeps_other_containers_and_image_symlinks_untouched(self):
-        for args in [["sh"], ["dockerd-entrypoint.sh", "docker", "version"]]:
+        for args in [["sh"], ["/sbin/init"], ["dockerd-entrypoint.sh", "docker", "version"]]:
             self.spec["process"]["args"] = args
             self.assertFalse(self.configure())
         self.spec["process"]["args"] = ["dockerd-entrypoint.sh", "--debug"]

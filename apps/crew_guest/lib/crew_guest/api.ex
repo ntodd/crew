@@ -37,6 +37,14 @@ defmodule CrewGuest.API do
   @doc "`GET /v1/payload`: the JIT config, the cache CA and the policy, once."
   @spec get_payload(t(), keyword()) :: {:ok, map()} | {:error, term()}
   def get_payload(client, opts \\ []) do
+    opts =
+      Keyword.update(
+        opts,
+        :headers,
+        [{"x-crew-strict-registry-cache", "1"}],
+        &[{"x-crew-strict-registry-cache", "1"} | &1]
+      )
+
     case request(client, :get, "/v1/payload", opts) do
       {:ok, 200, %{} = payload} -> {:ok, payload}
       {:ok, 200, _} -> {:error, :bad_payload}

@@ -11,21 +11,65 @@ MIRRORS = Path("/run/crew/docker-mirrors")
 CA = Path("/usr/local/share/ca-certificates/crew-cache.crt")
 
 
-def starts_dockerd(args):
+def process_args(spec):
+    args = spec["process"].get("args", [])
     if len(args) >= 3 and Path(args[0]).name == "docker-init" and args[1] == "--":
-        args = args[2:]
+        return args[2:]
+    return args
+
+
+def runs_docker(spec):
+    args = process_args(spec)
     if not args:
         return False
+    # A system container can start Docker later via systemd. Its Docker
+    # data volume distinguishes a nested host from an ordinary init.
+    if args[0] in ("/sbin/init", "/usr/sbin/init", "/lib/systemd/systemd", "/usr/lib/systemd/systemd"):
+        return any(m["destination"] == "/var/lib/docker" for m in spec["mounts"])
     if Path(args[0]).name == "dockerd-entrypoint.sh":
         return len(args) == 1 or args[1].startswith("-") or args[1] == "dockerd"
     return Path(args[0]).name == "dockerd"
 
 
+def restrict_buildkit(spec, mirrors):
+    # BuildKit always appends the upstream to its list of mirrors. Limit
+    # its daemon's HTTP transport to the cache and loopback in strict mode.
+    args = process_args(spec)
+    if not args or not (mirrors / "_default/hosts.toml").is_file():
+        return False
+    if Path(args[0]).name == "rootlesskit":
+        args = args[1:]
+    if not args or Path(args[0]).name not in ("buildkitd", "buildkitd-entrypoint"):
+        return False
+    env = spec["process"].get("env", [])
+    proxy = {"HTTP_PROXY": "http://127.0.0.1:0", "HTTPS_PROXY": "http://127.0.0.1:0",
+             "NO_PROXY": "10.199.0.1,localhost,127.0.0.1,::1"}
+    filtered = [item for item in env if item.partition("=")[0].upper() not in proxy]
+    spec["process"]["env"] = filtered + [f"{k}={v}" for k, v in proxy.items()]
+    return spec["process"]["env"] != env
+
+
 def add_mirrors(spec, bundle, mirrors, ca):
-    if not starts_dockerd(spec["process"].get("args", [])):
+    if not runs_docker(spec):
         return False
 
     mounts = spec["mounts"]
+    registry_dir = Path("/etc/docker/certs.d")
+    files = [(source, registry_dir / source.relative_to(mirrors))
+             for source in sorted(mirrors.glob("*/hosts.toml"))]
+    if (mirrors / "_default/hosts.toml").is_file():
+        # Registry-specific files take precedence over _default. Hide
+        # baked or mounted overrides, including for unknown registries.
+        # Populate the empty directory with only the public config files.
+        kept = [m for m in mounts if not Path(m["destination"]).is_relative_to(registry_dir)
+                and Path(m["destination"]) != ca]
+        strict_mounts = kept + [{
+            "type": "tmpfs", "source": "tmpfs", "destination": str(registry_dir),
+            "options": ["ro", "nosuid", "nodev", "noexec", "mode=0755"],
+        }] + [public_mount(s, t) for s, t in [*files, (ca, ca)]]
+        spec["mounts"] = strict_mounts
+        return strict_mounts != mounts
+
     destinations = {Path(mount["destination"]) for mount in mounts}
     rootfs = bundle / spec["root"]["path"]
 
@@ -46,26 +90,25 @@ def add_mirrors(spec, bundle, mirrors, ca):
     if covered(ca) or not ca.is_file():
         return False
 
-    files = []
-    for source in sorted(mirrors.glob("*/hosts.toml")):
-        target = Path("/etc/docker/certs.d") / source.relative_to(mirrors)
-        if not covered(target):
-            files.append((source, target))
+    files = [(source, target) for source, target in files if not covered(target)]
     if not files:
         return False
 
-    for source, target in [*files, (ca, ca)]:
-        mounts.append({
-            "type": "bind", "source": str(source), "destination": str(target),
-            "options": ["bind", "ro", "nosuid", "nodev", "noexec"],
-        })
+    mounts.extend(public_mount(s, t) for s, t in [*files, (ca, ca)])
     return True
+
+
+def public_mount(source, target):
+    return {
+        "type": "bind", "source": str(source), "destination": str(target),
+        "options": ["bind", "ro", "nosuid", "nodev", "noexec"],
+    }
 
 
 def prepare_bundle(bundle):
     config = bundle / "config.json"
     spec = json.loads(config.read_bytes())
-    if add_mirrors(spec, bundle, MIRRORS, CA):
+    if restrict_buildkit(spec, MIRRORS) or add_mirrors(spec, bundle, MIRRORS, CA):
         # A failed write leaves the original OCI spec intact.
         with tempfile.NamedTemporaryFile(dir=bundle, mode="w", delete=False) as tmp:
             try:

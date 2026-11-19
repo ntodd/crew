@@ -554,12 +554,31 @@ The other spikes are recorded here as they run.
 - Inside a cache-enabled job VM, Docker's default runtime also gives a
   container starting `dockerd` or the standard `dockerd-entrypoint.sh`
   read-only copies of the enabled registries' `hosts.toml` files and the
-  public cache CA. This covers Docker-in-Docker started through the CLI,
-  Compose or the Engine API. Existing registry mounts and files in the
-  image take precedence. The runtime delegates to the packaged runc.
+  public cache CA. It also recognizes a system container booting
+  `/sbin/init` or systemd with a volume at `/var/lib/docker`, where
+  Docker starts later as a service. This covers containers started through the
+  CLI, Compose or the Engine API. In the default mode, existing registry
+  mounts and files in the image take precedence. The runtime delegates to the packaged runc.
   For new Buildx builders, the runner and root have a
   `buildkitd.default.toml` pointing to the guest's mirror config. A
   workflow can supply its own BuildKit config or container runtime.
+- **Strict registry mode** is opt-in under **Admin → Caches → Registry fallback**.
+  Each new VM receives the policy before the Actions runner starts. Upgrade
+  the control plane, box agents and guest images before enabling it. An older
+  guest receives HTTP 412 on the payload request. A strict guest with a
+  missing cache CA, empty mirror list or incompatible default runtime refuses the job.
+  A cold allowlisted pull can still make the box cache fetch upstream.
+- In strict mode Docker uses the cache as its sole registry server. The
+  `_default` entry sends other registry names to a path the cache refuses.
+  Managed nested daemons get the same configuration, including when the
+  image contains its own registry files. `localhost:5000` remains available
+  for local fixture pushes and pulls. External registry pushes and private
+  pulls fail. A standalone BuildKit daemon launched by the guest's runtime
+  also gets an HTTP proxy configuration allowing only the cache and loopback.
+  This affects daemon-side HTTP(S) operations such as remote build contexts
+  and cache exports. Build-step and runner processes keep their own networking.
+  Independently managed runtimes, remote builders and other registry
+  clients require their own policy.
 - **`GET /v2/`** (and `/v2/<prefix>/`) answers 200 with
   `Docker-Distribution-API-Version: registry/2.0`, as a registry does an
   anonymous client. §15.3 passes it through, but under Design A there's
@@ -567,7 +586,7 @@ The other spikes are recorded here as they run.
   credentials anyway.
 - **Anything the cache doesn't serve is a 404, never a pass-through.**
   The mirror only gets anonymous requests (dockerd keeps credentials
-  for the real registry) and containerd goes to the upstream itself on
+  for the real registry) and, by default, containerd goes to the upstream itself on
   any status of 400 or more. So repositories outside the allowlist,
   hosts that aren't enabled, private repositories under an allowlisted
   glob (the anonymous fetch is denied), tag lists, referrers and the

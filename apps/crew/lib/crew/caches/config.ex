@@ -11,6 +11,7 @@ defmodule Crew.Caches.Config do
     field :enabled_hosts, {:array, :string}
     field :allowlist, {:array, :string}
     field :parent_enabled, :boolean, default: false
+    field :strict_registry_cache, :boolean, default: false
     field :ca_generation, :integer, default: 1
     timestamps()
   end

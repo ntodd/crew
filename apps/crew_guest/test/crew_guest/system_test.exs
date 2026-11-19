@@ -160,6 +160,10 @@ defmodule CrewGuest.SystemTest do
       assert ghcr =~ ~s(ca = "/usr/local/share/ca-certificates/crew-cache.crt")
 
       hub = File.read!(Path.join(root, "etc/docker/certs.d/docker.io/hosts.toml"))
+
+      assert File.read!(Path.join(root, "etc/docker/certs.d/registry-1.docker.io/hosts.toml")) ==
+               hub
+
       assert hub =~ ~s(server = "https://registry-1.docker.io")
       assert hub =~ ~s([host."https://10.199.0.1/v2/docker.io"])
       refute File.exists?(Path.join(root, "etc/docker/certs.d/quay.io"))
@@ -170,6 +174,28 @@ defmodule CrewGuest.SystemTest do
 
       assert toml =~
                ~s([registry."10.199.0.1"]\n  ca = ["/usr/local/share/ca-certificates/crew-cache.crt"])
+    end
+
+    test "strict Docker config has only a cache endpoint, including unknown hosts", %{
+      cfg: cfg,
+      root: root,
+      opts: opts
+    } do
+      opts = Keyword.put(opts, :strict, true)
+      assert {:error, _} = Linux.configure_docker(cfg, nil, ["ghcr.io"], opts)
+      assert {:error, _} = Linux.configure_docker(cfg, @pem, [], opts)
+      assert :ok = Linux.configure_docker(cfg, @pem, ["ghcr.io"], opts)
+
+      for {host, endpoint} <- [{"ghcr.io", "ghcr.io"}, {"_default", "unconfigured"}] do
+        toml = File.read!(Path.join(root, "etc/docker/certs.d/#{host}/hosts.toml"))
+        assert toml =~ ~s(server = "https://10.199.0.1/v2/#{endpoint}")
+        assert toml =~ "override_path = true"
+        refute toml =~ "[host."
+        assert toml == File.read!(Path.join(root, "run/crew/docker-mirrors/#{host}/hosts.toml"))
+      end
+
+      assert File.read!(Path.join(root, "etc/docker/certs.d/localhost:5000/hosts.toml")) =~
+               "http://localhost:5000"
     end
 
     test "without a cache, Docker goes straight upstream", %{cfg: cfg, root: root, opts: opts} do

@@ -70,18 +70,49 @@ defmodule CrewGuest.System.Linux do
         do: [],
         else: Enum.flat_map(mirrors, &List.wrap(CrewProtocol.Hosts.get(&1)))
 
-    with :ok <- write_hosts_toml(opts, hosts),
-         :ok <- write(opts, "/etc/docker/daemon.json", daemon_json(opts, hosts), 0o644) do
+    daemon = daemon_config(opts, hosts)
+    strict = Keyword.get(opts, :strict, false)
+
+    with :ok <- validate_cache(strict, daemon, hosts),
+         :ok <- write_hosts_toml(opts, hosts, strict),
+         :ok <- write(opts, "/etc/docker/daemon.json", Jason.encode!(daemon, pretty: true), 0o644) do
       if pem in [nil, ""],
         do: :ok,
         else: write(opts, "/etc/buildkit/buildkitd.toml", buildkitd_toml(hosts), 0o644)
     end
   end
 
-  defp write_hosts_toml(opts, hosts) do
-    Enum.reduce_while(hosts, :ok, fn h, :ok ->
-      name = "#{h.prefix}/hosts.toml"
-      contents = hosts_toml(h)
+  defp validate_cache(false, _, _), do: :ok
+  defp validate_cache(true, _, []), do: {:error, :missing_cache_ca_or_mirrors}
+
+  defp validate_cache(
+         true,
+         %{
+           "default-runtime" => "crew-cache",
+           "runtimes" => %{"crew-cache" => %{"path" => @cache_runtime}}
+         },
+         _
+       ),
+       do: :ok
+
+  defp validate_cache(true, _, _), do: {:error, :strict_registry_cache_requires_crew_runtime}
+
+  defp write_hosts_toml(opts, hosts, strict) do
+    entries =
+      for host <- hosts, name <- registry_names(host) do
+        {name, if(strict, do: strict_hosts_toml(host.prefix), else: hosts_toml(host))}
+      end
+
+    defaults =
+      if strict,
+        do: [
+          {"_default", strict_hosts_toml("unconfigured")},
+          {"localhost:5000", ~s(server = "http://localhost:5000"\n)}
+        ],
+        else: []
+
+    Enum.reduce_while(entries ++ defaults, :ok, fn {prefix, contents}, :ok ->
+      name = "#{prefix}/hosts.toml"
 
       # The runtime shares only these generated files. The guest's
       # certs.d may also hold a job's own registry client credentials.
@@ -92,6 +123,20 @@ defmodule CrewGuest.System.Linux do
         error -> {:halt, error}
       end
     end)
+  end
+
+  # Docker Hub accepts both the normalized docker.io name and its literal registry host.
+  defp registry_names(host), do: Enum.uniq([host.prefix, host.host])
+
+  # A mirror entry always permits fallback. Naming the cache as the
+  # registry server makes its response final, including a refusal.
+  defp strict_hosts_toml(prefix) do
+    """
+    server = "https://#{@nameserver}/v2/#{prefix}"
+    capabilities = ["pull", "resolve"]
+    override_path = true
+    ca = "#{@ca_file}"
+    """
   end
 
   defp hosts_toml(h) do
@@ -182,7 +227,7 @@ defmodule CrewGuest.System.Linux do
     Enum.map_join(@ca_env, "", fn {k, v} -> "export #{k}=#{v}\n" end)
   end
 
-  defp daemon_json(opts, hosts) do
+  defp daemon_config(opts, hosts) do
     existing =
       with {:ok, json} <- File.read(path(opts, "/etc/docker/daemon.json")),
            {:ok, %{} = map} <- Jason.decode(json) do
@@ -194,7 +239,6 @@ defmodule CrewGuest.System.Linux do
     existing
     |> Map.put("log-driver", "local")
     |> cache_runtime(hosts)
-    |> Jason.encode!(pretty: true)
   end
 
   defp cache_runtime(config, []), do: config
@@ -216,9 +260,9 @@ defmodule CrewGuest.System.Linux do
   # see the guest's trust store. Buildx copies this CA into new builders.
   defp buildkitd_toml(hosts) do
     mirrors =
-      Enum.map_join(hosts, "\n", fn h ->
-        ~s([registry."#{h.prefix}"]\n  mirrors = ["#{@nameserver}/#{h.prefix}"]\n)
-      end)
+      for h <- hosts, name <- registry_names(h), into: "" do
+        ~s([registry."#{name}"]\n  mirrors = ["#{@nameserver}/#{h.prefix}"]\n\n)
+      end
 
     "# Written by crew-guest: pull through the box's registry cache.\n" <>
       mirrors <> "\n" <> ~s([registry."#{@nameserver}"]\n  ca = ["#{@ca_file}"]\n)

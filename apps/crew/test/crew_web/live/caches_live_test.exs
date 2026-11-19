@@ -75,6 +75,23 @@ defmodule CrewWeb.CachesLiveTest do
     assert_receive {:dispatch, %{type: "cache.purge", payload: %{scope: "all"}}}
   end
 
+  test "strict mode is opt-in and reversible", %{conn: conn} do
+    refute Caches.config().strict_registry_cache
+    {:ok, view, _} = live(conn, ~p"/admin/caches")
+    view |> form("#strict", enabled: "true") |> render_submit()
+    assert Caches.config().strict_registry_cache
+
+    assert Repo.exists?(
+             from e in Crew.Audit.Event, where: e.action == "cache.strict_registry_cache"
+           )
+
+    view |> form("#strict", enabled: "false") |> render_submit()
+    refute Caches.config().strict_registry_cache
+
+    assert {:error, :unauthorized} =
+             Caches.set_strict_registry_cache(Crew.Scope.for_user(user_fixture()), true)
+  end
+
   test "members can't see it" do
     assert get(log_in(build_conn(), user_fixture()), ~p"/admin/caches").status == 404
   end

@@ -40,7 +40,39 @@ defmodule Crew.CachesTest do
   test "the defaults: every known host, the default allowlist" do
     config = Caches.config()
     assert config.enabled_hosts == CrewProtocol.Hosts.names()
-    assert "ghcr.io/actions/*" in config.allowlist
+    assert config.allowlist == CrewProtocol.Hosts.default_allowlist()
+  end
+
+  test "admins can add a Docker Hub repository using an anonymous token for registry.docker.io" do
+    repo = "hexpm/elixir"
+    entry = "registry-1.docker.io/" <> repo
+
+    Req.Test.stub(Crew.Caches, fn conn ->
+      cond do
+        conn.host == "auth.docker.io" and conn.request_path == "/token" ->
+          assert Plug.Conn.fetch_query_params(conn).params == %{
+                   "service" => "registry.docker.io",
+                   "scope" => "repository:hexpm/elixir:pull"
+                 }
+
+          Req.Test.json(conn, %{"token" => "anon"})
+
+        Plug.Conn.get_req_header(conn, "authorization") == ["Bearer anon"] ->
+          Plug.Conn.send_resp(conn, 200, "")
+
+        true ->
+          conn
+          |> Plug.Conn.put_resp_header(
+            "www-authenticate",
+            ~s(Bearer realm="https://ignored.example/token",service="registry.docker.io")
+          )
+          |> Plug.Conn.send_resp(401, "")
+      end
+    end)
+
+    assert {:ok, _} = Caches.remove_entry(admin(), entry)
+    assert {:ok, config} = Caches.add_entry(admin(), entry, entry <> ":tag")
+    assert entry in config.allowlist
   end
 
   test "enabling hosts: only known ones, audited, and every online box is told", %{box: box} do

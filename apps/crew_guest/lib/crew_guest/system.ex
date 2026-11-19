@@ -25,7 +25,12 @@ defmodule CrewGuest.System do
   @callback install_ca(Config.t(), pem :: String.t()) :: result()
 
   @doc "Writes Docker's and BuildKit's config."
-  @callback configure_docker(Config.t(), pem :: String.t() | nil, mirrors :: [String.t()]) ::
+  @callback configure_docker(
+              Config.t(),
+              pem :: String.t() | nil,
+              mirrors :: [String.t()],
+              keyword()
+            ) ::
               result()
 
   @doc "Tells systemd crew-guest is ready, which lets the units ordered after it start."

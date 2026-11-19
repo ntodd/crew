@@ -1330,7 +1330,7 @@ both ends. The vocabulary is fixed: there's no generic exec.
 
 | Command | Payload | Effect |
 |---|---|---|
-| `vm.start` | `vm_id`, `name`, `size` {vcpus, memory_mib, disk_gib, limits}, `image` {id, version, arch, manifest_sha256}, `jit_config` (≤ 16 KiB), `labels`, `deadline` (Unix s), `log_limit_bytes`, `policy` {fork_prs} | Boot a job VM (§11.2). Idempotent by `vm_id`: a `vm_id` whose directory exists answers `ok` if its VM is alive, and `error: duplicate` if not. |
+| `vm.start` | `vm_id`, `name`, `size` {vcpus, memory_mib, disk_gib, limits}, `image` {id, version, arch, manifest_sha256}, `jit_config` (≤ 16 KiB), `labels`, `deadline` (Unix s), `log_limit_bytes`, `policy` {fork_prs}, optional `strict_registry_cache` | Boot a job VM (§11.2). Idempotent by `vm_id`: a `vm_id` whose directory exists answers `ok` if its VM is alive, and `error: duplicate` if not. |
 | `vm.stop` | `vm_id`, `reason`, `force`, `grace_s` (0–300) | Graceful: ask the guest (§13.5), then kill after `grace_s`. Force: kill now. |
 | `vm.log.ack` | `vm_id`, `epoch`, `seq` | Lines up to `seq` are stored, so the agent may drop them |
 | `vm.log.resend` | `vm_id`, `epoch`, `from_seq` | Resend lines from `from_seq`, or answer `vm.log.gone` |
@@ -2256,7 +2256,7 @@ header timeout.
 
 | Method, path | Body | Response | Limits |
 |---|---|---|---|
-| `GET /v1/payload` | none | `{jit_config, ca_pem, policy: {fork_prs, repo_full_name}, size, labels}` | **Once**. Afterwards 410, recorded as `vm.state` detail `payload_refetch`. |
+| `GET /v1/payload` | none | `{jit_config, ca_pem, mirrors, strict_registry_cache, policy: {fork_prs, repo_full_name}, size, labels}` | **Once**. Afterwards 410, recorded as `vm.state` detail `payload_refetch`. A strict start requires the guest header `X-Crew-Strict-Registry-Cache: 1`. Otherwise the agent returns 412 and withholds the payload. |
 | `POST /v1/state` | `{state, at, detail}` | 204, or `{"stop": true}` once a stop is requested | Each state once, forward only, at most 20 per VM. `job_refused` is allowed after `job_started`. |
 | `POST /v1/steps` | `{steps: [...]}` (≤ 1000, ≤ 256 KiB) | 204 or `{"stop": true}` | At most 2 a second. The agent forwards at most 1 `vm.steps` a second, coalesced. |
 | `POST /v1/log` | NDJSON lines `{t, step_ref, text}` | 204, 413 or `{"stop": true}` | ≤ 1 MiB per request, ≤ 8 requests a second. The VM's total is capped at `log_limit_bytes` (default 100 MiB). Past it: 413, and the agent appends a single truncation marker. |
@@ -2515,8 +2515,15 @@ two designs.**
   certificate for `10.199.0.1` signed by the per-box CA.
 - There's no DNS interception, so nothing else in the guest is affected.
 - The guest supplies mirror settings to standard Docker-in-Docker
-  containers and Buildx container builders. Independent clients such
+  containers, systemd containers with a volume at `/var/lib/docker`,
+  and Buildx container builders. Independent clients such
   as kind's containerd and Helm use their own registry configuration.
+- **Admin → Caches → Registry fallback** can require the cache for new VMs.
+  With this enabled, a cache refusal or outage fails the pull. Docker
+  sends unknown registry names to a refused cache path and permits a
+  local registry at `localhost:5000`. Standard Buildx container builders
+  can reach only the cache and loopback for daemon-side HTTP(S), including
+  remote contexts and cache exports. This setting defaults to off.
 
 **Design B, interception (the fallback):**
 - the guest's DNS resolves the intercepted hostnames to `10.199.0.1`;
@@ -2584,7 +2591,12 @@ token realm:
   images only.
   - Defaults: `registry-1.docker.io/library/*`,
     `public.ecr.aws/docker/library/*`, `ghcr.io/actions/*`,
-    `mcr.microsoft.com/*`.
+    `mcr.microsoft.com/*`, `registry-1.docker.io/hexpm/elixir`,
+    `quay.io/coreos/ignition-validate`, and `registry-1.docker.io/moby/buildkit`
+    (the default Buildx builder image). The control-plane upgrade
+    adds the last three entries to installations using the previous
+    default list. For a customized list, enable the two registry hosts
+    and add the desired entries under **Admin → Caches**.
   - When an admin adds an entry, the Caches page checks that it's public by
     fetching a manifest through the anonymous flow. If that's denied, the
     entry is refused.
