@@ -1,0 +1,87 @@
+#!/usr/bin/python3 -I
+"""Give a nested dockerd the guest's registry mirrors before it starts."""
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+
+MIRRORS = Path("/run/crew/docker-mirrors")
+CA = Path("/usr/local/share/ca-certificates/crew-cache.crt")
+
+
+def starts_dockerd(args):
+    if len(args) >= 3 and Path(args[0]).name == "docker-init" and args[1] == "--":
+        args = args[2:]
+    if not args:
+        return False
+    if Path(args[0]).name == "dockerd-entrypoint.sh":
+        return len(args) == 1 or args[1].startswith("-") or args[1] == "dockerd"
+    return Path(args[0]).name == "dockerd"
+
+
+def add_mirrors(spec, bundle, mirrors, ca):
+    if not starts_dockerd(spec["process"].get("args", [])):
+        return False
+
+    mounts = spec["mounts"]
+    destinations = {Path(mount["destination"]) for mount in mounts}
+    rootfs = bundle / spec["root"]["path"]
+
+    def covered(path):
+        if path in destinations or any(parent in destinations for parent in path.parents):
+            return True
+        # Keep configuration baked into an image. Stop at symlinks rather
+        # than resolving a container path in the guest's mount namespace.
+        inside = rootfs
+        for part in path.parts[1:]:
+            inside = inside / part
+            if inside.is_symlink():
+                return True
+            if not inside.is_dir():
+                return inside.exists()
+        return True
+
+    if covered(ca) or not ca.is_file():
+        return False
+
+    files = []
+    for source in sorted(mirrors.glob("*/hosts.toml")):
+        target = Path("/etc/docker/certs.d") / source.relative_to(mirrors)
+        if not covered(target):
+            files.append((source, target))
+    if not files:
+        return False
+
+    for source, target in [*files, (ca, ca)]:
+        mounts.append({
+            "type": "bind", "source": str(source), "destination": str(target),
+            "options": ["bind", "ro", "nosuid", "nodev", "noexec"],
+        })
+    return True
+
+
+def prepare_bundle(bundle):
+    config = bundle / "config.json"
+    spec = json.loads(config.read_bytes())
+    if add_mirrors(spec, bundle, MIRRORS, CA):
+        # A failed write leaves the original OCI spec intact.
+        with tempfile.NamedTemporaryFile(dir=bundle, mode="w", delete=False) as tmp:
+            try:
+                json.dump(spec, tmp)
+                tmp.flush()
+                os.replace(tmp.name, config)
+            finally:
+                Path(tmp.name).unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    # containerd's go-runc passes "create --bundle <path>" after its
+    # global flags. All other operations go straight to the packaged runc.
+    args = sys.argv[1:]
+    for i in range(len(args) - 2):
+        if args[i:i + 2] == ["create", "--bundle"]:
+            prepare_bundle(Path(args[i + 2]))
+            break
+    os.execv("/usr/bin/runc", ["runc", *args])

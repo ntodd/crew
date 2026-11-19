@@ -144,11 +144,15 @@ defmodule CrewGuest.SystemTest do
       assert :ok = Linux.configure_docker(cfg, @pem, ["ghcr.io", "registry-1.docker.io"], opts)
 
       daemon = root |> Path.join("etc/docker/daemon.json") |> File.read!() |> Jason.decode!()
-      assert daemon == %{"log-driver" => "local", "features" => %{"buildkit" => true}}
+      assert daemon["log-driver"] == "local"
+      assert daemon["features"] == %{"buildkit" => true}
+      assert daemon["default-runtime"] == "crew-cache"
+      assert daemon["runtimes"]["crew-cache"]["path"] == "/opt/crew/bin/crew-cache-runc"
 
       # dockerd (containerd store) reads a hosts.toml per registry from
       # /etc/docker/certs.d; the cache serves /v2/<registry>/... for it.
       ghcr = File.read!(Path.join(root, "etc/docker/certs.d/ghcr.io/hosts.toml"))
+      assert File.read!(Path.join(root, "run/crew/docker-mirrors/ghcr.io/hosts.toml")) == ghcr
       assert ghcr =~ ~s(server = "https://ghcr.io")
       assert ghcr =~ ~s([host."https://10.199.0.1/v2/ghcr.io"])
       assert ghcr =~ ~s(capabilities = ["pull", "resolve"])
@@ -172,6 +176,26 @@ defmodule CrewGuest.SystemTest do
       assert :ok = Linux.configure_docker(cfg, nil, ["ghcr.io"], opts)
       refute File.exists?(Path.join(root, "etc/docker/certs.d"))
       refute File.exists?(Path.join(root, "etc/buildkit/buildkitd.toml"))
+      refute File.exists?(Path.join(root, "run/crew/docker-mirrors"))
+      daemon = root |> Path.join("etc/docker/daemon.json") |> File.read!() |> Jason.decode!()
+      refute Map.has_key?(daemon, "default-runtime")
+    end
+
+    test "preserves a custom default runtime", %{cfg: cfg, root: root, opts: opts} do
+      path = Path.join(root, "etc/docker/daemon.json")
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(
+        path,
+        ~s({"default-runtime":"custom","runtimes":{"custom":{"path":"/bin/custom"}}})
+      )
+
+      assert :ok = Linux.configure_docker(cfg, @pem, ["public.ecr.aws"], opts)
+
+      assert %{"default-runtime" => "custom", "runtimes" => runtimes} =
+               Jason.decode!(File.read!(path))
+
+      assert runtimes == %{"custom" => %{"path" => "/bin/custom"}}
     end
 
     test "starts containerd and Docker", %{cfg: cfg, opts: opts} do

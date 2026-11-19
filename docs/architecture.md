@@ -551,6 +551,15 @@ The other spikes are recorded here as they run.
   leaf for the listen IP, no DNS interception and no SNI or `Host`
   matching; `CrewCache.CA.Certs.name_constraints/1` and the TLS options
   are where Design B would go.
+- Inside a cache-enabled job VM, Docker's default runtime also gives a
+  container starting `dockerd` or the standard `dockerd-entrypoint.sh`
+  read-only copies of the enabled registries' `hosts.toml` files and the
+  public cache CA. This covers Docker-in-Docker started through the CLI,
+  Compose or the Engine API. Existing registry mounts and files in the
+  image take precedence. The runtime delegates to the packaged runc.
+  For new Buildx builders, the runner and root have a
+  `buildkitd.default.toml` pointing to the guest's mirror config. A
+  workflow can supply its own BuildKit config or container runtime.
 - **`GET /v2/`** (and `/v2/<prefix>/`) answers 200 with
   `Docker-Distribution-API-Version: registry/2.0`, as a registry does an
   anonymous client. §15.3 passes it through, but under Design A there's

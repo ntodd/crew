@@ -2302,10 +2302,11 @@ header timeout.
    - write `/home/runner/actions-runner/.env` entries for the same
      variables.
 6. **Configure Docker:**
-   - `/etc/docker/daemon.json`: `{"log-driver": "local"}`, plus mirror
-     settings if spike S8 picks mirrors;
-   - `/etc/buildkit/buildkitd.toml` with the CA for the `docker-container`
-     driver, documented for workflows that create their own builders;
+   - set the Docker log driver to `local`. With mirrors enabled, write
+     the per-registry `hosts.toml` files and configure the default
+     runtime to supply them and the public CA to nested Docker daemons.
+   - write `/etc/buildkit/buildkitd.toml` with the mirrors and CA.
+     Buildx uses it by default for new container builders.
    - start `containerd` and `docker`.
 7. **Check the JIT config:** decode it, and refuse to start (reporting
    `boot_failed` detail `update_not_disabled`) unless its `.runner`
@@ -2513,8 +2514,9 @@ two designs.**
 - The cache serves `https://10.199.0.1/v2/<upstream-host>/<repo>/…` with a
   certificate for `10.199.0.1` signed by the per-box CA.
 - There's no DNS interception, so nothing else in the guest is affected.
-- Clients that don't use dockerd (BuildKit's container driver, kind nodes,
-  Helm) simply go upstream.
+- The guest supplies mirror settings to standard Docker-in-Docker
+  containers and Buildx container builders. Independent clients such
+  as kind's containerd and Helm use their own registry configuration.
 
 **Design B, interception (the fallback):**
 - the guest's DNS resolves the intercepted hostnames to `10.199.0.1`;

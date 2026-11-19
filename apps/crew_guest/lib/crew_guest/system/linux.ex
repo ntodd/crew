@@ -16,6 +16,8 @@ defmodule CrewGuest.System.Linux do
   alias CrewGuest.{EnvFile, Systemd}
 
   @nameserver "10.199.0.1"
+  @nested_mirrors "/run/crew/docker-mirrors"
+  @cache_runtime "/opt/crew/bin/crew-cache-runc"
   @ca_file "/usr/local/share/ca-certificates/crew-cache.crt"
   @bundle "/etc/ssl/certs/ca-certificates.crt"
   @ca_env [
@@ -58,8 +60,8 @@ defmodule CrewGuest.System.Linux do
   `/etc/docker/certs.d/<registry>/hosts.toml` for any registry, and asks
   the cache at `https://10.199.0.1/v2/<registry>/...` first, falling back
   to the registry itself. Only pull and resolve go to the cache, never a
-  push. BuildKit's docker-container driver gets the same mirrors in
-  `buildkitd.toml`, for workflows that create their own builders.
+  push. The guest image supplies the same mirrors to Docker-in-Docker
+  and to Buildx's docker-container driver.
   """
   @impl true
   def configure_docker(_cfg, pem, mirrors, opts \\ []) do
@@ -68,8 +70,8 @@ defmodule CrewGuest.System.Linux do
         do: [],
         else: Enum.flat_map(mirrors, &List.wrap(CrewProtocol.Hosts.get(&1)))
 
-    with :ok <- write(opts, "/etc/docker/daemon.json", daemon_json(opts), 0o644),
-         :ok <- write_hosts_toml(opts, hosts) do
+    with :ok <- write_hosts_toml(opts, hosts),
+         :ok <- write(opts, "/etc/docker/daemon.json", daemon_json(opts, hosts), 0o644) do
       if pem in [nil, ""],
         do: :ok,
         else: write(opts, "/etc/buildkit/buildkitd.toml", buildkitd_toml(hosts), 0o644)
@@ -78,8 +80,15 @@ defmodule CrewGuest.System.Linux do
 
   defp write_hosts_toml(opts, hosts) do
     Enum.reduce_while(hosts, :ok, fn h, :ok ->
-      case write(opts, "/etc/docker/certs.d/#{h.prefix}/hosts.toml", hosts_toml(h), 0o644) do
-        :ok -> {:cont, :ok}
+      name = "#{h.prefix}/hosts.toml"
+      contents = hosts_toml(h)
+
+      # The runtime shares only these generated files. The guest's
+      # certs.d may also hold a job's own registry client credentials.
+      with :ok <- write(opts, Path.join(@nested_mirrors, name), contents, 0o644),
+           :ok <- write(opts, Path.join("/etc/docker/certs.d", name), contents, 0o644) do
+        {:cont, :ok}
+      else
         error -> {:halt, error}
       end
     end)
@@ -173,7 +182,7 @@ defmodule CrewGuest.System.Linux do
     Enum.map_join(@ca_env, "", fn {k, v} -> "export #{k}=#{v}\n" end)
   end
 
-  defp daemon_json(opts) do
+  defp daemon_json(opts, hosts) do
     existing =
       with {:ok, json} <- File.read(path(opts, "/etc/docker/daemon.json")),
            {:ok, %{} = map} <- Jason.decode(json) do
@@ -182,12 +191,29 @@ defmodule CrewGuest.System.Linux do
         _ -> %{}
       end
 
-    existing |> Map.put("log-driver", "local") |> Jason.encode!(pretty: true)
+    existing
+    |> Map.put("log-driver", "local")
+    |> cache_runtime(hosts)
+    |> Jason.encode!(pretty: true)
+  end
+
+  defp cache_runtime(config, []), do: config
+  defp cache_runtime(%{"default-runtime" => _} = config, _hosts), do: config
+
+  defp cache_runtime(config, _hosts) do
+    runtimes = Map.get(config, "runtimes", %{})
+
+    if Map.has_key?(runtimes, "crew-cache") do
+      config
+    else
+      config
+      |> Map.put("runtimes", Map.put(runtimes, "crew-cache", %{"path" => @cache_runtime}))
+      |> Map.put("default-runtime", "crew-cache")
+    end
   end
 
   # The CA for BuildKit's docker-container driver, whose builders don't
-  # see the guest's trust store. Workflows that create their own builders
-  # pass this file (`buildkitd-config`).
+  # see the guest's trust store. Buildx copies this CA into new builders.
   defp buildkitd_toml(hosts) do
     mirrors =
       Enum.map_join(hosts, "\n", fn h ->
