@@ -39,8 +39,6 @@ defmodule CrewProtocol.Labels do
           spare: boolean()
         }
 
-  def generic, do: @generic
-
   @doc "The label key: lowercased, deduplicated and sorted."
   @spec key([String.t()]) :: [String.t()]
   def key(labels), do: labels |> Enum.map(&String.downcase/1) |> Enum.uniq() |> Enum.sort()

@@ -69,13 +69,6 @@ defmodule Crew.Settings do
     end
   end
 
-  def delete(key) do
-    case Repo.get(Setting, key) do
-      nil -> :ok
-      setting -> Repo.delete!(setting) && :ok
-    end
-  end
-
   @doc """
   Checks CREW_ENCRYPTION_KEY against what's stored, and stops the boot
   if it can't read it. A boot step, before anything decrypts: otherwise

@@ -1,8 +1,7 @@
-# This file contains the configuration for Credo and you are probably reading
-# this after creating it with `mix credo.gen.config`.
-#
-# If you find anything wrong or unclear in this file, please report an
-# issue on GitHub: https://github.com/rrrene/credo/issues
+# Credo's configuration for every Elixir project here. Credo reads the
+# .credo.exs in the directory it runs in and in each parent, merging them
+# from the top down, so apps/* and images/guest/tools all get this one.
+# apps/crew/.credo.exs changes three checks for the control plane.
 #
 %{
   #

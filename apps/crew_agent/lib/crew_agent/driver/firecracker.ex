@@ -476,17 +476,4 @@ defmodule CrewAgent.Driver.Firecracker do
       {:error, code, detail} -> {:error, code, detail}
     end
   end
-
-  @doc """
-  The VM's console: in the jail while it runs, in `vms/<vm_id>/` once
-  crew-vmctl's cleanup has moved it there.
-  """
-  def console_log(vm_id) do
-    config = Config.get()
-    moved = Path.join(Config.vm_dir(config, vm_id), "console.log")
-
-    if File.exists?(moved),
-      do: moved,
-      else: Path.join([config.data_dir, "jail", "firecracker", vm_id, "console.log"])
-  end
 end

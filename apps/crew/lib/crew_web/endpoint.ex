@@ -13,8 +13,6 @@ defmodule CrewWeb.Endpoint do
     max_age: 30 * 24 * 60 * 60
   ]
 
-  def session_options, do: @session_options
-
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]

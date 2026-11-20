@@ -122,10 +122,5 @@ defmodule CrewAgent.Identity do
     URI.to_string(%{uri | scheme: scheme, path: "/api/agents/enroll", query: nil})
   end
 
-  def hostname do
-    {:ok, name} = :inet.gethostname()
-    to_string(name)
-  end
-
   def version, do: :crew_agent |> Application.spec(:vsn) |> to_string()
 end

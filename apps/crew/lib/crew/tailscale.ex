@@ -27,8 +27,6 @@ defmodule Crew.Tailscale do
 
   def configured?, do: creds() != nil
 
-  def box_tag, do: @tag
-
   @doc """
   A single-use, pre-authorized key tagged `tag:crew-box` for the box
   `name`, expiring in `expiry_seconds`.

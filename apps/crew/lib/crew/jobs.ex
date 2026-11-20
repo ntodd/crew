@@ -21,8 +21,6 @@ defmodule Crew.Jobs do
 
   @checking_fork "checking fork status"
 
-  def checking_fork, do: @checking_fork
-
   # -- reads --------------------------------------------------------------------
 
   def get_job(id), do: Repo.get(Job, id)
@@ -497,11 +495,6 @@ defmodule Crew.Jobs do
       payload: payload,
       at: at
     })
-  end
-
-  @doc "Records something that happened to a job (from the scheduler, the API or the guest)."
-  def record_job_event(%Job{} = job, source, kind, payload \\ %{}) do
-    record_event(job, source, kind, payload, DateTime.utc_now())
   end
 
   defp context(repo, attempt) do

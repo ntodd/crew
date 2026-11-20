@@ -288,14 +288,6 @@ defmodule CrewWeb.RepoLive.Show do
   defp plural(1, word), do: "1 #{word}"
   defp plural(n, word), do: "#{delimit(n)} #{word}s"
 
-  defp pr_number(%{pull_requests: [%{"number" => n} | _]}), do: n
-  defp pr_number(_run), do: nil
-
-  defp run_duration(%{status: "completed", gh_created_at: from, gh_updated_at: to}, _now),
-    do: JobStatus.duration(from, to)
-
-  defp run_duration(%{gh_created_at: from}, now), do: JobStatus.duration(from, now)
-
   @impl true
   def render(assigns) do
     ~H"""
@@ -538,7 +530,7 @@ defmodule CrewWeb.RepoLive.Show do
                     <span class="shrink-0 font-normal text-ink-3">#{run.run_number}</span>
                   </.link>
                   <p class="mt-0.5 truncate pl-6 text-xs text-ink-3">
-                    <%= case {pr_number(run), run.head_branch} do %>
+                    <%= case {run.pr_number, run.head_branch} do %>
                       <% {nil, nil} -> %>
                         <span>{run.event || "run"}</span>
                       <% {nil, branch} -> %>
@@ -553,7 +545,7 @@ defmodule CrewWeb.RepoLive.Show do
                   {plural(length(run.jobs), "job")}
                 </span>
                 <span title="Duration" class="text-right text-xs tabular-nums text-ink-2">
-                  {JobStatus.format(run_duration(run, @now))}
+                  {JobStatus.format(JobStatus.run_duration(run, @now))}
                 </span>
                 <time
                   :if={run.gh_created_at}
@@ -586,62 +578,12 @@ defmodule CrewWeb.RepoLive.Show do
                 Nothing left to change: every hint is dismissed.
               <% end %>
             </p>
-            <ul :if={@hints != []} id="sizing-hints" class="-my-3 divide-y divide-line">
-              <li
-                :for={h <- @hints}
-                id={"sizing-#{h.job.id}"}
-                class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto] sm:items-start"
-              >
-                <div class="min-w-0">
-                  <.link
-                    navigate={
-                      ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
-                    }
-                    class="text-sm font-medium text-ink underline-offset-2 hover:underline"
-                  >
-                    {h.workflow_name} · {h.name}
-                  </.link>
-                  <p class="mt-0.5 text-xs text-ink-3">{SizingComponents.shape(h.hint.from)}</p>
-                </div>
-                <div class="min-w-0">
-                  <.badge color={SizingComponents.color(h.hint)}>
-                    {SizingComponents.title(h.hint)}
-                  </.badge>
-                  <p class="mt-1 text-xs text-ink-2">{List.first(h.hint.reasons)}</p>
-                </div>
-                <div class="space-y-1 sm:text-right">
-                  <p class="whitespace-nowrap text-xs text-ink-2">
-                    {SizingComponents.saving(h.hint)}
-                  </p>
-                  <div class="flex flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
-                    <SizingComponents.issue_actions
-                      :if={h.issue}
-                      id={"sizing-#{h.job.id}-issue"}
-                      issue={h.issue}
-                      compact
-                    />
-                    <.link
-                      :if={Scope.admin?(@current_scope) and h.hint.kind == :custom}
-                      href={SizingComponents.add_size_path(h.hint.to, [@repo.id])}
-                      class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
-                    >
-                      Add this size
-                    </.link>
-                    <SizingComponents.dismiss_button
-                      :if={Scope.admin?(@current_scope) and @dismissing != h.job.id}
-                      job_id={h.job.id}
-                    />
-                  </div>
-                </div>
-                <SizingComponents.dismiss_form
-                  :if={Scope.admin?(@current_scope) and @dismissing == h.job.id}
-                  id={"sizing-#{h.job.id}-dismiss"}
-                  job_id={h.job.id}
-                  hint={h.hint}
-                  class="sm:col-span-3 sm:justify-end"
-                />
-              </li>
-            </ul>
+            <SizingComponents.hint_list
+              :if={@hints != []}
+              hints={@hints}
+              admin={Scope.admin?(@current_scope)}
+              dismissing={@dismissing}
+            />
             <SizingComponents.dismissed_list
               hints={@dismissed_hints}
               open={@show_dismissed}

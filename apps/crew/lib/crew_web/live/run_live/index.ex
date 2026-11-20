@@ -313,7 +313,7 @@ defmodule CrewWeb.RunLive.Index do
         <p class="mt-0.5 truncate pl-6 text-xs text-ink-3">
           <.gh_link href={repo_url(@run.repo)}>{@run.repo.full_name}</.gh_link>
           ·
-          <%= case pr_number(@run) do %>
+          <%= case @run.pr_number do %>
             <% nil -> %>
               <.gh_link href={branch_url(@run.repo, @run.head_branch)}>{@run.head_branch}</.gh_link>
             <% n -> %>
@@ -335,7 +335,7 @@ defmodule CrewWeb.RunLive.Index do
         </span>
       </div>
       <span title="Duration" class="text-right text-xs tabular-nums text-ink-2">
-        {JobStatus.format(run_duration(@run, @now))}
+        {JobStatus.format(JobStatus.run_duration(@run, @now))}
       </span>
       <time
         datetime={DateTime.to_iso8601(@run.gh_created_at)}
@@ -348,14 +348,6 @@ defmodule CrewWeb.RunLive.Index do
     """
   end
 
-  defp pr_number(%{pull_requests: [%{"number" => n} | _]}), do: n
-  defp pr_number(_run), do: nil
-
   defp short(nil), do: ""
   defp short(sha), do: String.slice(sha, 0, 7)
-
-  defp run_duration(%{status: "completed", gh_created_at: from, gh_updated_at: to}, _now),
-    do: JobStatus.duration(from, to)
-
-  defp run_duration(%{gh_created_at: from}, now), do: JobStatus.duration(from, now)
 end

@@ -7,7 +7,6 @@ defmodule Crew.Jobs.Job do
   """
   use Crew.Schema
 
-  @states ~w(waiting queued in_progress completed)
   @ranks %{"waiting" => 0, "queued" => 1, "in_progress" => 2, "completed" => 3}
 
   schema "jobs" do
@@ -61,7 +60,6 @@ defmodule Crew.Jobs.Job do
     timestamps()
   end
 
-  def states, do: @states
   def rank(state), do: Map.fetch!(@ranks, state)
   def state?(state), do: Map.has_key?(@ranks, state)
 end

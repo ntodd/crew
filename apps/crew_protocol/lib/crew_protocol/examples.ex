@@ -14,7 +14,6 @@ defmodule CrewProtocol.Examples do
   @sig Base.encode64(:binary.copy(<<7>>, 64))
 
   def vm_id, do: @vm_id
-  def image_id, do: @image_id
 
   def join do
     %{

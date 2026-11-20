@@ -14,8 +14,6 @@ defmodule Crew.Operations do
   def get!(id), do: Repo.get!(Operation, id)
   def get(id), do: Repo.get(Operation, id)
 
-  def subscribe(op_id), do: Phoenix.PubSub.subscribe(Crew.PubSub, "op:#{op_id}")
-
   @doc """
   Validates a command, records it and sends it to the box's agent. A box
   that isn't connected gets nothing (`{:error, :offline}`), and no row.

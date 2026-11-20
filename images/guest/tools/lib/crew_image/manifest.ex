@@ -33,7 +33,6 @@ defmodule CrewImage.Manifest do
   # A GitHub release asset must be under 2 GiB.
   @max_rootfs 2 * 1024 * 1024 * 1024 - 1
 
-  def fields, do: @fields
   def max_rootfs_bytes, do: @max_rootfs
 
   @doc "The artifact file names for a version and arch."

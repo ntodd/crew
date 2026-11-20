@@ -6,7 +6,7 @@ defmodule CrewWeb.SizingComponents do
   use Phoenix.Component
   use CrewWeb, :verified_routes
 
-  import CrewWeb.CoreComponents, only: [button: 1, icon: 1]
+  import CrewWeb.CoreComponents, only: [badge: 1, button: 1, icon: 1]
   import CrewWeb.CrewComponents, only: [gib: 1, gh_link: 1]
 
   alias Crew.Sizing.Rules.Hint
@@ -333,6 +333,81 @@ defmodule CrewWeb.SizingComponents do
     </button>
     """
   end
+
+  attr :hints, :list,
+    required: true,
+    doc: "each with its `issue`, from `SizingIssue.put_issues/2`"
+
+  attr :admin, :boolean, default: false
+  attr :dismissing, :any, default: nil, doc: "the job whose dismiss form is open"
+  attr :repo, :boolean, default: false, doc: "name each hint's repo"
+
+  @doc """
+  A page's hints, a row each: the job, its hint and why, what it would
+  free, and what to do about it. A hint with its week's `freed_gib_h`
+  (from `Crew.Sizing.fleet/1`) says what it frees in a week; others say
+  what a run frees.
+  """
+  def hint_list(assigns) do
+    ~H"""
+    <ul id="sizing-hints" class="-my-3 divide-y divide-line">
+      <li
+        :for={h <- @hints}
+        id={"sizing-#{h.job.id}"}
+        class={[
+          "grid gap-x-6 gap-y-1.5 py-3",
+          if(@repo,
+            do: "sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto]",
+            else: "sm:grid-cols-[minmax(0,13rem)_minmax(0,1fr)_auto]"
+          ),
+          "sm:items-start"
+        ]}
+      >
+        <div class="min-w-0">
+          <.link
+            navigate={
+              ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
+            }
+            class="text-sm font-medium text-ink underline-offset-2 hover:underline"
+          >
+            {h.workflow_name} · {h.name}
+          </.link>
+          <p :if={@repo} class="mt-0.5 truncate text-xs text-ink-3">{h.repo.full_name}</p>
+          <p class={[!@repo && "mt-0.5", "text-xs text-ink-3"]}>{shape(h.hint.from)}</p>
+        </div>
+        <div class="min-w-0">
+          <.badge color={color(h.hint)}>{title(h.hint)}</.badge>
+          <p class="mt-1 text-xs text-ink-2">{List.first(h.hint.reasons)}</p>
+        </div>
+        <div class="space-y-1 sm:text-right">
+          <p class="whitespace-nowrap text-xs text-ink-2">{freed(h)}</p>
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1 sm:justify-end">
+            <.issue_actions :if={h.issue} id={"sizing-#{h.job.id}-issue"} issue={h.issue} compact />
+            <.link
+              :if={@admin and h.hint.kind == :custom}
+              href={add_size_path(h.hint.to, [h.repo.id])}
+              class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
+            >
+              Add this size
+            </.link>
+            <.dismiss_button :if={@admin and @dismissing != h.job.id} job_id={h.job.id} />
+          </div>
+        </div>
+        <.dismiss_form
+          :if={@admin and @dismissing == h.job.id}
+          id={"sizing-#{h.job.id}-dismiss"}
+          job_id={h.job.id}
+          hint={h.hint}
+          class="sm:col-span-3 sm:justify-end"
+        />
+      </li>
+    </ul>
+    """
+  end
+
+  defp freed(%{freed_gib_h: f}) when f > 0, do: "frees #{gib_h(f)} GiB-hours a week"
+  defp freed(%{freed_gib_h: f}) when f < 0, do: "takes #{gib_h(-f)} GiB-hours a week"
+  defp freed(%{hint: hint}), do: saving(hint)
 
   attr :id, :string, default: "sizing-dismissed"
   attr :hints, :list, required: true, doc: "dismissed hints, each with its `dismissal`"
