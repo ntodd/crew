@@ -1,19 +1,12 @@
 defmodule CrewWeb.DashboardLive do
   @moduledoc """
-  The dashboard (§17.3): the fleet strip (a card per box with its last
-  half hour of CPU and memory, what's allocated of what it offers, VMs by
-  size and its status), running, waiting and booting counts and today's
-  job minutes (§16.6), the longest
-  waits with their reasons, the last completed jobs, the day's charts,
-  and the activity feed. Fleet-wide, so members see jobs of repos they
-  can't read as "a job in another repo" (§18.3).
-
-  It refreshes every 5 s, and the activity feed as events come.
+  Live fleet capacity, workload and 24-hour trends (§17.3). Aggregate
+  metrics are shared. Job details and activity respect repository access.
   """
   use CrewWeb, :live_view
 
-  alias Crew.{Boxes, Jobs, Repos, Usage}
-  alias CrewWeb.{BoxCard, Charts, JobStatus, UsageComponents}
+  alias Crew.{Jobs, Repos, Usage}
+  alias CrewWeb.{Charts, Fleet, JobStatus, UsageComponents}
   alias CrewWeb.Charts.Geometry
 
   @refresh_ms 5_000
@@ -31,18 +24,29 @@ defmodule CrewWeb.DashboardLive do
 
   defp load(socket) do
     now = DateTime.utc_now()
-    boxes = Boxes.list()
     today = DateTime.to_date(now)
-    [yesterday_usage, today_usage] = Usage.daily(Date.add(today, -1), today)
+
+    [yesterday_usage, today_usage] =
+      Crew.Cache.fetch({:dashboard_usage, today}, chart_cache_ms(), fn ->
+        Usage.daily(Date.add(today, -1), today)
+      end)
+
+    started = Crew.Cache.fetch(:started_series, chart_cache_ms(), &Jobs.started_series/0)
+    starts_chart = started_series(started)
 
     assign(socket,
+      starts_chart: starts_chart,
+      starts_total: Enum.sum_by(starts_chart, & &1.total),
       now: now,
       readable: Repos.readable_ids(socket.assigns.current_scope),
-      fleet: Enum.map(boxes, &BoxCard.load/1),
+      fleet:
+        Crew.Cache.fetch(:dashboard_fleet, min(chart_cache_ms(), @refresh_ms), &Fleet.overview/0),
+      outcomes:
+        Crew.Cache.fetch(:completed_outcomes, chart_cache_ms(), &Jobs.completed_outcomes/0),
       counts: Jobs.counts(),
       waiting: Jobs.longest_waiting(10),
       recent: Jobs.recently_completed(20),
-      started: Crew.Cache.fetch(:started_series, chart_cache_ms(), &Jobs.started_series/0),
+      started: started,
       phases: Crew.Cache.fetch(:phase_series, chart_cache_ms(), &Jobs.phase_series/0),
       repos?: Repos.list() != [],
       job_minutes: %{today: today_usage.job_s, yesterday: yesterday_usage.job_s}
@@ -74,199 +78,185 @@ defmodule CrewWeb.DashboardLive do
     if readable?(readable, job.repo_id), do: reason, else: JobStatus.masked_reason(reason)
   end
 
-  @impl true
-  def render(assigns) do
+  attr :navigate, :string, required: true
+  slot :inner_block, required: true
+
+  defp drilldown(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} current_path={@current_path}>
-      <:breadcrumb>Dashboard</:breadcrumb>
+    <.link
+      navigate={@navigate}
+      class="inline-flex items-center gap-1 text-xs font-medium text-ink-2 hover:text-accent-ink"
+    >
+      {render_slot(@inner_block)} <.icon name="hero-arrow-right-micro" class="size-3.5" />
+    </.link>
+    """
+  end
 
-      <.header>
-        Dashboard
-        <:subtitle>Jobs, boxes and what's waiting.</:subtitle>
-      </.header>
+  attr :job, :map, required: true
 
-      <.panel
-        :if={
-          @fleet == [] or not @repos? or (@recent == [] and @waiting == [] and @counts.running == 0)
-        }
-        id="dashboard-empty"
-        title="Get started"
-      >
-        <div class="space-y-3 text-sm text-ink-2">
-          <p :if={@fleet == []} id="empty-boxes">
-            <.link
-              navigate={~p"/boxes/new"}
-              class="font-medium text-ink underline-offset-2 hover:underline"
-            >Add your first box.</.link>
-            Boxes are the machines that run job VMs.
-          </p>
-          <p :if={not @repos?} id="empty-repos">
-            <span class="font-medium text-ink">Install the App on a repo.</span>
-            Crew only sees jobs from repos the GitHub App is installed on.
-          </p>
-          <div id="empty-jobs">
-            <p>Then ask for a Crew runner in a workflow:</p>
-            <pre class="mt-2 rounded-lg border border-line bg-subtle px-3 py-2 font-mono text-xs text-ink">runs-on: crew-m</pre>
+  defp job_link(assigns) do
+    ~H"""
+    <.link
+      :if={@job.run_attempt_id}
+      navigate={~p"/runs/#{@job.github_run_id}/attempts/#{@job.run_attempt}/jobs/#{@job.github_id}"}
+      class="font-medium text-ink underline-offset-2 hover:underline"
+    >
+      {@job.name}
+    </.link>
+    <span :if={!@job.run_attempt_id}>{@job.name}</span>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :used, :integer, required: true
+  attr :total, :integer, required: true
+  attr :memory, :boolean, default: false
+
+  defp allocation(assigns) do
+    ~H"""
+    <div>
+      <p class="text-xs font-medium text-ink-2">{@label}</p>
+      <p class="fleet-figure">
+        {if @memory, do: gib(@used), else: @used}<span> / {if @memory,
+          do: gib(@total) <> " GiB",
+          else: @total}</span>
+      </p>
+      <progress
+        :if={@total > 0}
+        aria-label={@label}
+        value={min(@used, @total)}
+        max={@total}
+        class="bar mt-2"
+      ></progress>
+    </div>
+    """
+  end
+
+  attr :label, :string, required: true
+  attr :value, :any, required: true
+  attr :value_id, :string, default: nil
+  attr :navigate, :string, required: true
+  attr :icon, :string, required: true
+  attr :tone, :string, required: true
+  slot :inner_block, required: true
+
+  defp metric(assigns) do
+    ~H"""
+    <.link
+      navigate={@navigate}
+      class="group min-w-0 rounded-xl border border-line bg-raised p-4 transition-colors hover:border-line-strong sm:px-5"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <p class="text-xs font-medium text-ink-2">{@label}</p>
+        <.icon name={@icon} class={["size-4 shrink-0", @tone]} />
+      </div>
+      <p id={@value_id} class="mt-2 text-2xl font-semibold tracking-tight tabular-nums text-ink">
+        {@value}
+      </p>
+      <p class="mt-0.5 text-xs text-ink-3">{render_slot(@inner_block)}</p>
+    </.link>
+    """
+  end
+
+  defp percent(nil), do: "—"
+  defp percent(n), do: "#{n}%"
+
+  attr :counts, :map, required: true
+
+  defp outcome_panel(assigns) do
+    counts = assigns.counts
+    total = Enum.sum(Map.values(counts))
+    succeeded = Map.get(counts, "success", 0)
+
+    other =
+      counts |> Map.drop(~w(success failure cancelled skipped)) |> Map.values() |> Enum.sum()
+
+    slices =
+      [
+        {"Succeeded", succeeded, "text-success"},
+        {"Failed", Map.get(counts, "failure", 0), "text-danger"},
+        {"Cancelled", Map.get(counts, "cancelled", 0), "text-warning"},
+        {"Skipped", Map.get(counts, "skipped", 0), "text-ink-3"}
+      ] ++ if other > 0, do: [{"Other", other, "text-running-ink"}], else: []
+
+    {rows, _} =
+      Enum.map_reduce(slices, 0, fn {label, count, color}, start ->
+        share = if total > 0, do: 100 * count / total, else: 0
+        {%{label: label, count: count, color: color, share: share, offset: -start}, start + share}
+      end)
+
+    assigns =
+      assign(assigns,
+        rows: rows,
+        total: total,
+        rate: if(total > 0, do: round(100 * succeeded / total))
+      )
+
+    ~H"""
+    <section
+      id="job-outcomes"
+      class="min-w-0 rounded-xl border border-line bg-raised px-5 py-4 lg:col-span-2 xl:col-span-1"
+    >
+      <h2 class="text-sm font-semibold text-ink">Job outcomes</h2>
+      <p class="mt-0.5 text-xs text-ink-3">{UsageComponents.delimit(@total)} completed in 24h</p>
+      <div class="mt-4 flex flex-wrap items-center justify-center gap-x-6 gap-y-3 xl:flex-col">
+        <div class="relative grid size-24 shrink-0 place-items-center">
+          <svg viewBox="0 0 100 100" class="absolute inset-0 size-full -rotate-90" aria-hidden="true">
+            <circle cx="50" cy="50" r="44" fill="none" stroke-width="7" class="stroke-muted" />
+            <circle
+              :for={r <- @rows}
+              :if={r.count > 0}
+              cx="50"
+              cy="50"
+              r="44"
+              pathLength="100"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="7"
+              stroke-dasharray={"#{r.share} 100"}
+              stroke-dashoffset={r.offset}
+              class={r.color}
+            />
+          </svg>
+          <div class="text-center">
+            <p class="text-xl font-semibold tabular-nums text-ink">{percent(@rate)}</p><p class="text-[10px] text-ink-2">
+              succeeded
+            </p>
           </div>
         </div>
-      </.panel>
-
-      <section
-        :if={@fleet != []}
-        id="fleet"
-        aria-label="Fleet"
-        class="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
-      >
-        <.link
-          :for={card <- @fleet}
-          id={"fleet-#{card.box.id}"}
-          navigate={~p"/boxes/#{card.box.id}"}
-          class="block rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
-        >
-          <BoxCard.box_card card={card} />
-        </.link>
-      </section>
-
-      <section id="counters" class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <.link
-          navigate={~p"/runs?status=in_progress"}
-          class="rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
-        >
-          <p class="text-xs text-ink-3">Running</p>
-          <p class="text-2xl font-semibold tabular-nums text-ink">{@counts.running}</p>
-        </.link>
-        <.link
-          navigate={~p"/runs?status=queued"}
-          class="rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
-        >
-          <p class="text-xs text-ink-3">Waiting</p>
-          <p class="text-2xl font-semibold tabular-nums text-ink">{@counts.waiting}</p>
-          <p :if={@counts.waiting_spare > 0} id="waiting-spare" class="text-xs text-ink-3">
-            + {@counts.waiting_spare} spare
-          </p>
-        </.link>
-        <.link
-          navigate={~p"/queue"}
-          class="rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
-        >
-          <p class="text-xs text-ink-3">Booting</p>
-          <p class="text-2xl font-semibold tabular-nums text-ink">{@counts.booting}</p>
-        </.link>
-        <.link
-          navigate={~p"/usage"}
-          class="rounded-xl border border-line bg-raised p-4 shadow-xs hover:border-line-strong"
-        >
-          <p class="text-xs text-ink-3">Job minutes today</p>
-          <p id="job-minutes-today" class="text-2xl font-semibold tabular-nums text-ink">
-            {UsageComponents.minutes(@job_minutes.today)}
-          </p>
-          <p class="text-xs text-ink-3">
-            {UsageComponents.minutes(@job_minutes.yesterday)} yesterday, UTC
-          </p>
-        </.link>
-      </section>
-
-      <div class="mb-4 grid gap-4 lg:grid-cols-2">
-        <.panel id="waiting" title="Waiting longest" padded={false}>
-          <ul class="divide-y divide-line text-sm">
-            <li
-              :for={job <- @waiting}
-              id={"waiting-#{job.id}"}
-              class="flex items-start justify-between gap-3 px-5 py-2.5"
-            >
-              <span class="min-w-0">
-                <%= if readable?(@readable, job.repo_id) do %>
-                  <span class="block truncate text-ink">
-                    {job.name}
-                    <.badge :if={job.spare} size="sm" data-tier="spare" class="ml-1 align-middle">
-                      spare
-                    </.badge>
-                  </span>
-                  <span class="block truncate text-xs text-ink-3">{job.repo.full_name}</span>
-                <% else %>
-                  <span class="block truncate text-ink-2">a job in another repo</span>
-                  <span class="block text-xs text-ink-3">{job.size && job.size.name}</span>
-                <% end %>
-                <span :if={job.blocked_reason || job.wait_reason} class="block text-xs text-warning">
-                  {reason(@readable, job)}
-                </span>
-              </span>
-              <span class="shrink-0 tabular-nums text-xs text-ink-3">
-                {JobStatus.format(JobStatus.duration(job.queued_at || job.seen_at, @now))}
-              </span>
-            </li>
-            <li :if={@waiting == []} class="px-5 py-3 text-ink-3">Nothing is waiting.</li>
-          </ul>
-        </.panel>
-
-        <.panel id="recent" title="Recently completed" padded={false}>
-          <ul class="divide-y divide-line text-sm">
-            <li :for={job <- @recent} class="flex items-center justify-between gap-3 px-5 py-2.5">
-              <span class="min-w-0 truncate">
-                <%= if readable?(@readable, job.repo_id) do %>
-                  <span class="text-ink">{job.name}</span>
-                  <span class="text-xs text-ink-3"> · {job.repo.full_name}</span>
-                <% else %>
-                  <span class="text-ink-2">a job in another repo</span>
-                <% end %>
-              </span>
-              <.job_status job={job} now={@now} />
-            </li>
-            <li :if={@recent == []} class="px-5 py-3 text-ink-3">None yet.</li>
-          </ul>
-        </.panel>
+        <dl class="grid min-w-32 flex-1 gap-x-6 gap-y-1 text-xs xl:w-full xl:grid-cols-2">
+          <div :for={r <- @rows} class="flex items-center justify-between gap-1.5">
+            <dt class="flex items-center gap-1.5 text-ink-2">
+              <span class={["size-1.5 shrink-0 rounded-full bg-current", r.color]}></span>{r.label}
+            </dt>
+            <dd class="font-medium tabular-nums text-ink">{UsageComponents.delimit(r.count)}</dd>
+          </div>
+        </dl>
       </div>
-
-      <div class="mb-4 grid gap-4 lg:grid-cols-2">
-        <Charts.timeseries
-          id="chart-started"
-          title="Jobs started, 24 hours"
-          note="per 5 minutes, by conclusion"
-          series={started_series(@started)}
-          since={@started.since}
-          until={@started.until}
-          ymax={Geometry.nice_max(stack_max(@started))}
-          gap={900}
-          format={&to_string(round(&1))}
-          empty="No Crew jobs started today."
-        />
-        <Charts.timeseries
-          id="chart-wait"
-          title="Wait and boot, 24 hours"
-          note="p50 and p95 per hour"
-          series={phase_series(@phases)}
-          since={@phases.since}
-          until={@phases.until}
-          ymax={Geometry.nice_max(phase_max(@phases))}
-          gap={7200}
-          format={&JobStatus.format(round(&1))}
-          empty="No placements today."
-        />
-      </div>
-
-      <.panel id="activity" title="Activity" padded={false}>
-        <ul :if={@activity != []} class="divide-y divide-line">
-          <li :for={event <- @activity} id={"activity-#{event.id}"} class="px-5 py-2.5 text-sm">
-            <span class="text-ink">{event.message}</span>
-            <span class="ml-2 text-xs text-ink-3">
-              {Calendar.strftime(event.inserted_at, "%b %-d, %H:%M UTC")}
-            </span>
-          </li>
-        </ul>
-        <p :if={@activity == []} class="px-5 py-4 text-sm text-ink-3">Nothing yet.</p>
-      </.panel>
-    </Layouts.app>
+    </section>
     """
   end
 
   defp started_series(s) do
     [success, failure, other] = Geometry.stack([s.success, s.failure, s.other])
 
-    [
-      %{label: "Succeeded", color: Charts.series_color(1), kind: :area, points: success},
-      %{label: "Failed", color: Charts.series_color(3), kind: :area, points: failure},
-      %{label: "Other", color: Charts.other_color(), kind: :area, points: other}
-    ]
+    for {label, color, points} <- [
+          {"Succeeded", Charts.accent_color(), success},
+          {"Failed", Charts.series_color(7), failure},
+          {"Other", Charts.other_color(), other}
+        ] do
+      total = Enum.sum_by(points, fn {_t, low, high} -> high - low end)
+
+      %{
+        label: label,
+        color: color,
+        kind: :bar,
+        interval: s.interval,
+        points: points,
+        total: total,
+        value: UsageComponents.delimit(total)
+      }
+    end
   end
 
   defp stack_max(s) do

@@ -74,6 +74,15 @@ defmodule CrewWeb.Charts.Geometry do
     end)
   end
 
+  @doc "Stacked bars centred on their bucket midpoints, with a small gap between buckets."
+  def bar_path(points, interval, dom) do
+    for {at, lo, hi} <- points, hi > lo, into: "" do
+      left = x(at - interval * 0.4, dom)
+      right = x(at + interval * 0.4, dom)
+      "M#{left},#{y(lo, dom)}V#{y(hi, dom)}H#{right}V#{y(lo, dom)}Z"
+    end
+  end
+
   @doc """
   Stacks series of `[{at, value}]` in order: each becomes `[{at, lower,
   upper}]` sitting on the ones before it. A series with no sample at a
