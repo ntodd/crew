@@ -35,6 +35,7 @@ defmodule CrewWeb.BoxLive.New do
        box_name: nil,
        box_type: nil,
        os_disk: nil,
+       data_disk: nil,
        disk_layout: nil
      )}
   end
@@ -52,6 +53,7 @@ defmodule CrewWeb.BoxLive.New do
            box_name: params["box_name"],
            box_type: params["box_type"],
            os_disk: params["os_disk"],
+           data_disk: if(params["disk_layout"] == "separate", do: params["data_disk"]),
            disk_layout: params["disk_layout"] || "one"
          )}
 
@@ -87,6 +89,7 @@ defmodule CrewWeb.BoxLive.New do
   attr :os_disk, :string, required: true
   attr :fetch_id, :string, required: true
   attr :data_disk?, :boolean, default: true, doc: "whether there's a data disk not to install to"
+  attr :data_disk, :string, default: nil, doc: "the separately selected physical data device"
 
   defp ignition_steps(assigns) do
     ~H"""
@@ -130,7 +133,7 @@ defmodule CrewWeb.BoxLive.New do
     </p>
     <.command
       id="flatcar-install"
-      command={"sudo flatcar-install -d #{@os_disk} -i crew-#{@box_name}.ign && sudo reboot"}
+      command={Flatcar.install_command(@os_disk, "crew-#{@box_name}.ign", @data_disk)}
     />
     """
   end
@@ -334,6 +337,7 @@ defmodule CrewWeb.BoxLive.New do
               os_disk={@os_disk}
               fetch_id="join-command"
               data_disk?={@disk_layout == "separate"}
+              data_disk={@data_disk}
             />
         <% end %>
 

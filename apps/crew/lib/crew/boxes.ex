@@ -383,6 +383,15 @@ defmodule Crew.Boxes do
     }
   end
 
+  @doc "Applies the reprovision form's disk overrides to the enrolled layout."
+  def reprovision_disks(disks, params) do
+    %{
+      disks
+      | os_disk: present(params["os_disk"]) || disks.os_disk,
+        data_disk: present(params["data_disk"]) || disks.data_disk
+    }
+  end
+
   @doc """
   The reprovision Ignition for a Flatcar box (§12.2): no join token, no
   Tailscale key, for a new OS disk over the box's data. A `linux-metal`
@@ -399,7 +408,7 @@ defmodule Crew.Boxes do
         {:error, :not_flatcar}
 
       true ->
-        disks = if box.type == "linux-metal", do: disks(box), else: %{}
+        disks = if box.type == "linux-metal", do: reprovision_disks(disks(box), params), else: %{}
 
         with {:ok, config} <-
                Flatcar.ignition(%{
@@ -408,8 +417,8 @@ defmodule Crew.Boxes do
                  type: box.type,
                  arch: params["arch"],
                  disk_layout: disks[:disk_layout],
-                 os_disk: present(params["os_disk"]) || disks[:os_disk],
-                 data_disk: present(params["data_disk"]) || disks[:data_disk],
+                 os_disk: disks[:os_disk],
+                 data_disk: disks[:data_disk],
                  ssh_keys: split_keys(params["ssh_keys"]),
                  # Root's copy, for the updates' root half (§20.2).
                  release_key: Crew.Config.release_public_key()

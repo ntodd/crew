@@ -452,6 +452,7 @@ defmodule CrewWeb.BoxLiveTest do
       assert File.stat!(Path.join(dir, "crew-rack1.ign")).mode |> Bitwise.band(0o777) == 0o600
       assert has_element?(view, "#join-instructions", "Delete it once the box has enrolled")
       assert has_element?(view, "#flatcar-install", "flatcar-install -d #{@os_disk} -i")
+      assert has_element?(view, "#flatcar-install", "lsblk -snro MAJ:MIN /dev/nvme1n1")
       assert has_element?(view, "#join-instructions", "not the data disk")
 
       assert %{disk_layout: "separate", os_disk: @os_disk, data_disk: "/dev/nvme1n1"} =
@@ -544,6 +545,39 @@ defmodule CrewWeb.BoxLiveTest do
              )
     end
 
+    test "a separate data disk cannot become the reprovision install target", %{
+      conn: conn,
+      admin: admin
+    } do
+      data = "/dev/disk/by-id/ata-Crew_Data"
+
+      box =
+        metal_box(admin, %{
+          "disk_layout" => "separate",
+          "os_disk" => @os_disk,
+          "data_disk" => data
+        })
+
+      {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+
+      for invalid <- [data, "/dev/sda"] do
+        params = %{"arch" => "amd64", "os_disk" => invalid, "data_disk" => ""}
+        view |> form("#reprovision-form", params) |> render_change()
+        refute has_element?(view, "#reprovision-command")
+        assert has_element?(view, "#reprovision-form button[type=submit][disabled]")
+        assert has_element?(view, "#reprovision [role=alert]")
+        assert get(conn, ~p"/boxes/#{box.id}/reprovision.ign", params).status == 400
+      end
+
+      view
+      |> form("#reprovision-form", %{"os_disk" => "", "data_disk" => "/dev/sdc"})
+      |> render_change()
+
+      assert has_element?(view, "#reprovision-command", "flatcar-install -d #{@os_disk}")
+      assert has_element?(view, "#reprovision-command", "lsblk -snro MAJ:MIN /dev/sdc")
+      refute has_element?(view, "#reprovision-form button[type=submit][disabled]")
+    end
+
     # The command installs onto the disk the downloaded Ignition is for.
     test "the command follows the form", %{conn: conn, admin: admin} do
       box = metal_box(admin, %{"os_disk" => @os_disk})
@@ -592,8 +626,10 @@ defmodule CrewWeb.BoxLiveTest do
       {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
 
       assert has_element?(view, "#reprovision input[name=data_disk][value='/dev/sdb']")
-      assert has_element?(view, "#reprovision-command", "flatcar-install -d OS_DISK -i")
-      refute has_element?(view, "#reprovision-command", "/dev/sda")
+      refute has_element?(view, "#reprovision-command")
+      assert has_element?(view, "#reprovision", "Enter the OS disk")
+      view |> form("#reprovision-form", %{"os_disk" => @os_disk}) |> render_change()
+      assert has_element?(view, "#reprovision-command", "flatcar-install -d #{@os_disk}")
     end
 
     test "a VM box's says to use crew-box reimage", %{conn: conn} do

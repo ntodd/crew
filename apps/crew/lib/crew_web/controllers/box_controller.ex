@@ -6,6 +6,7 @@ defmodule CrewWeb.BoxController do
   use CrewWeb, :controller
 
   alias Crew.Boxes
+  alias Crew.Boxes.Flatcar
 
   def reprovision(conn, %{"id" => id} = params) do
     with true <- CrewProtocol.uuid?(id),
@@ -20,8 +21,12 @@ defmodule CrewWeb.BoxController do
       |> json(config)
     else
       {:error, reason}
-      when reason in [:bad_arch, :bad_data_disk, :bad_os_disk, :bad_ssh_key, :not_flatcar] ->
+      when reason in [:bad_arch, :bad_ssh_key, :not_flatcar] ->
         conn |> put_status(:bad_request) |> json(%{error: error(reason)})
+
+      {:error, reason}
+      when reason in [:bad_disk_layout, :bad_data_disk, :bad_os_disk, :same_disk] ->
+        conn |> put_status(:bad_request) |> json(%{error: Flatcar.disk_error(reason)})
 
       _ ->
         conn |> put_status(:not_found) |> json(%{error: "no such box"})
@@ -56,8 +61,6 @@ defmodule CrewWeb.BoxController do
 
   defp error(:not_mac_vz), do: "only a mac-vz box has a cache VM"
   defp error(:bad_arch), do: "arch must be amd64 or arm64"
-  defp error(:bad_data_disk), do: "the data disk must be a device like /dev/sdb"
-  defp error(:bad_os_disk), do: "the OS disk must be a /dev/disk/by-id/... link"
   defp error(:bad_ssh_key), do: "that isn't an SSH public key"
   defp error(:not_flatcar), do: "this box doesn't run Flatcar"
 end

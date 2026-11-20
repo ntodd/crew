@@ -1868,8 +1868,10 @@ but they have no agent:
   says to find it with `ls -l /dev/disk/by-id/` in Flatcar's live image,
   which can number the disks differently from one boot to the next. A
   separate data disk asks for that device too (e.g. `/dev/sdb`), another
-  disk than the OS disk. The VM launchers always give the data disk as
-  `/dev/vdb`.
+  disk than the OS disk. With separate disks the install command uses
+  `lsblk` in the live image to check the OS disk against the data device
+  and its backing devices before running `flatcar-install`. The VM
+  launchers always give the data disk as `/dev/vdb`.
 - an optional break-glass SSH key
 
 It creates the join token and shows the release-key fingerprint, which
@@ -1980,7 +1982,8 @@ disk and starts the installed agent.
 - The disks are the ones on the token that enrolled the box last.
 - The box page shows the OS disk the box was added with in its
   `flatcar-install` command, and takes another. A box added before the
-  OS disk was asked for shows `OS_DISK` there instead of a guess.
+  OS disk was asked for can still download its Ignition. Its install
+  command appears once the operator enters the OS disk's by-id path.
 - Tailscale state lives on the data disk (`/srv/crew/tailscale`), so the
   node keeps its identity.
 - On `linux-vm` and `mac-vm`, `crew-box reimage <file>` (§12.3) applies

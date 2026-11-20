@@ -31,7 +31,7 @@ defmodule CrewWeb.BoxLive.Show do
      |> assign(:page_title, box.name)
      |> assign(:disks, disks)
      |> assign(:reprovision_arch, default_arch(box))
-     |> assign_reprovision_os_disk(disks && disks.os_disk)
+     |> assign_reprovision_disks(%{})
      |> load(box)
      |> load_usage()}
   end
@@ -53,21 +53,22 @@ defmodule CrewWeb.BoxLive.Show do
     assign(socket, :usage, usage)
   end
 
-  # The arch a reprovision Ignition is for, by default: a Mac's VM is
-  # arm64, and otherwise the guests' arch is the box's.
-  # The form's OS disk, and the one the reprovision Ignition is for: the
-  # form's, or the box's own. OS_DISK when neither is known (a box added
-  # before it was asked for).
-  defp assign_reprovision_os_disk(socket, input) do
+  defp assign_reprovision_disks(socket, params) do
     disks = socket.assigns.disks
+    effective = disks && Boxes.reprovision_disks(disks, params)
 
-    target =
-      case input && String.trim(input) do
-        disk when disk not in [nil, ""] -> disk
-        _ -> (disks && disks.os_disk) || "OS_DISK"
+    error =
+      case effective && Flatcar.validate_disks(effective) do
+        {:error, reason} -> Flatcar.disk_error(reason)
+        _ -> nil
       end
 
-    assign(socket, reprovision_os_disk: input, reprovision_target: target)
+    assign(socket,
+      reprovision_os_disk: Map.get(params, "os_disk", disks && disks.os_disk),
+      reprovision_data_disk: Map.get(params, "data_disk", disks && disks.data_disk),
+      reprovision_disks: effective,
+      reprovision_disk_error: error
+    )
   end
 
   defp default_arch(%{type: "mac-vm"}), do: "arm64"
@@ -175,8 +176,7 @@ defmodule CrewWeb.BoxLive.Show do
   def handle_event("reprovision", params, socket) do
     arch = if params["arch"] in Flatcar.arches(), do: params["arch"], else: "amd64"
 
-    {:noreply,
-     socket |> assign(:reprovision_arch, arch) |> assign_reprovision_os_disk(params["os_disk"])}
+    {:noreply, socket |> assign(:reprovision_arch, arch) |> assign_reprovision_disks(params)}
   end
 
   def handle_event("approve", _params, socket) do
@@ -832,7 +832,7 @@ defmodule CrewWeb.BoxLive.Show do
               name="data_disk"
               id="reprovision-data-disk"
               label="Data disk"
-              value={@disks.data_disk}
+              value={@reprovision_data_disk}
               placeholder="/dev/sdb"
               autocomplete="off"
             />
@@ -848,7 +848,12 @@ defmodule CrewWeb.BoxLive.Show do
             />
           </div>
           <div class="mb-3">
-            <.button type="submit" size="sm" icon="hero-arrow-down-tray-micro">
+            <.button
+              type="submit"
+              size="sm"
+              icon="hero-arrow-down-tray-micro"
+              disabled={@reprovision_disk_error != nil}
+            >
               Download Ignition
             </.button>
           </div>
@@ -858,14 +863,26 @@ defmodule CrewWeb.BoxLive.Show do
             Crew's data is partition 10 of the OS disk. Reinstalling with this Ignition keeps it;
             installing Flatcar any other way erases it.
           </p>
-          <p class="mb-2 text-sm text-ink-2">
-            From Flatcar's live image, onto the OS disk{if @reprovision_target == "OS_DISK",
-              do: " (OS_DISK: its /dev/disk/by-id/… name)"}:
-          </p>
-          <.command
-            id="reprovision-command"
-            command={"sudo flatcar-install -d #{@reprovision_target} -i crew-#{@box.name}-#{@reprovision_arch}-reprovision.ign && sudo reboot"}
-          />
+          <%= cond do %>
+            <% @reprovision_disk_error -> %>
+              <p role="alert" class="text-sm text-danger">{@reprovision_disk_error}</p>
+            <% is_nil(@reprovision_disks.os_disk) -> %>
+              <p class="text-sm text-ink-2">
+                Enter the OS disk's /dev/disk/by-id/ path to see the install command.
+              </p>
+            <% true -> %>
+              <p class="mb-2 text-sm text-ink-2">Run this from Flatcar's live image.</p>
+              <.command
+                id="reprovision-command"
+                command={
+                  Flatcar.install_command(
+                    @reprovision_disks.os_disk,
+                    "crew-#{@box.name}-#{@reprovision_arch}-reprovision.ign",
+                    if(@disks.disk_layout == "separate", do: @reprovision_disks.data_disk)
+                  )
+                }
+              />
+          <% end %>
         <% else %>
           <p class="mb-2 text-sm text-ink-2">On the host:</p>
           <.command

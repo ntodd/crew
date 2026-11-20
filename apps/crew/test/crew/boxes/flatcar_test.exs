@@ -8,6 +8,49 @@ defmodule Crew.Boxes.FlatcarTest do
 
   alias Crew.Boxes.Flatcar
 
+  @tag :tmp_dir
+  test "the live install command checks both devices before invoking the installer", %{
+    tmp_dir: dir
+  } do
+    os = "/dev/disk/by-id/ata-Crew_OS"
+    command = Flatcar.install_command(os, "crew.ign", "/dev/sdb")
+
+    # Only the stub commands below are on PATH. No device or privilege is needed.
+    File.write!(Path.join(dir, "lsblk"), """
+    #!/bin/sh
+    case "$1:$2:$3" in
+      -dnro:TYPE,MAJ:MIN:#{os}) printf '%s\n' "$OS_INFO" ;;
+      -snro:MAJ:MIN:/dev/sdb) printf '%s\n' "$DATA_IDS"; exit "$DATA_STATUS" ;;
+      *) exit 1 ;;
+    esac
+    """)
+
+    File.write!(Path.join(dir, "sudo"), "#!/bin/sh\nprintf '%s\\n' \"$*\"\n")
+    for name <- ["lsblk", "sudo"], do: File.chmod!(Path.join(dir, name), 0o755)
+
+    run = fn info, ids, status ->
+      System.cmd("/bin/sh", ["-c", command],
+        env: [{"PATH", dir}, {"OS_INFO", info}, {"DATA_IDS", ids}, {"DATA_STATUS", status}],
+        stderr_to_stdout: true
+      )
+    end
+
+    for {info, ids, status} <- [
+          {"disk 8:0", "8:0", "0"},
+          {"disk 8:0", "253:0\n8:1\n8:0", "0"},
+          {"part 8:1", "8:16", "0"},
+          {"disk 8:0", "", "0"},
+          {"disk 8:0", "8:16", "1"}
+        ] do
+      assert {output, 1} = run.(info, ids, status)
+      refute output =~ "flatcar-install"
+      refute output =~ "reboot"
+    end
+
+    assert {"flatcar-install -d #{os} -i crew.ign\nreboot\n", 0} ==
+             run.("disk 8:0", "8:17\n8:16", "0")
+  end
+
   @release_key :binary.copy(<<7>>, 32)
   @sha_agent String.duplicate("a", 64)
   @sha_cache String.duplicate("c", 64)

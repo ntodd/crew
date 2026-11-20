@@ -163,14 +163,11 @@ defmodule Crew.Boxes.Flatcar do
         bad_name: CrewProtocol.Names.box_name?(opts.name),
         bad_type: opts.type in @types,
         bad_arch: Map.has_key?(@bakery_arch, opts.arch),
-        bad_ssh_key: Enum.all?(opts.ssh_keys, &ssh_key?/1),
-        bad_disk_layout: opts.type != "linux-metal" or disk_layout(opts) in @disk_layouts,
-        bad_os_disk: not one_disk?(opts) or os_disk?(opts[:os_disk]),
-        bad_data_disk: data_disk?(data_disk(opts))
+        bad_ssh_key: Enum.all?(opts.ssh_keys, &ssh_key?/1)
       ] ++ if(opts.mode == :provision, do: provision_checks(opts), else: [])
 
     case Enum.find(checks, fn {_error, ok?} -> not ok? end) do
-      nil -> {:ok, build(opts)}
+      nil -> with :ok <- validate_disks(opts), do: {:ok, build(opts)}
       {error, false} -> {:error, error}
     end
   end
@@ -187,6 +184,56 @@ defmodule Crew.Boxes.Flatcar do
   end
 
   defp disk_layout(opts), do: opts[:disk_layout] || "separate"
+
+  @doc "Checks the effective bare-metal disks before showing an install command or rendering Ignition."
+  def validate_disks(%{type: type}) when type != "linux-metal", do: :ok
+
+  def validate_disks(opts) do
+    layout = disk_layout(opts)
+    os = opts[:os_disk]
+    data = opts[:data_disk]
+
+    cond do
+      layout not in @disk_layouts -> {:error, :bad_disk_layout}
+      # A legacy separate-disk token can lack the original OS disk.
+      (layout == "one" or not is_nil(os)) and not os_disk?(os) -> {:error, :bad_os_disk}
+      layout == "separate" and not data_disk?(data) -> {:error, :bad_data_disk}
+      layout == "separate" and os == data -> {:error, :same_disk}
+      true -> :ok
+    end
+  end
+
+  def disk_error(:bad_disk_layout), do: "the disk layout must be one or separate"
+  def disk_error(:bad_data_disk), do: "the data disk must be a device like /dev/sdb"
+  def disk_error(:bad_os_disk), do: "the OS disk must be a /dev/disk/by-id/... link"
+  def disk_error(:same_disk), do: "the OS disk and the separate data disk must be different"
+
+  @doc "The command to copy into Flatcar's live image, where device aliases can be resolved."
+  def install_command(os_disk, ignition_file, data_disk) do
+    install = "sudo flatcar-install -d #{os_disk} -i #{ignition_file} && sudo reboot"
+
+    if data_disk do
+      # lsblk -s includes every device backing a partition or stacked device.
+      # Compare kernel device numbers so different paths cannot hide overlap.
+      String.trim("""
+      /bin/sh -ec '
+        os=$(lsblk -dnro TYPE,MAJ:MIN #{os_disk})
+        data=$(lsblk -snro MAJ:MIN #{data_disk})
+        case "$os" in "disk "*) ;; *) echo "Select a whole disk for Flatcar." >&2; exit 1 ;; esac
+        [ -n "$data" ] || { echo "Cannot identify the Crew data device." >&2; exit 1; }
+        for id in $data; do
+          if [ "$os" = "disk $id" ]; then
+            echo "The selected OS disk contains the Crew data device. Installation stopped." >&2
+            exit 1
+          fi
+        done
+        #{install}
+      '
+      """)
+    else
+      install
+    end
+  end
 
   defp one_disk?(opts), do: opts.type == "linux-metal" and disk_layout(opts) == "one"
 
