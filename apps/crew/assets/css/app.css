@@ -505,7 +505,7 @@
   border-radius: 0.5rem;
   padding: 0.5rem 0.75rem;
   overflow-x: auto;
-  white-space: nowrap;
+  white-space: pre;
 }
 
 /* Capacity bars: native <progress>, so the fill needs no inline style

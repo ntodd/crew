@@ -226,6 +226,9 @@ e2e/
   - The setup docs explain that a `linux-vm` box must run on the physical
     host.
 - `mac-vm` depends on spike S1; `mac-vz` on S3 and S4.
+- **A `linux-metal` box needs one disk.** By default `/srv/crew` is
+  partition 10 of the OS disk (§12.2, §12.4), since most machines worth
+  dedicating have one NVMe drive. A separate data disk is the option.
 
 ### 5.2 The reference deployment
 
@@ -1302,8 +1305,10 @@ them:
 | `jail/` | Jailer chroots (Linux) |
 | `cache/` | crew_cache's store (Linux boxes) |
 
-Nothing Crew writes lives on the Flatcar OS disk. Replacing the OS disk
-(reprovisioning, §12.2) keeps the box's identity, its agent and its images.
+Nothing Crew writes lives on Flatcar's partitions: it's on the data disk,
+or on a one-disk `linux-metal` box, partition 10 of the OS disk, which a
+reinstall keeps (§12.2). Reinstalling Flatcar (reprovisioning, §12.2)
+keeps the box's identity, its agent and its images.
 
 ### 10.2 Enrollment
 
@@ -1317,6 +1322,8 @@ and registers the public key with the token.
   and SHA-256s of the agent and cache tarballs. The `linux-vm` and
   `mac-vm` launchers fetch it themselves; `linux-metal`, and a
   `linux-vm` box whose VM is built by hand, download it from **Add box**.
+  A `linux-metal` token also keeps the box's disks (§12.2), which its
+  reprovision Ignition uses too.
 - **`mac-vz` boxes:** the Add box page shows the steps (§20.2):
   1. download the darwin tarball from the GitHub release;
   2. verify it with the published key fingerprint;
@@ -1855,8 +1862,16 @@ but they have no agent:
 - a name (DNS label, ≤ 40)
 - the type (`linux-metal`, `linux-vm` or `mac-vm`)
 - a Tailscale auth key, only when there's no Tailscale OAuth client (§5.3)
-- for `linux-metal`, the data disk device (e.g. `/dev/sdb`); the VM
-  launchers always give the data disk as `/dev/vdb`
+- for `linux-metal`, its disks: **one disk** (the default), or a
+  **separate data disk**. Both ask for the OS disk, which goes into the
+  `flatcar-install` command, as a `/dev/disk/by-id/…` link: the page
+  says to find it with `ls -l /dev/disk/by-id/` in Flatcar's live image,
+  which can number the disks differently from one boot to the next. A
+  separate data disk asks for that device too (e.g. `/dev/sdb`), another
+  disk than the OS disk. With separate disks the install command uses
+  `lsblk` in the live image to check the OS disk against the data device
+  and its backing devices before running `flatcar-install`. The VM
+  launchers always give the data disk as `/dev/vdb`.
 - an optional break-glass SSH key
 
 It creates the join token and shows the release-key fingerprint, which
@@ -1865,7 +1880,7 @@ the admin compares with the one in Crew's README and release notes
 - **`linux-vm`, `mac-vm`:** it shows the launcher's one command (§12.3).
   The launcher fetches the Ignition itself.
 - **`linux-metal`:** it offers the Ignition for download, and the
-  `flatcar-install` command for the OS disk.
+  `flatcar-install -d <OS disk>` command.
 - **`linux-vm`, built by hand:** where the launcher can't run (a TrueNAS
   SCALE host, whose OS image blocks `apt`), it also offers the Ignition
   for a VM the admin makes: host CPU passthrough, UEFI, and two VirtIO
@@ -1895,7 +1910,7 @@ runs):
 
 | Unit or file | What it does |
 |---|---|
-| `srv-crew.mount` | The data disk at `/srv/crew`. A oneshot `crew-format-data.service` runs first, ordered `Before=srv-crew.mount`, and runs `mkfs.xfs -m reflink=1` only if the disk has no filesystem. |
+| `srv-crew.mount` | The data disk at `/srv/crew`, by its label (by its by-id link on a one-disk box). A oneshot `crew-format-data.service` runs first, ordered `Before=srv-crew.mount`, and runs `mkfs.xfs -m reflink=1` only if the disk has no filesystem (on a one-disk box, only on its first boot; below). |
 | `/etc/systemd/network/00-crew.network` | `[Match] Name=crewt* crew0`, `[Link] Unmanaged=yes` |
 | `crew-net.service` | Creates the `crew0` dummy interface with `10.199.0.1/32`, then loads `/srv/crew/agent/current/etc/nft.conf` once at boot. It's never reloaded on a timer. |
 | `crew-provision.service` | Oneshot, `Restart=on-failure`, runs `/bin/sh /etc/crew-box/provision.sh` (copy Foreman's `provision.sh`): joins the tailnet with the key file and deletes it, waits for `${CREW_URL}/healthz`, then starts `crew-agent-install.service`. After enrollment it deletes `/etc/crew-box/provision.env` and `/oem/config.ign`, and prints `crew-box: enrolled`. |
@@ -1914,9 +1929,61 @@ generate a new token. On a Mac and on bare metal, Flatcar keeps the
 Ignition in the OEM partition; `crew-provision` deletes it there once the
 box has enrolled, so neither secret outlives enrollment on disk.
 
+**One disk (`linux-metal`, #140):** `/srv/crew` is partition 10 of the
+OS disk.
+- **The Ignition adds it.** A `storage.disks` entry for the OS disk,
+  `wipeTable: false`, adds partition 10 (`crew-data`) at a fixed
+  `startMiB: 32768`, to the end of the disk. The fixed start doesn't
+  depend on Flatcar's image, which ends around 8.5 GB and can change
+  between the version a box was added on and the one a reprovision
+  installs.
+- **ROOT grows up to it.** The Ignition leaves partition 9 alone.
+  Flatcar's `extend-filesystems` runs `cgpt resize` on every boot, which
+  grows ROOT up to the next partition and ext4 with it: about 26 GiB for
+  the journal and `/etc`. Resizing ROOT in the Ignition would leave its
+  ext4 at 1.75 GiB, since `extend-filesystems` only grows a filesystem
+  when its own `cgpt resize` moved the partition's end (flatcar/Flatcar#462).
+- **The OS disk is a by-id link.** The Ignition partitions the disk it
+  names at first boot, and `/dev/nvme0n1` in the live image can be
+  `/dev/nvme1n1` in the installed system. Not a partition's link, and
+  not device mapper's, md's or LVM's, whose partitions aren't the link's
+  `-part10`. Flatcar's initrd has no stable
+  boot-disk link like Fedora CoreOS's `coreos-boot-disk`. The data
+  device is that link's `-part10`, which `srv-crew.mount` mounts too: a
+  data disk left from a box added with one has the `crew-data` label as
+  well.
+- **A first boot formats it, whatever is on it.** The partition outlives
+  `flatcar-install`, so a machine added again would otherwise come back
+  as the box it was, with its identity and Tailscale node. The provision
+  Ignition writes `/etc/crew-box/fresh-data` (0600), and
+  `format-data.sh --partition` wipes the partition (`wipefs -a`), formats
+  it, and deletes the marker.
+- **The filesystem stops 16 MiB short of the disk's end**
+  (`mkfs.xfs -d size=`), which `flatcar-install` zeroes (the last
+  512 KiB) before it writes the image.
+- **It needs a disk of at least 128 GiB** (a drive sold as 128 GB is
+  119 GiB). Under that, first boot fails with a `crew-box:` line saying
+  so: past the first 32 GiB, it barely holds one `crew-m` VM.
+- **Nothing after the first boot formats it.** Without the marker, a
+  partition with no `crew-data` filesystem fails the boot with a
+  `crew-box:` line saying the box has to be added again.
+
 **Reprovision Ignition:** the box page offers a version with no join token
 and no Tailscale key, for OS-disk replacement. It mounts the existing data
 disk and starts the installed agent.
+- On a one-disk box, it carries the same `storage.disks` entry and no
+  marker. Ignition adds partition 10 back at the same start without
+  touching what's on it, and the box comes back with its data.
+- **Only that Ignition keeps a one-disk box's data.** `flatcar-install`
+  writes the image's own partition table, without partition 10. Booted
+  with any other config, nothing adds it back, `extend-filesystems`
+  grows ROOT to the end of the disk, and `resize2fs` writes over the old
+  XFS. The box page says so.
+- The disks are the ones on the token that enrolled the box last.
+- The box page shows the OS disk the box was added with in its
+  `flatcar-install` command, and takes another. A box added before the
+  OS disk was asked for can still download its Ignition. Its install
+  command appears once the operator enters the OS disk's by-id path.
 - Tailscale state lives on the data disk (`/srv/crew/tailscale`), so the
   node keeps its identity.
 - On `linux-vm` and `mac-vm`, `crew-box reimage <file>` (§12.3) applies
@@ -2074,7 +2141,7 @@ curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-vm.sh   | sudo sh -s -- --tok
 
 | Disk | Contents |
 |---|---|
-| OS disk | Flatcar plus `/etc` from Ignition. Crew writes nothing else there. |
+| OS disk | Flatcar (partitions 1 to 9) plus `/etc` from Ignition. Crew writes nothing else there, except on a one-disk `linux-metal` box, whose data disk is partition 10, from 32 GiB to the end (§12.2). |
 | Data disk (`/srv/crew`, XFS `reflink=1`) | Three XFS project quotas: `vms/` + `jail/` (the **clone area**, `vm_area_mib` = the quota), `cache/` (`CREW_CACHE_MAX_GIB`, default 25% of the disk), and `agent/` + `images/` (the rest). One area filling up can't starve the others. |
 
 ### 12.5 Clones and the disk watchdog
