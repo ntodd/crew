@@ -13,6 +13,18 @@ defmodule CrewWeb.SizingLiveTest do
     }
   end
 
+  test "the initial HTTP response shows loading states before either report runs", %{conn: conn} do
+    html = conn |> get(~p"/sizing") |> html_response(200) |> LazyHTML.from_document()
+
+    assert LazyHTML.text(LazyHTML.query(html, "#sizing-fleet-status")) =~ "Loading fleet totals"
+
+    assert LazyHTML.text(LazyHTML.query(html, "#sizing-changes-status")) =~
+             "Checking recent size changes"
+
+    assert LazyHTML.query(html, "#sizing-reserved, #sizing-hints-empty, #sizing-repos-empty")
+           |> Enum.empty?()
+  end
+
   test "the week's totals, each repo's share and every hint, the most to free first", %{
     conn: conn,
     repo: repo,
@@ -29,6 +41,7 @@ defmodule CrewWeb.SizingLiveTest do
     summarized_job_fixture(repo, name: "e2e", oom: true, conclusion: "failure")
 
     {:ok, view, _} = live(conn, ~p"/sizing")
+    render_async(view)
 
     # 10-minute runs: 6 on m (8 GiB) and 5 on l (16 GiB), 21.3 GiB-hours.
     assert has_element?(view, "#sizing-reserved", "21.3")
@@ -77,6 +90,7 @@ defmodule CrewWeb.SizingLiveTest do
     summarized_job_fixture(repo, name: "e2e", oom: true, conclusion: "failure")
 
     {:ok, view, _} = live(conn, ~p"/sizing")
+    render_async(view)
     assert has_element?(view, "#sizing-totals", "Applying the hints would take")
     assert has_element?(view, "#sizing-net", "1.3")
     assert has_element?(view, "#sizing-hints", "takes 1.3 GiB-hours a week")
@@ -95,12 +109,14 @@ defmodule CrewWeb.SizingLiveTest do
     })
 
     {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+    render_async(view)
     assert has_element?(view, "#sizing-repos", repo.full_name)
     refute render(view) =~ other.full_name
   end
 
   test "with no runs to go on, it says so", %{conn: conn} do
     {:ok, view, _} = live(conn, ~p"/sizing")
+    render_async(view)
     assert has_element?(view, "#sizing-hints-empty")
     assert has_element?(view, "#sizing-repos-empty")
     assert has_element?(view, "#sizing-reserved", "0")
@@ -126,6 +142,7 @@ defmodule CrewWeb.SizingLiveTest do
       newest = for(h <- [40, 30, 20], do: ran(repo, h, 590, [])) |> List.last()
 
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       row = "#sizing-change-#{newest.id}"
       assert has_element?(view, row, "CI · test")
       assert has_element?(view, row, repo.full_name)
@@ -147,6 +164,7 @@ defmodule CrewWeb.SizingLiveTest do
       killed = ran(other, 10, 60, oom: true, conclusion: "failure")
 
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       assert has_element?(view, "#sizing-change-#{slow.id}", "17% slower")
       assert has_element?(view, "#sizing-change-#{killed.id}", "Killed for memory on m")
     end
@@ -159,6 +177,7 @@ defmodule CrewWeb.SizingLiveTest do
       newest = for(h <- [40, 30, 20], do: ran(repo, h, 5, [])) |> List.last()
 
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       assert has_element?(view, "#sizing-change-#{newest.id}", "Slower")
       refute has_element?(view, "#sizing-change-#{newest.id}", "% slower")
     end
@@ -166,6 +185,7 @@ defmodule CrewWeb.SizingLiveTest do
     test "nothing when no job moved", %{conn: conn, repo: repo} do
       summarized_jobs_fixture(repo, 5)
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       refute has_element?(view, "#sizing-changes")
     end
   end
@@ -182,6 +202,7 @@ defmodule CrewWeb.SizingLiveTest do
       summarized_jobs_fixture(other, 5, @busy)
 
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       shape = "#sizing-custom-4-2048-20"
       assert has_element?(view, shape, "4 vCPU · 2.0 GiB · 20 GiB disk")
       assert has_element?(view, shape, "2 jobs")
@@ -218,10 +239,12 @@ defmodule CrewWeb.SizingLiveTest do
       })
 
       {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+      render_async(view)
       refute has_element?(view, "#sizing-custom")
 
       summarized_jobs_fixture(repo, 5, @busy)
       {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+      render_async(view)
       assert has_element?(view, "#sizing-custom", "An admin can add it")
       refute has_element?(view, "#sizing-custom a[href^='/admin/sizes']")
     end
@@ -234,6 +257,7 @@ defmodule CrewWeb.SizingLiveTest do
       row = "#sizing-#{newest.id}"
 
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       assert has_element?(view, "#sizing-hints #{row}", "Try xs")
       refute has_element?(view, "#sizing-dismissed-toggle")
 
@@ -242,6 +266,8 @@ defmodule CrewWeb.SizingLiveTest do
       view
       |> form("#{row}-dismiss", %{"reason" => "xs made the tests flaky"})
       |> render_submit()
+
+      render_async(view)
 
       refute has_element?(view, "#sizing-hints #{row}")
       assert has_element?(view, "#sizing-hints-empty", "every hint is dismissed")
@@ -257,6 +283,7 @@ defmodule CrewWeb.SizingLiveTest do
       assert has_element?(view, dismissed, "xs made the tests flaky")
 
       view |> element("#{dismissed} button", "Restore") |> render_click()
+      render_async(view)
       assert has_element?(view, "#sizing-hints #{row}", "Try xs")
       refute has_element?(view, "#sizing-dismissed-toggle")
     end
@@ -266,6 +293,7 @@ defmodule CrewWeb.SizingLiveTest do
       row = "#sizing-#{newest.id}"
 
       {:ok, view, _} = live(conn, ~p"/sizing")
+      render_async(view)
       view |> element("#{row} button", "Dismiss") |> render_click()
       assert has_element?(view, "#{row}-dismiss")
       view |> element("#{row}-dismiss button", "Cancel") |> render_click()
@@ -298,6 +326,7 @@ defmodule CrewWeb.SizingLiveTest do
       })
 
       {:ok, view, _} = live(log_in(build_conn(), member), ~p"/sizing")
+      render_async(view)
       refute has_element?(view, "#sizing-hints button", "Dismiss")
       view |> element("#sizing-dismissed-toggle") |> render_click()
       assert has_element?(view, "#sizing-dismissed-#{newest.id}", "flaky")
@@ -305,6 +334,7 @@ defmodule CrewWeb.SizingLiveTest do
 
       # Nor by sending the events.
       render_hook(view, "dismiss_hint", %{"job_id" => newest.id, "reason" => ""})
+      render_async(view)
       assert has_element?(view, "#sizing-hints", "Needs more memory")
       d = Crew.Sizing.dismissal(newest, Crew.Sizing.for_job(newest))
       assert render_hook(view, "restore_hint", %{"id" => d.id}) =~ "Only admins"

@@ -18,17 +18,33 @@ defmodule CrewWeb.SizingLive do
      socket
      |> assign(:page_title, "Right-sizing")
      |> assign(:admin, Crew.Scope.admin?(socket.assigns.current_scope))
-     |> assign(:fleet, fleet(socket.assigns.current_scope))
-     |> assign(:changes, Sizing.changes(socket.assigns.current_scope))
+     |> load_fleet()
+     |> load_changes()
      |> SizingActions.mount()}
   end
 
   @impl true
   def handle_event(event, params, socket) when event in @sizing_events,
-    do:
-      SizingActions.handle(event, params, socket, fn socket ->
-        assign(socket, :fleet, fleet(socket.assigns.current_scope))
-      end)
+    do: SizingActions.handle(event, params, socket, &load_fleet/1)
+
+  def handle_event("retry_fleet", _, %{assigns: %{fleet: %{failed: failed}}} = socket)
+      when not is_nil(failed), do: {:noreply, load_fleet(socket)}
+
+  def handle_event("retry_changes", _, %{assigns: %{changes: %{failed: failed}}} = socket)
+      when not is_nil(failed), do: {:noreply, load_changes(socket)}
+
+  def handle_event(event, _, socket) when event in ["retry_fleet", "retry_changes"],
+    do: {:noreply, socket}
+
+  defp load_fleet(socket) do
+    scope = socket.assigns.current_scope
+    assign_async(socket, :fleet, fn -> {:ok, %{fleet: fleet(scope)}} end, reset: true)
+  end
+
+  defp load_changes(socket) do
+    scope = socket.assigns.current_scope
+    assign_async(socket, :changes, fn -> {:ok, %{changes: Sizing.changes(scope)}} end)
+  end
 
   # The fleet, each hint with its issue (`CrewWeb.SizingIssue`), and each
   # repo with one for its hints.
@@ -98,207 +114,272 @@ defmodule CrewWeb.SizingLive do
       <.header>
         Right-sizing
         <:subtitle>
-          The memory Crew's jobs reserved over the last {@fleet.days} days, the most they used, and the sizes that would fit them better.
+          The memory Crew's jobs reserved over the last week, the most they used, and the sizes that would fit them better.
         </:subtitle>
       </.header>
 
-      <section id="sizing-totals" class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-          <p class="text-xs text-ink-3">Reserved</p>
-          <p id="sizing-reserved" class="text-2xl font-semibold tabular-nums text-ink">
-            {gib_h(@fleet.reserved_gib_h)}
-          </p>
-          <p class="text-xs text-ink-3">GiB-hours</p>
-        </div>
-        <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-          <p class="text-xs text-ink-3">Peak used</p>
-          <p id="sizing-used" class="text-2xl font-semibold tabular-nums text-ink">
-            {gib_h(@fleet.used_gib_h)}
-          </p>
-          <p class="text-xs text-ink-3">
-            {share(@fleet.used_gib_h, @fleet.reserved_gib_h) || "GiB-hours"}
-          </p>
-        </div>
-        <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-          <p class="text-xs text-ink-3">
-            Applying the hints would {if @fleet.net_gib_h < 0, do: "take", else: "free"}
-          </p>
-          <p id="sizing-net" class="text-2xl font-semibold tabular-nums text-ink">
-            {gib_h(abs(@fleet.net_gib_h))}
-          </p>
-          <p class="text-xs text-ink-3">{change(@fleet)}</p>
-        </div>
-        <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-          <p class="text-xs text-ink-3">Need more memory</p>
-          <p id="sizing-needs-more" class="text-2xl font-semibold tabular-nums text-ink">
-            {@fleet.needs_more}
-          </p>
-          <p class="text-xs text-ink-3">{if @fleet.needs_more == 1, do: "job", else: "jobs"}</p>
-        </div>
-      </section>
-
-      <.panel id="sizing-hints-panel" title="Hints" class="mb-4">
-        <:subtitle>
-          Each job's suggestion from its last runs, the most memory it would free in a week first.
-        </:subtitle>
-        <p :if={@fleet.hints == []} id="sizing-hints-empty" class="text-sm text-ink-3">
-          <%= if @fleet.dismissed == [] do %>
-            Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
-          <% else %>
-            Nothing left to change: every hint is dismissed.
-          <% end %>
-        </p>
-        <SizingComponents.hint_list
-          :if={@fleet.hints != []}
-          hints={@fleet.hints}
+      <.async_result :let={fleet} assign={@fleet}>
+        <:loading>
+          <.report_status id="sizing-fleet-status">Loading fleet totals and hints…</.report_status>
+        </:loading>
+        <:failed>
+          <.report_status id="sizing-fleet-status" retry="retry_fleet">
+            Fleet totals and hints couldn’t load.
+          </.report_status>
+        </:failed>
+        <.fleet_overview
+          fleet={fleet}
           admin={@admin}
           dismissing={@dismissing}
-          repo
+          show_dismissed={@show_dismissed}
         />
-        <SizingComponents.dismissed_list
-          hints={@fleet.dismissed}
-          open={@show_dismissed}
-          admin={@admin}
-          repo
-        />
-      </.panel>
+      </.async_result>
 
-      <.panel
-        :if={@fleet.custom != []}
-        id="sizing-custom"
-        title="Sizes that would fit"
-        class="mb-4"
-      >
-        <:subtitle>
-          The custom hints by the shape they'd fit: one size an admin adds can serve all of a shape's jobs.
-        </:subtitle>
-        <ul class="-my-3 divide-y divide-line">
-          <li
-            :for={c <- @fleet.custom}
-            id={"sizing-custom-#{c.shape.vcpus}-#{c.shape.memory_mib}-#{c.shape.disk_gib}"}
-            class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] sm:items-start"
-          >
-            <div class="min-w-0">
-              <p class="text-sm font-medium text-ink">{SizingComponents.shape(c.shape)}</p>
-              <p class="mt-0.5 text-xs text-ink-3">
-                {length(c.hints)} {if length(c.hints) == 1, do: "job", else: "jobs"}
-              </p>
-            </div>
-            <ul class="min-w-0 space-y-0.5 text-xs">
-              <li :for={h <- c.hints} class="truncate">
-                <.link
-                  navigate={
-                    ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
-                  }
-                  class="text-ink-2 underline-offset-2 hover:text-ink hover:underline"
-                >
-                  {h.workflow_name} · {h.name}
-                </.link>
-                <span class="text-ink-3">{h.repo.full_name}</span>
-              </li>
-            </ul>
-            <div class="space-y-1 sm:text-right">
-              <p :if={c.freed_gib_h > 0} class="whitespace-nowrap text-xs text-ink-2">
-                frees {gib_h(c.freed_gib_h)} GiB-hours a week
-              </p>
-              <.link
-                :if={@admin}
-                href={SizingComponents.add_size_path(c.shape, Enum.map(c.hints, & &1.repo.id))}
-                class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
-              >
-                Add this size
-              </.link>
-              <p :if={!@admin} class="text-xs text-ink-3">An admin can add it on Sizes & labels.</p>
-            </div>
-          </li>
-        </ul>
-      </.panel>
+      <.async_result :let={changes} assign={@changes}>
+        <:loading>
+          <.report_status id="sizing-changes-status">Checking recent size changes…</.report_status>
+        </:loading>
+        <:failed>
+          <.report_status id="sizing-changes-status" retry="retry_changes">
+            Size changes couldn’t load.
+          </.report_status>
+        </:failed>
+        <.size_changes changes={changes} />
+      </.async_result>
 
-      <.panel :if={@changes != []} id="sizing-changes" title="Size changes" class="mb-4">
-        <:subtitle>
-          Jobs that moved to a new size in the last 30 days, and how their runs went since: those that got slower or ran out of memory first.
-        </:subtitle>
-        <ul class="-my-3 divide-y divide-line">
-          <li
-            :for={c <- @changes}
-            id={"sizing-change-#{c.job.id}"}
-            class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] sm:items-start"
-          >
-            <div class="min-w-0">
+      <.async_result :let={fleet} assign={@fleet}>
+        <.repo_breakdown fleet={fleet} />
+      </.async_result>
+    </Layouts.app>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :retry, :string, default: nil
+  slot :inner_block, required: true
+
+  defp report_status(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      role="status"
+      class="mb-4 flex items-center gap-3 rounded-xl border border-line bg-raised p-4 text-sm text-ink-2"
+    >
+      <.icon :if={!@retry} name="hero-arrow-path" class="size-4 motion-safe:animate-spin" />
+      {render_slot(@inner_block)}
+      <button :if={@retry} type="button" phx-click={@retry} class="font-medium text-ink underline">
+        Retry
+      </button>
+    </div>
+    """
+  end
+
+  defp fleet_overview(assigns) do
+    ~H"""
+    <section id="sizing-totals" class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
+        <p class="text-xs text-ink-3">Reserved</p>
+        <p id="sizing-reserved" class="text-2xl font-semibold tabular-nums text-ink">
+          {gib_h(@fleet.reserved_gib_h)}
+        </p>
+        <p class="text-xs text-ink-3">GiB-hours</p>
+      </div>
+      <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
+        <p class="text-xs text-ink-3">Peak used</p>
+        <p id="sizing-used" class="text-2xl font-semibold tabular-nums text-ink">
+          {gib_h(@fleet.used_gib_h)}
+        </p>
+        <p class="text-xs text-ink-3">
+          {share(@fleet.used_gib_h, @fleet.reserved_gib_h) || "GiB-hours"}
+        </p>
+      </div>
+      <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
+        <p class="text-xs text-ink-3">
+          Applying the hints would {if @fleet.net_gib_h < 0, do: "take", else: "free"}
+        </p>
+        <p id="sizing-net" class="text-2xl font-semibold tabular-nums text-ink">
+          {gib_h(abs(@fleet.net_gib_h))}
+        </p>
+        <p class="text-xs text-ink-3">{change(@fleet)}</p>
+      </div>
+      <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
+        <p class="text-xs text-ink-3">Need more memory</p>
+        <p id="sizing-needs-more" class="text-2xl font-semibold tabular-nums text-ink">
+          {@fleet.needs_more}
+        </p>
+        <p class="text-xs text-ink-3">{if @fleet.needs_more == 1, do: "job", else: "jobs"}</p>
+      </div>
+    </section>
+
+    <.panel id="sizing-hints-panel" title="Hints" class="mb-4">
+      <:subtitle>
+        Each job's suggestion from its last runs, the most memory it would free in a week first.
+      </:subtitle>
+      <p :if={@fleet.hints == []} id="sizing-hints-empty" class="text-sm text-ink-3">
+        <%= if @fleet.dismissed == [] do %>
+          Nothing to change. A job needs 5 complete runs on its size before Crew suggests a smaller one.
+        <% else %>
+          Nothing left to change: every hint is dismissed.
+        <% end %>
+      </p>
+      <SizingComponents.hint_list
+        :if={@fleet.hints != []}
+        hints={@fleet.hints}
+        admin={@admin}
+        dismissing={@dismissing}
+        repo
+      />
+      <SizingComponents.dismissed_list
+        hints={@fleet.dismissed}
+        open={@show_dismissed}
+        admin={@admin}
+        repo
+      />
+    </.panel>
+
+    <.panel
+      :if={@fleet.custom != []}
+      id="sizing-custom"
+      title="Sizes that would fit"
+      class="mb-4"
+    >
+      <:subtitle>
+        The custom hints by the shape they'd fit: one size an admin adds can serve all of a shape's jobs.
+      </:subtitle>
+      <ul class="-my-3 divide-y divide-line">
+        <li
+          :for={c <- @fleet.custom}
+          id={"sizing-custom-#{c.shape.vcpus}-#{c.shape.memory_mib}-#{c.shape.disk_gib}"}
+          class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] sm:items-start"
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-ink">{SizingComponents.shape(c.shape)}</p>
+            <p class="mt-0.5 text-xs text-ink-3">
+              {length(c.hints)} {if length(c.hints) == 1, do: "job", else: "jobs"}
+            </p>
+          </div>
+          <ul class="min-w-0 space-y-0.5 text-xs">
+            <li :for={h <- c.hints} class="truncate">
               <.link
                 navigate={
-                  ~p"/runs/#{c.job.github_run_id}/attempts/#{c.job.run_attempt}/jobs/#{c.job.github_id}"
+                  ~p"/runs/#{h.job.github_run_id}/attempts/#{h.job.run_attempt}/jobs/#{h.job.github_id}"
                 }
-                class="text-sm font-medium text-ink underline-offset-2 hover:underline"
+                class="text-ink-2 underline-offset-2 hover:text-ink hover:underline"
               >
-                {c.workflow_name} · {c.name}
+                {h.workflow_name} · {h.name}
               </.link>
-              <p class="mt-0.5 truncate text-xs text-ink-3">{c.repo.full_name}</p>
-              <p class="text-xs text-ink-3">since {Calendar.strftime(c.changed_at, "%b %-d")}</p>
-            </div>
-            <div class="min-w-0">
-              <% {color, text} = outcome(c) %>
-              <.badge color={color}>{text}</.badge>
-              <p class="mt-1 text-xs text-ink-2">
-                {SizingComponents.shape(c.from)} → {SizingComponents.shape(c.to)}
-              </p>
-              <p class="text-xs text-ink-3">
-                {if medians(c), do: medians(c) <> " · "}{c.runs_before} {if c.runs_before == 1,
-                  do: "run",
-                  else: "runs"} before, {c.runs_after} since
-              </p>
-            </div>
-            <p class="whitespace-nowrap text-xs text-ink-2 sm:text-right">
-              {cond do
-                c.freed_gib_h > 0 -> "frees #{gib_h(c.freed_gib_h)} GiB-hours a week"
-                c.freed_gib_h < 0 -> "takes #{gib_h(-c.freed_gib_h)} GiB-hours a week"
-                true -> nil
-              end}
+              <span class="text-ink-3">{h.repo.full_name}</span>
+            </li>
+          </ul>
+          <div class="space-y-1 sm:text-right">
+            <p :if={c.freed_gib_h > 0} class="whitespace-nowrap text-xs text-ink-2">
+              frees {gib_h(c.freed_gib_h)} GiB-hours a week
             </p>
-          </li>
-        </ul>
-      </.panel>
-
-      <.panel id="sizing-repos" title="By repo">
-        <:subtitle>Over the last {@fleet.days} days, in GiB-hours.</:subtitle>
-        <p :if={@fleet.repos == []} id="sizing-repos-empty" class="text-sm text-ink-3">
-          No runs with resource summaries yet.
-        </p>
-        <.table :if={@fleet.repos != []} id="sizing-repo-rows" rows={@fleet.repos}>
-          <:col :let={r} label="Repo">
             <.link
-              navigate={~p"/repos/#{r.repo.id}"}
-              class="font-medium text-ink underline-offset-2 hover:underline"
+              :if={@admin}
+              href={SizingComponents.add_size_path(c.shape, Enum.map(c.hints, & &1.repo.id))}
+              class="whitespace-nowrap text-xs text-ink-2 underline-offset-2 hover:text-ink hover:underline"
             >
-              {r.repo.full_name}
+              Add this size
             </.link>
-            <SizingComponents.issue_actions
-              :if={r.issue}
-              id={"sizing-repo-#{r.repo.id}-issue"}
-              issue={r.issue}
-              compact
-              align="start"
-              class="mt-1 flex-col items-start sm:flex-row sm:items-center"
-            />
-          </:col>
-          <:col :let={r} label="Runs" align="right" class="hidden tabular-nums sm:table-cell">
-            {r.runs}
-          </:col>
-          <:col :let={r} label="Reserved" align="right" class="hidden tabular-nums sm:table-cell">
-            {gib_h(r.reserved_gib_h)}
-          </:col>
-          <:col :let={r} label="Peak used" align="right" class="whitespace-nowrap tabular-nums">
-            {gib_h(r.used_gib_h)}
-            <span :if={r.reserved_gib_h > 0} class="text-ink-3">
-              ({round(r.used_gib_h / r.reserved_gib_h * 100)}%)
-            </span>
-          </:col>
-          <:col :let={r} label="Hints, net" align="right" class="whitespace-nowrap tabular-nums">
-            {net(r.net_gib_h)}
-          </:col>
-        </.table>
-      </.panel>
-    </Layouts.app>
+            <p :if={!@admin} class="text-xs text-ink-3">An admin can add it on Sizes & labels.</p>
+          </div>
+        </li>
+      </ul>
+    </.panel>
+    """
+  end
+
+  defp size_changes(assigns) do
+    ~H"""
+    <.panel :if={@changes != []} id="sizing-changes" title="Size changes" class="mb-4">
+      <:subtitle>
+        Jobs that moved to a new size in the last 30 days, and how their runs went since: those that got slower or ran out of memory first.
+      </:subtitle>
+      <ul class="-my-3 divide-y divide-line">
+        <li
+          :for={c <- @changes}
+          id={"sizing-change-#{c.job.id}"}
+          class="grid gap-x-6 gap-y-1.5 py-3 sm:grid-cols-[minmax(0,15rem)_minmax(0,1fr)_auto] sm:items-start"
+        >
+          <div class="min-w-0">
+            <.link
+              navigate={
+                ~p"/runs/#{c.job.github_run_id}/attempts/#{c.job.run_attempt}/jobs/#{c.job.github_id}"
+              }
+              class="text-sm font-medium text-ink underline-offset-2 hover:underline"
+            >
+              {c.workflow_name} · {c.name}
+            </.link>
+            <p class="mt-0.5 truncate text-xs text-ink-3">{c.repo.full_name}</p>
+            <p class="text-xs text-ink-3">since {Calendar.strftime(c.changed_at, "%b %-d")}</p>
+          </div>
+          <div class="min-w-0">
+            <% {color, text} = outcome(c) %>
+            <.badge color={color}>{text}</.badge>
+            <p class="mt-1 text-xs text-ink-2">
+              {SizingComponents.shape(c.from)} → {SizingComponents.shape(c.to)}
+            </p>
+            <p class="text-xs text-ink-3">
+              {if medians(c), do: medians(c) <> " · "}{c.runs_before} {if c.runs_before == 1,
+                do: "run",
+                else: "runs"} before, {c.runs_after} since
+            </p>
+          </div>
+          <p class="whitespace-nowrap text-xs text-ink-2 sm:text-right">
+            {cond do
+              c.freed_gib_h > 0 -> "frees #{gib_h(c.freed_gib_h)} GiB-hours a week"
+              c.freed_gib_h < 0 -> "takes #{gib_h(-c.freed_gib_h)} GiB-hours a week"
+              true -> nil
+            end}
+          </p>
+        </li>
+      </ul>
+    </.panel>
+    """
+  end
+
+  defp repo_breakdown(assigns) do
+    ~H"""
+    <.panel id="sizing-repos" title="By repo">
+      <:subtitle>Over the last {@fleet.days} days, in GiB-hours.</:subtitle>
+      <p :if={@fleet.repos == []} id="sizing-repos-empty" class="text-sm text-ink-3">
+        No runs with resource summaries yet.
+      </p>
+      <.table :if={@fleet.repos != []} id="sizing-repo-rows" rows={@fleet.repos}>
+        <:col :let={r} label="Repo">
+          <.link
+            navigate={~p"/repos/#{r.repo.id}"}
+            class="font-medium text-ink underline-offset-2 hover:underline"
+          >
+            {r.repo.full_name}
+          </.link>
+          <SizingComponents.issue_actions
+            :if={r.issue}
+            id={"sizing-repo-#{r.repo.id}-issue"}
+            issue={r.issue}
+            compact
+            align="start"
+            class="mt-1 flex-col items-start sm:flex-row sm:items-center"
+          />
+        </:col>
+        <:col :let={r} label="Runs" align="right" class="hidden tabular-nums sm:table-cell">
+          {r.runs}
+        </:col>
+        <:col :let={r} label="Reserved" align="right" class="hidden tabular-nums sm:table-cell">
+          {gib_h(r.reserved_gib_h)}
+        </:col>
+        <:col :let={r} label="Peak used" align="right" class="whitespace-nowrap tabular-nums">
+          {gib_h(r.used_gib_h)}
+          <span :if={r.reserved_gib_h > 0} class="text-ink-3">
+            ({round(r.used_gib_h / r.reserved_gib_h * 100)}%)
+          </span>
+        </:col>
+        <:col :let={r} label="Hints, net" align="right" class="whitespace-nowrap tabular-nums">
+          {net(r.net_gib_h)}
+        </:col>
+      </.table>
+    </.panel>
     """
   end
 end

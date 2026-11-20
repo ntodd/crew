@@ -167,6 +167,24 @@ test("a run killed for memory asks for more", async ({page}) => {
   await shot(page, layer, "job-larger")
 })
 
+test("the first response shows the page while its reports are pending", async ({page}) => {
+  await signIn(page)
+  // Inspect the HTTP response before LiveView can connect.
+  const scripts = /\.js(?:\?|$)/
+  await page.route(scripts, route => route.abort())
+  await page.goto("/sizing")
+  await expect(page.getByRole("heading", {name: "Right-sizing", exact: true})).toBeVisible()
+  await expect(page.locator("#sizing-fleet-status")).toBeVisible()
+  await expect(page.locator("#sizing-changes-status")).toBeVisible()
+  await expect(page.locator("#sizing-reserved")).toHaveCount(0)
+  await shot(page, layer, "fleet-loading")
+
+  await page.unroute(scripts)
+  await page.reload()
+  await expect(page.locator("#sizing-hints > li")).toHaveCount(4)
+  await expect(page.locator("#sizing-changes")).toBeVisible()
+})
+
 test("the right-sizing page: the week's memory, each repo's share, every hint", async ({page}) => {
   await signIn(page)
   await page.getByRole("link", {name: "Right-sizing"}).click()

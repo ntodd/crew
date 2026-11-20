@@ -420,165 +420,190 @@ defmodule Crew.Sizing do
     sizes = Sizes.list()
     week = DateTime.add(now, -@week_days * 86_400)
 
-    newest =
-      ids
-      |> recent_jobs(since, nil, 1)
-      |> Enum.filter(&(is_integer(&1.vcpus) and is_integer(&1.memory_mib)))
+    ids
+    |> shape_heads(far)
+    |> Enum.group_by(&{&1.repo_id, &1.workflow_name, &1.name})
+    |> Enum.flat_map(fn {_, [newest | others]} ->
+      old = Enum.find(others, &shaped?/1)
 
-    last_other = last_other_shapes(newest, far)
+      if old && shaped?(newest) && DateTime.compare(newest.completed_at, since) != :lt,
+        do: [{newest, old}],
+        else: []
+    end)
+    # Two indexed ranges per job. Bound both the UNION and its parameter count.
+    |> Enum.chunk_every(40)
+    |> Enum.flat_map(fn moves ->
+      stats = move_stats(moves, far, week)
 
-    newest
-    |> Enum.flat_map(fn job ->
-      case Map.get(last_other, job.id) do
-        nil -> []
-        old -> change(job, old, since, far, sizes, week, by_id)
+      for {job, old} <- moves,
+          %{started_at: first} = after_move when not is_nil(first) <- [stats[{old.id, true}]],
+          before when not is_nil(before) <- [stats[{old.id, false}]],
+          DateTime.compare(first, since) != :lt do
+        size_change(job, old, before, after_move, sizes, by_id)
       end
     end)
     |> Enum.sort_by(&{not (&1.slower or &1.ooms > 0), -DateTime.to_unix(&1.changed_at)})
   end
 
-  # For each of `newest` (a job's newest run) with a run on another shape
-  # since `far`, the newest such run: its shape, and when it finished and
-  # its id, which order runs that finish in the same second.
-  defp last_other_shapes([], _far), do: %{}
-
-  defp last_other_shapes(newest, far) do
-    newest
-    |> Enum.map(& &1.id)
-    |> Enum.chunk_every(500)
-    |> Enum.flat_map(fn ids ->
-      other =
-        from(j in Job,
-          join: n in Job,
-          on: ^same_job_as_newest(ids),
-          where: ^on_another_shape(far),
-          windows: [per_job: [partition_by: n.id, order_by: [desc: j.completed_at, desc: j.id]]],
-          select: %{
-            newest: n.id,
-            vcpus: j.vcpus,
-            memory_mib: j.memory_mib,
-            completed_at: j.completed_at,
-            id: j.id,
-            rank: over(row_number(), :per_job)
-          }
-        )
-
-      Repo.all(from o in subquery(other), where: o.rank == 1)
-    end)
-    |> Map.new(&{&1.newest, &1})
+  defp size_change(job, old, before, after_move, sizes, by_id) do
+    %{
+      repo: Map.fetch!(by_id, job.repo_id),
+      workflow_name: job.workflow_name,
+      name: job.name,
+      job: job,
+      from: named(old, sizes),
+      to: named(job, sizes),
+      changed_at: after_move.started_at,
+      runs_before: before.count,
+      runs_after: after_move.count,
+      median_before_s: before.median,
+      median_after_s: after_move.median,
+      slower:
+        is_integer(before.median) and is_integer(after_move.median) and
+          after_move.median > before.median * @slower,
+      ooms: after_move.ooms,
+      freed_gib_h: (old.memory_mib - job.memory_mib) * after_move.week_seconds / @mib_hour
+    }
   end
 
-  # A run (`j`) of the same job as one of the newest runs `ids` (`n`):
-  # its repo, workflow and name, either of which may be null.
-  defp same_job_as_newest(ids) do
-    dynamic(
-      [j, n],
-      n.id in ^ids and n.repo_id == j.repo_id and
-        (n.name == j.name or (is_nil(n.name) and is_nil(j.name))) and
-        (n.workflow_name == j.workflow_name or
-           (is_nil(n.workflow_name) and is_nil(j.workflow_name)))
+  defp shaped?(job), do: is_integer(job.vcpus) and is_integer(job.memory_mib)
+
+  # One row per distinct shape, newest first. Keep unshaped runs here:
+  # if the newest hasn't reported its shape, there is no move to show.
+  defp shape_heads([], _far), do: []
+
+  defp shape_heads(ids, far) do
+    heads =
+      from j in Job,
+        where:
+          j.repo_id in ^ids and j.classification == "ours" and j.gh_state == "completed" and
+            j.completed_at >= ^far,
+        windows: [
+          shape: [
+            partition_by: [j.repo_id, j.workflow_name, j.name, j.vcpus, j.memory_mib],
+            order_by: [desc: j.completed_at, desc: j.id]
+          ]
+        ],
+        select: %{id: j.id, rank: over(row_number(), :shape)}
+
+    Repo.all(
+      from h in subquery(heads),
+        join: j in Job,
+        on: h.id == j.id,
+        left_join: a in RunAttempt,
+        on: a.id == j.run_attempt_id,
+        where: h.rank == 1,
+        order_by: [desc: j.completed_at, desc: j.id],
+        select: merge(map(j, ^@job_fields), %{workflow_path: a.workflow_path})
     )
   end
 
-  # A finished Crew run since `far` whose shape isn't the newest run's.
-  defp on_another_shape(far) do
-    dynamic(
-      [j, n],
-      j.classification == "ours" and j.gh_state == "completed" and j.completed_at >= ^far and
-        not is_nil(j.vcpus) and not is_nil(j.memory_mib) and
-        (j.vcpus != n.vcpus or j.memory_mib != n.memory_mib)
-    )
-  end
-
-  defp change(job, old, since, far, sizes, week, by_id) do
-    now_shape = %{vcpus: job.vcpus, memory_mib: job.memory_mib}
-    was_shape = %{vcpus: old.vcpus, memory_mib: old.memory_mib}
-    # After the last run on the old shape, in the order runs are ranked.
-    later =
-      runs_on(job, now_shape)
-      |> where(
-        [j],
-        j.completed_at > ^old.completed_at or
-          (j.completed_at == ^old.completed_at and j.id > ^old.id)
-      )
-
-    with %DateTime{} = changed_at <- Repo.one(from j in later, select: min(j.started_at)),
-         false <- DateTime.compare(changed_at, since) == :lt do
-      earlier =
-        runs_on(job, was_shape)
-        |> where([j], j.completed_at >= ^far and j.completed_at <= ^old.completed_at)
-
-      {runs_after, ooms} =
-        Repo.one(
-          from j in later,
-            select: {count(j.id), sum(fragment("CASE WHEN ? THEN 1 ELSE 0 END", j.oom))}
-        )
-
-      before_s = median_success(earlier)
-      after_s = median_success(later)
-
-      [
-        %{
-          repo: Map.fetch!(by_id, job.repo_id),
-          workflow_name: job.workflow_name,
-          name: job.name,
-          job: job,
-          from: named(was_shape, sizes),
-          to: named(now_shape, sizes),
-          changed_at: changed_at,
-          runs_before: Repo.aggregate(earlier, :count),
-          runs_after: runs_after,
-          median_before_s: before_s,
-          median_after_s: after_s,
-          slower: is_integer(before_s) and is_integer(after_s) and after_s > before_s * @slower,
-          ooms: ooms || 0,
-          freed_gib_h: (old.memory_mib - job.memory_mib) * seconds_since(later, week) / @mib_hour
+  # Two indexed ranges per move: runs on the previous shape up to its
+  # last run, and runs on the new shape from there through the observed
+  # head. Jobs finishing between the two reads belong to a later report.
+  defp move_runs({job, old}, far) do
+    runs =
+      from(j in Job,
+        where:
+          j.repo_id == ^job.repo_id and j.classification == "ours" and
+            j.gh_state == "completed" and j.completed_at >= ^far,
+        select: %{
+          boundary: type(^old.id, Crew.UUIDv7),
+          id: j.id,
+          oom: j.oom,
+          conclusion: j.conclusion,
+          started_at: j.started_at,
+          completed_at: j.completed_at
         }
-      ]
-    else
-      _ -> []
-    end
+      )
+      |> same_job(job)
+
+    before_move =
+      from j in runs,
+        where:
+          j.vcpus == ^old.vcpus and j.memory_mib == ^old.memory_mib and
+            {j.completed_at, j.id} <= {^old.completed_at, ^old.id},
+        select_merge: %{after_move: false}
+
+    after_move =
+      from j in runs,
+        where:
+          j.vcpus == ^job.vcpus and j.memory_mib == ^job.memory_mib and
+            {j.completed_at, j.id} > {^old.completed_at, ^old.id} and
+            {j.completed_at, j.id} <= {^job.completed_at, ^job.id},
+        select_merge: %{after_move: true}
+
+    union_all(before_move, ^after_move)
   end
 
-  # How long `runs` that finished since `since` ran, all told.
-  defp seconds_since(runs, since) do
-    from(j in runs, where: j.completed_at >= ^since, select: {j.started_at, j.completed_at})
-    |> Repo.all()
-    |> Enum.map(fn {a, b} -> max(duration(a, b) || 0, 0) end)
-    |> Enum.sum()
-  end
+  defp move_stats(moves, far, week) do
+    [first | rest] = Enum.map(moves, &move_runs(&1, far))
+    runs = Enum.reduce(rest, first, fn query, acc -> union_all(acc, ^query) end)
 
-  # A job's finished Crew runs on a shape.
-  defp runs_on(job, %{vcpus: vcpus, memory_mib: memory}) do
-    from(j in Job,
-      where:
-        j.repo_id == ^job.repo_id and j.classification == "ours" and j.gh_state == "completed" and
-          j.vcpus == ^vcpus and j.memory_mib == ^memory
+    # The first row always carries the counts, even if no run succeeded.
+    # Beyond that we need only the newest 30 successes and this week's post-move times.
+    ranked =
+      from r in subquery(runs),
+        windows: [
+          side: [partition_by: [r.boundary, r.after_move]],
+          recent: [
+            partition_by: [r.boundary, r.after_move],
+            order_by: [
+              asc: fragment("CASE WHEN ? = 'success' THEN 0 ELSE 1 END", r.conclusion),
+              desc: r.completed_at,
+              desc: r.id
+            ]
+          ]
+        ],
+        select: %{
+          boundary: r.boundary,
+          after_move: r.after_move,
+          started_at: r.started_at,
+          completed_at: r.completed_at,
+          conclusion: r.conclusion,
+          rank: over(row_number(), :recent),
+          count: over(count(), :side),
+          first_start: over(min(r.started_at), :side),
+          ooms: over(sum(fragment("CASE WHEN ? THEN 1 ELSE 0 END", r.oom)), :side)
+        }
+
+    Repo.all(
+      from r in subquery(ranked),
+        where:
+          r.rank == 1 or (r.rank <= ^@history and r.conclusion == "success") or
+            (r.after_move and r.completed_at >= ^week)
     )
-    |> same_job(job)
-  end
+    |> Enum.group_by(&{&1.boundary, &1.after_move})
+    |> Map.new(fn {key, [first | _] = rows} ->
+      ds =
+        for r <- rows,
+            r.rank <= @history and r.conclusion == "success",
+            d = duration(r.started_at, r.completed_at),
+            is_integer(d) and d >= 0,
+            do: d
 
-  # The median duration of the newest 30 successful runs among `runs`.
-  defp median_success(runs) do
-    from(j in runs,
-      where: j.conclusion == "success",
-      order_by: [desc: j.completed_at, desc: j.id],
-      limit: @history,
-      select: {j.started_at, j.completed_at}
-    )
-    |> Repo.all()
-    |> Enum.map(fn {a, b} -> duration(a, b) end)
-    |> Enum.filter(&(is_integer(&1) and &1 >= 0))
-    |> case do
-      [] -> nil
-      ds -> ds |> Enum.sort() |> Enum.at(div(length(ds), 2))
-    end
+      week_seconds =
+        for r <- rows,
+            r.after_move and DateTime.compare(r.completed_at, week) != :lt,
+            reduce: 0 do
+          sum -> sum + max(seconds(r), 0)
+        end
+
+      {key,
+       %{
+         count: first.count,
+         started_at: first.first_start,
+         ooms: first.ooms,
+         median: Enum.at(Enum.sort(ds), div(length(ds), 2)),
+         week_seconds: week_seconds
+       }}
+    end)
   end
 
   defp named(%{vcpus: vcpus, memory_mib: memory} = shape, sizes),
     do:
       Map.put(
-        shape,
+        Map.take(shape, [:vcpus, :memory_mib]),
         :name,
         Enum.find_value(sizes, &(&1.vcpus == vcpus and &1.memory_mib == memory and &1.name))
       )
@@ -637,10 +662,10 @@ defmodule Crew.Sizing do
   # (with the run's workflow file), and the limit applied in the
   # database, since a busy repo runs thousands of jobs a month. Only
   # those of `job`'s (workflow, name), given one.
-  defp recent_jobs(repo_ids, since, job \\ nil, limit \\ @history)
-  defp recent_jobs([], _since, _job, _limit), do: []
+  defp recent_jobs(repo_ids, since, job \\ nil)
+  defp recent_jobs([], _since, _job), do: []
 
-  defp recent_jobs(repo_ids, since, job, limit) do
+  defp recent_jobs(repo_ids, since, job) do
     ranked =
       from(j in Job,
         where:
@@ -658,7 +683,7 @@ defmodule Crew.Sizing do
 
     from(j in Job,
       join: r in subquery(ranked),
-      on: r.id == j.id and r.rank <= ^limit,
+      on: r.id == j.id and r.rank <= ^@history,
       left_join: a in RunAttempt,
       on: a.id == j.run_attempt_id,
       order_by: [desc: j.completed_at, desc: j.id],
