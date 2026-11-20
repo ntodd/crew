@@ -68,10 +68,12 @@ test("an admin updates, and the page follows the host's updater", async ({page})
   const panel = page.locator("#crew-update")
   const button = page.locator("#update-crew")
   await expect(button).toHaveText("Update to 0.2.0")
+  await expect(page.locator("#update-downtime")).toBeVisible()
   await shot(page, layer, "update-available")
 
   page.once("dialog", dialog => {
     expect(dialog.message()).toContain("Update Crew to 0.2.0 and restart it?")
+    expect(dialog.message()).toMatch(/downtime|dashboard goes offline/i)
     dialog.accept()
   })
   await button.click()

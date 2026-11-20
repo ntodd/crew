@@ -13,7 +13,12 @@ defmodule CrewWeb.DeploymentUpdateTest do
   setup :register_and_log_in_admin
 
   setup %{tmp_dir: dir} do
-    for {key, value} <- [update_dir: dir, update_repo: "ntodd/crew", update_check: true] do
+    for {key, value} <- [
+          update_dir: dir,
+          update_data_dir: Path.join(dir, "data"),
+          update_repo: "ntodd/crew",
+          update_check: true
+        ] do
       previous = Application.fetch_env(:crew, key)
       Application.put_env(:crew, key, value)
 
@@ -57,6 +62,56 @@ defmodule CrewWeb.DeploymentUpdateTest do
 
   defp install_updater(dir), do: File.write!(Path.join([dir, "status", "updater"]), "1\n")
 
+  defp sparse_file(path, bytes) do
+    File.mkdir_p!(Path.dirname(path))
+
+    File.open!(path, [:write, :binary], fn io ->
+      {:ok, _} = :file.position(io, bytes - 1)
+      IO.binwrite(io, <<0>>)
+    end)
+  end
+
+  test "warns about downtime before confirming an update", %{conn: conn, dir: dir} do
+    install_updater(dir)
+    checked(["v" <> next_version()])
+    root = Path.join(dir, "data")
+    sparse_file(Path.join(root, "crew.db"), 1024 ** 3)
+    sparse_file(Path.join(root, "logs/vm/output"), 1024 ** 3)
+    sparse_file(Path.join(root, "nested/images/file"), 1024 ** 3)
+    sparse_file(Path.join(root, "images/guest"), 8 * 1024 ** 3)
+    File.ln_s!("logs", Path.join(root, "linked-logs"))
+
+    {:ok, view, _html} = live(conn, "/admin")
+    render_async(view)
+
+    if Crew.Repo.sqlite?() do
+      assert has_element?(view, "#update-downtime", "3–10 min")
+      assert has_element?(view, "#update-downtime", "3.0 GiB")
+      assert has_element?(view, ~s(#update-crew[data-confirm*="3–10 min"]))
+      view |> element("#update-crew") |> render_click()
+      assert has_element?(view, "#crew-update", "3–10 min")
+    else
+      assert has_element?(view, "#update-downtime", "Take a Postgres snapshot")
+      refute has_element?(view, "#update-downtime", "GiB")
+    end
+  end
+
+  test "a large SQLite backup flags the host updater's default timeout", %{conn: conn, dir: dir} do
+    install_updater(dir)
+    checked(["v" <> next_version()])
+    sparse_file(Path.join(dir, "data/crew.db"), 12 * 1024 ** 3)
+
+    {:ok, view, _html} = live(conn, "/admin")
+    render_async(view)
+
+    if Crew.Repo.sqlite?() do
+      assert has_element?(view, "#update-downtime", "11–36 min")
+      assert has_element?(view, ~s(#update-crew[data-confirm*="30-minute timeout"]))
+    else
+      refute has_element?(view, "#update-downtime", "30-minute timeout")
+    end
+  end
+
   test "shows the running version and the newest release", %{conn: conn, dir: dir} do
     install_updater(dir)
     checked(["v" <> next_version()])
@@ -71,6 +126,11 @@ defmodule CrewWeb.DeploymentUpdateTest do
            )
 
     assert has_element?(view, "#update-crew", "Update to #{next_version()}")
+
+    if Crew.Repo.sqlite?() do
+      render_async(view)
+      assert has_element?(view, "#update-downtime", "A downtime estimate is unavailable")
+    end
   end
 
   test "Update to X asks the host's updater, and the page follows it", %{conn: conn, dir: dir} do

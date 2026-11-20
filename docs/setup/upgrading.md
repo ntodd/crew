@@ -20,6 +20,13 @@ turns that off. The Deployment page shows the running version and the
 newest release, and once the host's updater is installed, an admin's
 **Update to X** button.
 
+For SQLite, the page estimates dashboard downtime before you confirm. It
+counts the data the updater will archive, including the database, job and
+VM logs, and agent releases. Mirrored guest images are excluded. The range
+allows for compression, verification and restart. The image download happens
+while Crew is still online. Disk speed and migration time vary by host.
+For example, 3 GiB gives a rough estimate of 3–10 minutes offline.
+
 The control plane can't replace its own container, so `crew-update`,
 a script run as root by a systemd path unit on the host, does it. The
 button writes the version to `/var/lib/crew-update/request/`, mounted

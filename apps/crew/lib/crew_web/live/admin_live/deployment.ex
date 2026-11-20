@@ -22,23 +22,35 @@ defmodule CrewWeb.AdminLive.Deployment do
      |> assign(:release_fingerprint, Crew.Config.release_key_fingerprint())
      |> assign(:pinging, false)
      |> assign(:checking_updates, false)
+     |> assign(:downtime, if(Crew.Repo.sqlite?(), do: :unmeasured, else: :postgres))
      |> load_github()
      |> load_update()}
   end
 
   defp load_update(socket) do
     updater = Updates.updater()
+    available = Updates.available()
 
     if connected?(socket) and updater.state in ["pending", "running"],
       do: Process.send_after(self(), :refresh_update, @update_poll)
 
-    assign(socket,
-      check_enabled: Updates.enabled?(),
-      update_repo: Updates.repo(),
-      latest: Updates.latest(),
-      available: Updates.available(),
-      updater: updater
-    )
+    socket =
+      assign(socket,
+        check_enabled: Updates.enabled?(),
+        update_repo: Updates.repo(),
+        latest: Updates.latest(),
+        available: available,
+        updater: updater
+      )
+
+    if socket.assigns.check_enabled && available && updater.installed &&
+         socket.assigns.downtime == :unmeasured && updater.state not in ["pending", "running"] do
+      socket
+      |> assign(:downtime, :measuring)
+      |> start_async(:backup_estimate, &Updates.backup_estimate/0)
+    else
+      socket
+    end
   end
 
   defp load_github(socket) do
@@ -106,6 +118,12 @@ defmodule CrewWeb.AdminLive.Deployment do
     end
   end
 
+  def handle_async(:backup_estimate, {:ok, estimate}, socket),
+    do: {:noreply, assign(socket, :downtime, estimate)}
+
+  def handle_async(:backup_estimate, {:exit, _reason}, socket),
+    do: {:noreply, assign(socket, :downtime, :unavailable)}
+
   @impl true
   def handle_info(:refresh_update, socket), do: {:noreply, load_update(socket)}
   def handle_info(_message, socket), do: {:noreply, socket}
@@ -128,6 +146,34 @@ defmodule CrewWeb.AdminLive.Deployment do
 
   defp format_at(nil), do: "never"
   defp format_at(%DateTime{} = at), do: Calendar.strftime(at, "%b %-d, %H:%M:%S UTC")
+
+  defp downtime_warning(%{bytes: bytes, min_minutes: low, max_minutes: high}) do
+    size =
+      if bytes < 1024 ** 3,
+        do: "#{ceil(bytes / 1024 ** 2)} MiB",
+        else: "#{gib(bytes / 1024 ** 2)} GiB"
+
+    minutes = if low == high, do: "#{low}", else: "#{low}–#{high}"
+
+    estimate =
+      "Allow roughly #{minutes} min of dashboard downtime to back up and verify #{size} of data and restart Crew. Disk speed and migrations affect this estimate."
+
+    if high >= 30,
+      do: estimate <> " The host updater has a 30-minute timeout by default.",
+      else: estimate
+  end
+
+  defp downtime_warning(:postgres),
+    do:
+      "The dashboard goes offline during restart and migrations. Take a Postgres snapshot at your provider before updating."
+
+  defp downtime_warning(:measuring),
+    do:
+      "Measuring the backup size. The dashboard goes offline during backup, verification and restart."
+
+  defp downtime_warning(_),
+    do:
+      "The dashboard goes offline during backup, verification and restart. A downtime estimate is unavailable."
 
   @impl true
   def render(assigns) do
@@ -165,6 +211,7 @@ defmodule CrewWeb.AdminLive.Deployment do
                 <.badge color="amber" dot pulse>Updating</.badge>
                 <span class="ml-1">Waiting for the host's updater to pick up {@updater.to}.</span>
               </p>
+              <p :if={is_map(@downtime)} class="text-ink-2">{downtime_warning(@downtime)}</p>
             <% @updater.state == "running" -> %>
               <p class="text-ink">
                 <.badge color="amber" dot pulse>Updating</.badge>
@@ -173,6 +220,7 @@ defmodule CrewWeb.AdminLive.Deployment do
               <p class="text-ink-2">
                 The page reconnects once {@updater.to} is up. Jobs keep running, and boxes reconnect when it's back.
               </p>
+              <p :if={is_map(@downtime)} class="text-ink-2">{downtime_warning(@downtime)}</p>
             <% not @check_enabled -> %>
               <p id="update-check-off" class="text-ink-2">
                 Update checks are off (CREW_UPDATE_CHECK=false).
@@ -190,12 +238,13 @@ defmodule CrewWeb.AdminLive.Deployment do
                   >Release notes</a>
                 </p>
                 <%= if @updater.installed do %>
+                  <p id="update-downtime" class="text-ink-2">{downtime_warning(@downtime)}</p>
                   <.button
                     id="update-crew"
                     variant="primary"
                     size="sm"
                     phx-click="update_crew"
-                    data-confirm={"Update Crew to #{@available.version} and restart it? The host backs up the data first, and goes back if #{@available.version} doesn't come up. Jobs keep running; boxes reconnect, then update their agents."}
+                    data-confirm={"Update Crew to #{@available.version} and restart it? #{downtime_warning(@downtime)} If startup fails, the updater attempts to roll back. Jobs keep running and boxes reconnect afterward."}
                   >Update to {@available.version}</.button>
                 <% else %>
                   <div id="install-updater" class="space-y-2">

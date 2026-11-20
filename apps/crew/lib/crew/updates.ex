@@ -129,6 +129,40 @@ defmodule Crew.Updates do
   defp error_message(other), do: inspect(other)
 
   @doc """
+  Estimates SQLite upgrade downtime from the uncompressed files the host updater
+  archives. The range allows for compression, archive verification and startup.
+  """
+  def backup_estimate do
+    root = Application.get_env(:crew, :update_data_dir, "/var/lib/crew")
+    # docker/crew-update archives this mount with tar --exclude='./images'.
+    bytes = Enum.sum_by(File.ls!(root) -- ["images"], &backup_bytes(Path.join(root, &1)))
+
+    # The 0.2.1 upgrade processed roughly 3 GiB in six minutes. Use a broad
+    # range (6–20 MiB/s including verification), plus time to stop and boot.
+    mib = bytes / (1024 * 1024)
+
+    %{
+      bytes: bytes,
+      min_minutes: ceil((mib / 20 + 15) / 60),
+      max_minutes: ceil((mib / 6 + 60) / 60)
+    }
+  rescue
+    File.Error -> :unavailable
+  end
+
+  defp backup_bytes(path) do
+    case File.lstat!(path, time: :posix) do
+      %{type: :regular, size: bytes} -> bytes
+      %{type: :directory} -> Enum.sum_by(File.ls!(path), &backup_bytes(Path.join(path, &1)))
+      _ -> 0
+    end
+  rescue
+    # A log can be pruned while the dashboard is measuring the live volume.
+    error in File.Error ->
+      if error.reason == :enoent, do: 0, else: reraise(error, __STACKTRACE__)
+  end
+
+  @doc """
   The host's updater: whether it's installed, and its last run, if any.
   A request it hasn't picked up yet shows as `"pending"`, and a run that
   stopped reporting as `"stale"`.
