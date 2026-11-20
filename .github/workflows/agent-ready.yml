@@ -80,6 +80,7 @@ jobs:
       statuses: read
       actions: read
     with:
+      runs-on: crew-8x4
       trusted-users: ntodd
       app-id: ${{ vars.AGENT_APP_ID }}
       git-user-name: Nate Todd
