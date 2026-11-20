@@ -70,7 +70,7 @@ test("the dashboard, with a box and work", async ({page, request}) => {
   await expect(page.locator("[id^=box-]", {hasText: "null-ui"}).first()).toBeVisible()
   await expectCardGap(page.locator("#fleet-boxes"), page.locator("#fleet-cores"), "x")
   await expectCardGap(page.locator("#fleet-boxes"), page.locator("#fleet-memory"))
-  await expectCardGap(page.locator("#provisioned-memory"), page.locator("#boxes-grid"))
+  await expectCardGap(page.locator("#boxes-grid"), page.locator("#provisioned-vcpus"))
   await setTheme(page, "light")
 })
 

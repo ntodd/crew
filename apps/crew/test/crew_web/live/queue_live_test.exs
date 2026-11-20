@@ -31,6 +31,9 @@ defmodule CrewWeb.QueueLiveTest do
 
     assert has_element?(view, "#units li", "job 1")
     assert has_element?(view, "#units li", "crew-m")
+    assert has_element?(view, "#queue-count", "3")
+    assert has_element?(view, "#queue-covered-count", "0")
+    assert has_element?(view, "#queue-blocked-count", "3")
     # The box is offline: the jobs are blocked, with the reason.
     assert has_element?(view, "#units", "the only boxes that fit are offline")
     assert has_element?(view, "#classes", "acme/api")
@@ -161,6 +164,8 @@ defmodule CrewWeb.QueueLiveTest do
 
     {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
     {:ok, view, _} = live(log_in(conn, user_fixture(role: "admin")), ~p"/queue")
+    assert has_element?(view, "#queue-count", "3")
+    assert has_element?(view, "#queue-covered-count", "2")
     assert has_element?(view, "#covered li", "job 1")
     refute has_element?(view, "#units", "Nothing is waiting")
   end

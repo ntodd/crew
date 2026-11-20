@@ -11,6 +11,7 @@ defmodule CrewWeb.UsageLive do
   use CrewWeb, :live_view
 
   alias Crew.Usage
+  alias CrewWeb.Charts
   alias CrewWeb.UsageComponents, as: U
 
   @ranges [7, 30, 90]
@@ -57,10 +58,16 @@ defmodule CrewWeb.UsageLive do
     assigns = assign(assigns, :ranges, @ranges)
 
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} current_path={@current_path}>
+    <Layouts.app
+      flash={@flash}
+      current_scope={@current_scope}
+      current_path={@current_path}
+      width="full"
+      content_class="card-grid grid-cols-1"
+    >
       <:breadcrumb>Usage</:breadcrumb>
 
-      <.header>
+      <.header class="pb-0!">
         Usage
         <:subtitle>
           Job and VM minutes over the last {@days} days. Days are UTC.
@@ -79,7 +86,7 @@ defmodule CrewWeb.UsageLive do
         </:actions>
       </.header>
 
-      <p :if={U.pending(@summary.pending)} id="usage-pending" class="mb-4 text-xs text-ink-3">
+      <p :if={U.pending(@summary.pending)} id="usage-pending" class="text-xs text-ink-3">
         {U.pending(@summary.pending)}
       </p>
 
@@ -89,53 +96,72 @@ defmodule CrewWeb.UsageLive do
         </p>
       </.panel>
 
-      <div :if={not U.empty?(@summary)}>
-        <section id="usage-totals" class="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-            <p class="text-xs text-ink-3">Job minutes</p>
-            <p id="usage-job-minutes" class="text-2xl font-semibold tabular-nums text-ink">
-              {U.minutes(@summary.totals.job_s)}
-            </p>
-            <p class="text-xs text-ink-3">
+      <div :if={not U.empty?(@summary)} class="@container card-grid grid-cols-1">
+        <section
+          id="usage-totals"
+          aria-label="Usage totals"
+          class="card-grid grid-cols-2 @4xl:grid-cols-4"
+        >
+          <.stat_card value_id="usage-job-minutes" label="Job minutes" icon="hero-clock">
+            {U.minutes(@summary.totals.job_s)}
+            <:note>
               {U.delimit(@summary.totals.job_billable_min)} rounded up per job, as GitHub bills
-            </p>
-          </div>
-          <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-            <p class="text-xs text-ink-3">VM minutes</p>
-            <p id="usage-vm-minutes" class="text-2xl font-semibold tabular-nums text-ink">
-              {U.minutes(@summary.totals.vm_s)}
-            </p>
-            <p class="text-xs text-ink-3">
+            </:note>
+          </.stat_card>
+          <.stat_card value_id="usage-vm-minutes" label="VM minutes" icon="hero-cube">
+            {U.minutes(@summary.totals.vm_s)}
+            <:note>
               {U.delimit(@summary.totals.vm_count)} {if @summary.totals.vm_count == 1,
                 do: "VM",
                 else: "VMs"}, {U.delimit(@summary.totals.unused_count)} never used
-            </p>
-          </div>
-          <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-            <p class="text-xs text-ink-3">Overhead</p>
-            <p id="usage-overhead" class="text-2xl font-semibold tabular-nums text-ink">
-              {U.overhead(@summary.totals)}
-            </p>
-            <p class="text-xs text-ink-3">
-              boot {U.minutes(@summary.totals.boot_s)}, idle {U.minutes(@summary.totals.idle_s)}, teardown {U.minutes(
-                @summary.totals.teardown_s
-              )} min
-            </p>
-          </div>
-          <div class="rounded-xl border border-line bg-raised p-4 shadow-xs">
-            <p class="text-xs text-ink-3">Reserved</p>
-            <p id="usage-reserved" class="text-2xl font-semibold tabular-nums text-ink">
-              {U.gib_h(@summary.totals.mem_mib_s)}
-            </p>
-            <p class="text-xs text-ink-3">
-              GiB-hours, {U.vcpu_h(@summary.totals.vcpu_s)} vCPU-hours
-            </p>
-          </div>
+            </:note>
+          </.stat_card>
+          <.stat_card value_id="usage-overhead" label="Overhead" icon="hero-adjustments-horizontal">
+            {U.overhead(@summary.totals)}
+            <:note>Boot, idle and teardown time</:note>
+          </.stat_card>
+          <.stat_card
+            value_id="usage-reserved"
+            label="Reserved GiB-hours"
+            icon="hero-square-3-stack-3d"
+          >
+            {U.gib_h(@summary.totals.mem_mib_s)}
+            <:note>{U.vcpu_h(@summary.totals.vcpu_s)} vCPU-hours reserved</:note>
+          </.stat_card>
         </section>
 
-        <U.chart id="usage-chart" summary={@summary} class="mb-4" />
+        <div class="card-grid grid-cols-1 @4xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <U.chart id="usage-chart" summary={@summary} />
+          <.panel id="usage-phases" title="VM time by phase">
+            <:subtitle>Share of VM minutes over the selected period</:subtitle>
+            <ul class="space-y-4">
+              <li :for={
+                {label, seconds, color} <- [
+                  {"Busy", @summary.totals.busy_s, Charts.series_color(0)},
+                  {"Idle", @summary.totals.idle_s, Charts.series_color(3)},
+                  {"Boot", @summary.totals.boot_s, Charts.series_color(1)},
+                  {"Teardown", @summary.totals.teardown_s, Charts.other_color()}
+                ]
+              }>
+                <div class="flex justify-between gap-2 text-xs">
+                  <span class="font-medium text-ink">{label}</span>
+                  <span class="tabular-nums text-ink-2">{U.minutes(seconds)} min · {U.share(
+                    seconds,
+                    @summary.totals.vm_s
+                  )}</span>
+                </div>
+                <progress
+                  aria-label={label}
+                  value={seconds}
+                  max={max(@summary.totals.vm_s, 1)}
+                  class={["bar phase-bar mt-2", color]}
+                ></progress>
+              </li>
+            </ul>
+          </.panel>
+        </div>
 
-        <.panel id="usage-boxes" title="By box" class="mb-4">
+        <.panel id="usage-boxes" title="By box">
           <:subtitle>Use is what the box's VMs reserved of what it offered while online.</:subtitle>
           <.table id="usage-box-rows" rows={@summary.boxes}>
             <:col :let={b} label="Box">
@@ -174,50 +200,57 @@ defmodule CrewWeb.UsageLive do
           </.table>
         </.panel>
 
-        <.panel id="usage-repos" title="By repo" class="mb-4">
-          <.table id="usage-repo-rows" rows={@summary.repos}>
-            <:col :let={r} label="Repo">
-              <.link
-                :if={r.repo}
-                navigate={~p"/repos/#{r.repo.id}"}
-                class="font-medium text-ink underline-offset-2 hover:underline"
+        <div class="card-grid grid-cols-1 items-start @[70rem]:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+          <.panel id="usage-repos" title="By repo">
+            <.table id="usage-repo-rows" rows={@summary.repos}>
+              <:col :let={r} label="Repo">
+                <.link
+                  :if={r.repo}
+                  navigate={~p"/repos/#{r.repo.id}"}
+                  class="font-medium text-ink underline-offset-2 hover:underline"
+                >
+                  {r.repo.full_name}
+                </.link>
+                <span :if={!r.repo} class="text-ink-2">Other repos</span>
+              </:col>
+              <:col :let={r} label="Jobs" align="right" class="hidden tabular-nums sm:table-cell">
+                {U.delimit(r.job_count)}
+              </:col>
+              <:col :let={r} label="Job min" align="right" class="tabular-nums">
+                {U.minutes(r.job_s)}
+              </:col>
+              <:col
+                :let={r}
+                label="Rounded up"
+                align="right"
+                class="hidden tabular-nums sm:table-cell"
               >
-                {r.repo.full_name}
-              </.link>
-              <span :if={!r.repo} class="text-ink-2">Other repos</span>
-            </:col>
-            <:col :let={r} label="Jobs" align="right" class="hidden tabular-nums sm:table-cell">
-              {U.delimit(r.job_count)}
-            </:col>
-            <:col :let={r} label="Job min" align="right" class="tabular-nums">
-              {U.minutes(r.job_s)}
-            </:col>
-            <:col :let={r} label="Rounded up" align="right" class="hidden tabular-nums sm:table-cell">
-              {U.delimit(r.job_billable_min)}
-            </:col>
-            <:col :let={r} label="VM min" align="right" class="tabular-nums">
-              {U.minutes(r.vm_s)}
-            </:col>
-            <:col :let={r} label="Overhead" align="right" class="hidden tabular-nums sm:table-cell">
-              {U.overhead(r)}
-            </:col>
-          </.table>
-        </.panel>
+                {U.delimit(r.job_billable_min)}
+              </:col>
+              <:col :let={r} label="VM min" align="right" class="tabular-nums">
+                {U.minutes(r.vm_s)}
+              </:col>
+              <:col :let={r} label="Overhead" align="right" class="hidden tabular-nums sm:table-cell">
+                {U.overhead(r)}
+              </:col>
+            </.table>
+          </.panel>
 
-        <.panel id="usage-sizes" title="By size">
-          <.table id="usage-size-rows" rows={@summary.shapes}>
-            <:col :let={s} label="Size">{U.shape(s.shape)}</:col>
-            <:col :let={s} label="Jobs" align="right" class="hidden tabular-nums sm:table-cell">
-              {U.delimit(s.job_count)}
-            </:col>
-            <:col :let={s} label="Job min" align="right" class="tabular-nums">
-              {U.minutes(s.job_s)}
-            </:col>
-            <:col :let={s} label="VM min" align="right" class="tabular-nums">
-              {U.minutes(s.vm_s)}
-            </:col>
-          </.table>
-        </.panel>
+          <.panel id="usage-sizes" title="By size">
+            <.table id="usage-size-rows" rows={@summary.shapes}>
+              <:col :let={s} label="Size">{U.shape(s.shape)}</:col>
+              <:col :let={s} label="Jobs" align="right" class="hidden tabular-nums sm:table-cell">
+                {U.delimit(s.job_count)}
+              </:col>
+              <:col :let={s} label="Job min" align="right" class="tabular-nums">
+                {U.minutes(s.job_s)}
+              </:col>
+              <:col :let={s} label="VM min" align="right" class="tabular-nums">
+                {U.minutes(s.vm_s)}
+              </:col>
+            </.table>
+          </.panel>
+        </div>
       </div>
     </Layouts.app>
     """
