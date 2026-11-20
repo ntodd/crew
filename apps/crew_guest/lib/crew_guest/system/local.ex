@@ -22,7 +22,9 @@ defmodule CrewGuest.System.Local do
   end
 
   @impl true
-  def configure_docker(_cfg, _pem, _mirrors), do: :ok
+  def configure_docker(_cfg, _pem, _mirrors, opts \\ []) do
+    if opts[:strict], do: {:error, :strict_registry_cache_requires_job_vm}, else: :ok
+  end
 
   @impl true
   def notify_ready(_cfg) do

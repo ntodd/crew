@@ -194,10 +194,20 @@ defmodule CrewAgent.GuestAPI do
   end
 
   defp route(%{method: "GET", path_info: ["v1", "payload"]} = conn, vm_id) do
-    case VM.call(vm_id, :payload) do
-      {:ok, body} -> json(conn, 200, body)
-      {:error, :gone} -> send_resp(conn, 410, "")
-      {:error, _} -> send_resp(conn, 404, "")
+    supports_strict = get_req_header(conn, "x-crew-strict-registry-cache") == ["1"]
+
+    case VM.call(vm_id, {:payload, supports_strict}) do
+      {:ok, body} ->
+        json(conn, 200, body)
+
+      {:error, :strict_guest_required} ->
+        send_resp(conn, 412, "guest image lacks strict registry support")
+
+      {:error, :gone} ->
+        send_resp(conn, 410, "")
+
+      {:error, _} ->
+        send_resp(conn, 404, "")
     end
   end
 

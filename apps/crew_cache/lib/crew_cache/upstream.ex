@@ -35,6 +35,25 @@ defmodule CrewCache.Upstream do
   `{:error, reason}`.
   """
   def request(host, repo, method, rest, opts \\ []) do
+    case do_request(host, repo, method, rest, opts) do
+      {:error, {:rate_limited, after_header}} = limited ->
+        # A 429 has not written to the caller's sink. Give a short throttle
+        # one retry; leave longer waits to the client with its Retry-After.
+        case Integer.parse(after_header || "1") do
+          {seconds, ""} when seconds in 0..3 ->
+            Process.sleep(seconds * 1000)
+            do_request(host, repo, method, rest, opts)
+
+          _ ->
+            limited
+        end
+
+      other ->
+        other
+    end
+  end
+
+  defp do_request(host, repo, method, rest, opts) do
     url = origin(host.upstream) <> "/v2/" <> repo <> "/" <> rest
     key = {host.host, repo}
 
@@ -60,8 +79,9 @@ defmodule CrewCache.Upstream do
   # -- tokens -------------------------------------------------------------------
 
   defp token(host, repo, resp) do
-    params = challenge(resp.headers)
-    service = Map.get(params, "service", host.upstream)
+    service =
+      CrewProtocol.Hosts.token_service(header(resp.headers, "www-authenticate"), host.upstream)
+
     query = URI.encode_query(%{"service" => service, "scope" => "repository:#{repo}:pull"})
     url = rewrite(host.realm) <> "?" <> query
 
@@ -75,16 +95,6 @@ defmodule CrewCache.Upstream do
       {:ok, %{status: status}} -> {:error, {:token_status, status}}
       {:error, _} = error -> error
       _ -> {:error, :bad_token_response}
-    end
-  end
-
-  defp challenge(headers) do
-    case List.keyfind(headers, "www-authenticate", 0) do
-      {_, "Bearer " <> params} ->
-        for [_, k, v] <- Regex.scan(~r/(\w+)="([^"]*)"/, params), into: %{}, do: {k, v}
-
-      _ ->
-        %{}
     end
   end
 
@@ -105,6 +115,9 @@ defmodule CrewCache.Upstream do
       location = header(resp.headers, "location")
 
       cond do
+        resp.status == 429 ->
+          {:error, {:rate_limited, header(resp.headers, "retry-after")}}
+
         resp.status not in @redirects or location == nil ->
           {:ok, resp}
 

@@ -148,6 +148,7 @@ defmodule CrewProtocol.Guest do
     %{
       "jit_config" => jit,
       "ca_pem" => ca,
+      "strict_registry_cache" => Map.get(p, :strict_registry_cache, false),
       "mirrors" => Enum.filter(Map.get(p, :mirrors) || [], &(&1 in CrewProtocol.Hosts.names())),
       "policy" => %{
         "fork_prs" => to_string(policy.fork_prs),

@@ -11,6 +11,10 @@ defmodule CrewWeb.AgentControllerTest do
     %{token: token, key: Base.encode64(public)}
   end
 
+  # Enrollment failures are limited per client, and build_conn/0 is always
+  # 127.0.0.1, so a request that may fail comes from its own address.
+  defp new_client, do: put_req_header(build_conn(), "x-forwarded-for", client_ip())
+
   test "enrolls with a join token", %{conn: conn, token: token, key: key} do
     conn =
       post(conn, ~p"/api/agents/enroll", %{
@@ -27,13 +31,13 @@ defmodule CrewWeb.AgentControllerTest do
     post(conn, ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
 
     conn =
-      post(build_conn(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
+      post(new_client(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
 
     assert json_response(conn, 401)["error"] =~ "invalid"
   end
 
   test "bad tokens from one client are limited, without blocking another", %{key: key} do
-    ip = "100.64.#{:rand.uniform(250)}.#{:rand.uniform(250)}"
+    ip = client_ip()
 
     req = fn ip ->
       build_conn()
@@ -44,7 +48,7 @@ defmodule CrewWeb.AgentControllerTest do
 
     for _ <- 1..10, do: assert(req.(ip).status == 401)
     assert req.(ip).status == 429
-    assert req.("100.64.0.9").status == 401
+    assert req.(client_ip()).status == 401
   end
 
   describe "POST /agent/flatcar/ignition" do
@@ -88,12 +92,12 @@ defmodule CrewWeb.AgentControllerTest do
                200
 
       conn =
-        post(build_conn(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
+        post(new_client(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
 
       assert json_response(conn, 201)["box"] == "m3max"
 
       conn =
-        post(build_conn(), "/agent/flatcar/ignition", %{"join_token" => token, "arch" => "arm64"})
+        post(new_client(), "/agent/flatcar/ignition", %{"join_token" => token, "arch" => "arm64"})
 
       assert json_response(conn, 401)["error"] =~ "invalid"
     end
@@ -103,7 +107,7 @@ defmodule CrewWeb.AgentControllerTest do
       assert json_response(conn, 400)["error"] =~ "amd64"
 
       conn =
-        post(build_conn(), "/agent/flatcar/ignition", %{
+        post(new_client(), "/agent/flatcar/ignition", %{
           "join_token" => token,
           "arch" => "arm64",
           "ssh_keys" => ["nope"]
@@ -144,7 +148,7 @@ defmodule CrewWeb.AgentControllerTest do
     end
 
     test "bad tokens count against the enrollment limit" do
-      ip = "100.65.#{:rand.uniform(250)}.#{:rand.uniform(250)}"
+      ip = client_ip()
 
       req = fn path, body ->
         build_conn()
@@ -212,7 +216,7 @@ defmodule CrewWeb.AgentControllerTest do
 
       assert env == ~s(CREW_CACHE_MGMT_TOKEN="#{mgmt}"\n)
 
-      again = post(build_conn(), "/agent/flatcar/cachevm/ignition", %{"join_token" => token})
+      again = post(new_client(), "/agent/flatcar/cachevm/ignition", %{"join_token" => token})
       assert get_resp_header(again, "x-crew-cache-token") != [mgmt]
     end
 
@@ -220,7 +224,7 @@ defmodule CrewWeb.AgentControllerTest do
       assert post(conn, "/agent/flatcar/cachevm/ignition", %{"join_token" => token}).status == 200
 
       conn =
-        post(build_conn(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
+        post(new_client(), ~p"/api/agents/enroll", %{"join_token" => token, "public_key" => key})
 
       assert json_response(conn, 201)["box"] == "m1ultra"
     end
@@ -236,7 +240,7 @@ defmodule CrewWeb.AgentControllerTest do
     end
 
     test "a bad token is a 401 that counts against the enrollment limit" do
-      ip = "100.66.#{:rand.uniform(250)}.#{:rand.uniform(250)}"
+      ip = client_ip()
 
       req = fn ->
         build_conn()

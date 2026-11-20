@@ -24,7 +24,8 @@ defmodule CrewWeb.ConnCase do
         Crew.DataCase.setup_sandbox(tags)
         # Each test gets its own client address, so rate limits (kept in
         # ETS for the whole run) never carry over from another test.
-        client = {10, :rand.uniform(254), :rand.uniform(254), :rand.uniform(254)}
+        n = Crew.Fixtures.unique()
+        client = {10, rem(div(n, 65_536), 256), rem(div(n, 256), 256), rem(n, 256)}
         {:ok, conn: %{Phoenix.ConnTest.build_conn() | remote_ip: client}}
       end
     end

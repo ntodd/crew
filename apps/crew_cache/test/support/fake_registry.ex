@@ -57,6 +57,7 @@ defmodule CrewCache.FakeRegistry do
             chunked: MapSet.new(),
             redirect_host: %{},
             requests: [],
+            throttles: %{},
             tokens: %{},
             token_ttl: 300,
             challenge_realm: nil,
@@ -159,6 +160,18 @@ defmodule CrewCache.FakeRegistry do
   def requests, do: state().requests |> Enum.reverse()
   def clear_requests, do: update(&%{&1 | requests: []})
 
+  # Each entry is one 429 response's Retry-After. A nil entry omits it.
+  def throttle(path, responses), do: update(&put_in(&1.throttles[path], responses))
+
+  def next_throttle(path) do
+    Agent.get_and_update(__MODULE__, fn state ->
+      case state.throttles[path] do
+        [header | rest] -> {{:limited, header}, put_in(state.throttles[path], rest)}
+        _ -> {:ok, state}
+      end
+    end)
+  end
+
   def count(server, method, path_part) do
     Enum.count(requests(), fn r ->
       r.server == server and r.method == method and String.contains?(r.path, path_part)
@@ -203,7 +216,14 @@ defmodule CrewCache.FakeRegistry do
         authorization: auth
       })
 
-      route(conn, which, conn.path_info, auth)
+      case Fake.next_throttle(conn.request_path) do
+        {:limited, retry_after} ->
+          conn = if retry_after, do: put_resp_header(conn, "retry-after", retry_after), else: conn
+          error(conn, 429, "TOOMANYREQUESTS")
+
+        :ok ->
+          route(conn, which, conn.path_info, auth)
+      end
     end
 
     defp route(conn, :registry, ["token"], _auth) do

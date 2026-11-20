@@ -78,6 +78,23 @@ defmodule CrewAgent.VMTest do
     assert {:error, "duplicate", _} = Handler.handle(cmd)
   end
 
+  test "strict starts withhold the JIT from older guests" do
+    vm_id =
+      start_vm(start_command(%{"strict_registry_cache" => true}), [
+        {"CREW_GUEST_API", "http://127.0.0.1:1"}
+      ])
+
+    on_exit(fn -> VMs.stop(vm_id, true, 0) end)
+    opts = [auth: {:bearer, token_of(vm_id)}, retry: false]
+    assert %{status: 412} = Req.get!(api() <> "/v1/payload", opts)
+    opts = Keyword.put(opts, :headers, [{"x-crew-strict-registry-cache", "1"}])
+
+    assert %{status: 200, body: %{"strict_registry_cache" => true}} =
+             Req.get!(api() <> "/v1/payload", opts)
+
+    assert %{status: 410} = Req.get!(api() <> "/v1/payload", opts)
+  end
+
   describe "the guest API" do
     setup do
       vm_id = start_vm()

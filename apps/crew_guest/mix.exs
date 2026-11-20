@@ -32,6 +32,7 @@ defmodule CrewGuest.MixProject do
       {:crew_protocol, path: "../crew_protocol"},
       {:req, "~> 0.7"},
       {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"},
       {:file_system, "~> 1.1"},
       {:bandit, "~> 1.14", only: :test},
       {:plug, "~> 1.20", only: :test},

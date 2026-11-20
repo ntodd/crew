@@ -144,11 +144,15 @@ defmodule CrewGuest.SystemTest do
       assert :ok = Linux.configure_docker(cfg, @pem, ["ghcr.io", "registry-1.docker.io"], opts)
 
       daemon = root |> Path.join("etc/docker/daemon.json") |> File.read!() |> Jason.decode!()
-      assert daemon == %{"log-driver" => "local", "features" => %{"buildkit" => true}}
+      assert daemon["log-driver"] == "local"
+      assert daemon["features"] == %{"buildkit" => true}
+      assert daemon["default-runtime"] == "crew-cache"
+      assert daemon["runtimes"]["crew-cache"]["path"] == "/opt/crew/bin/crew-cache-runc"
 
       # dockerd (containerd store) reads a hosts.toml per registry from
       # /etc/docker/certs.d; the cache serves /v2/<registry>/... for it.
       ghcr = File.read!(Path.join(root, "etc/docker/certs.d/ghcr.io/hosts.toml"))
+      assert File.read!(Path.join(root, "run/crew/docker-mirrors/ghcr.io/hosts.toml")) == ghcr
       assert ghcr =~ ~s(server = "https://ghcr.io")
       assert ghcr =~ ~s([host."https://10.199.0.1/v2/ghcr.io"])
       assert ghcr =~ ~s(capabilities = ["pull", "resolve"])
@@ -156,6 +160,10 @@ defmodule CrewGuest.SystemTest do
       assert ghcr =~ ~s(ca = "/usr/local/share/ca-certificates/crew-cache.crt")
 
       hub = File.read!(Path.join(root, "etc/docker/certs.d/docker.io/hosts.toml"))
+
+      assert File.read!(Path.join(root, "etc/docker/certs.d/registry-1.docker.io/hosts.toml")) ==
+               hub
+
       assert hub =~ ~s(server = "https://registry-1.docker.io")
       assert hub =~ ~s([host."https://10.199.0.1/v2/docker.io"])
       refute File.exists?(Path.join(root, "etc/docker/certs.d/quay.io"))
@@ -168,10 +176,52 @@ defmodule CrewGuest.SystemTest do
                ~s([registry."10.199.0.1"]\n  ca = ["/usr/local/share/ca-certificates/crew-cache.crt"])
     end
 
+    test "strict Docker config has only a cache endpoint, including unknown hosts", %{
+      cfg: cfg,
+      root: root,
+      opts: opts
+    } do
+      opts = Keyword.put(opts, :strict, true)
+      assert {:error, _} = Linux.configure_docker(cfg, nil, ["ghcr.io"], opts)
+      assert {:error, _} = Linux.configure_docker(cfg, @pem, [], opts)
+      assert :ok = Linux.configure_docker(cfg, @pem, ["ghcr.io"], opts)
+
+      for {host, endpoint} <- [{"ghcr.io", "ghcr.io"}, {"_default", "unconfigured"}] do
+        toml = File.read!(Path.join(root, "etc/docker/certs.d/#{host}/hosts.toml"))
+        assert toml =~ ~s(server = "https://10.199.0.1/v2/#{endpoint}")
+        assert toml =~ "override_path = true"
+        refute toml =~ "[host."
+        assert toml == File.read!(Path.join(root, "run/crew/docker-mirrors/#{host}/hosts.toml"))
+      end
+
+      assert File.read!(Path.join(root, "etc/docker/certs.d/localhost:5000/hosts.toml")) =~
+               "http://localhost:5000"
+    end
+
     test "without a cache, Docker goes straight upstream", %{cfg: cfg, root: root, opts: opts} do
       assert :ok = Linux.configure_docker(cfg, nil, ["ghcr.io"], opts)
       refute File.exists?(Path.join(root, "etc/docker/certs.d"))
       refute File.exists?(Path.join(root, "etc/buildkit/buildkitd.toml"))
+      refute File.exists?(Path.join(root, "run/crew/docker-mirrors"))
+      daemon = root |> Path.join("etc/docker/daemon.json") |> File.read!() |> Jason.decode!()
+      refute Map.has_key?(daemon, "default-runtime")
+    end
+
+    test "preserves a custom default runtime", %{cfg: cfg, root: root, opts: opts} do
+      path = Path.join(root, "etc/docker/daemon.json")
+      File.mkdir_p!(Path.dirname(path))
+
+      File.write!(
+        path,
+        ~s({"default-runtime":"custom","runtimes":{"custom":{"path":"/bin/custom"}}})
+      )
+
+      assert :ok = Linux.configure_docker(cfg, @pem, ["public.ecr.aws"], opts)
+
+      assert %{"default-runtime" => "custom", "runtimes" => runtimes} =
+               Jason.decode!(File.read!(path))
+
+      assert runtimes == %{"custom" => %{"path" => "/bin/custom"}}
     end
 
     test "starts containerd and Docker", %{cfg: cfg, opts: opts} do

@@ -8,6 +8,7 @@ defmodule Mix.Tasks.Crew.Ignition do
   also a quick look at what a box gets.
 
       mix crew.ignition --type linux-vm --arch amd64 [--reprovision] [--out box.ign]
+      mix crew.ignition --type linux-metal --layout separate    # one (the default) or separate
       mix crew.ignition --type cachevm [--reprovision]    # a mac-vz box's cache VM (arm64)
 
   A box that boots needs a real one: `POST /agent/flatcar/ignition`
@@ -18,7 +19,7 @@ defmodule Mix.Tasks.Crew.Ignition do
 
   alias Crew.Boxes.Flatcar
 
-  @switches [type: :string, arch: :string, reprovision: :boolean, out: :string]
+  @switches [type: :string, arch: :string, layout: :string, reprovision: :boolean, out: :string]
 
   @impl true
   def run(args) do
@@ -29,10 +30,13 @@ defmodule Mix.Tasks.Crew.Ignition do
     arch = opts[:arch] || "amd64"
     mode = if opts[:reprovision], do: :reprovision, else: :provision
 
+    if opts[:layout] && type != "linux-metal",
+      do: Mix.raise("--layout is for linux-metal, whose disks are the machine's")
+
     rendered =
       if type == "cachevm",
         do: Flatcar.cachevm_ignition(cachevm_sample(mode)),
-        else: Flatcar.ignition(sample(type, arch, mode))
+        else: Flatcar.ignition(sample(type, arch, mode, opts[:layout] || "one"))
 
     case rendered do
       {:ok, config} ->
@@ -68,7 +72,7 @@ defmodule Mix.Tasks.Crew.Ignition do
     }
   end
 
-  defp sample(type, arch, mode) do
+  defp sample(type, arch, mode, layout) do
     target = Flatcar.target(arch)
     base = "https://github.com/ntodd/crew/releases/download/v0.0.0"
 
@@ -85,7 +89,9 @@ defmodule Mix.Tasks.Crew.Ignition do
       name: "sample",
       type: type,
       arch: arch,
-      data_disk: if(type == "linux-metal", do: "/dev/sdb"),
+      disk_layout: layout,
+      os_disk: "/dev/disk/by-id/nvme-Sample_SSD_S0MPLE0000001",
+      data_disk: "/dev/sdb",
       ssh_keys: [
         "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGNyZXctc2FtcGxlLWtleS0wMDAwMDAwMDAwMDA sample"
       ],

@@ -5,6 +5,16 @@ defmodule Crew.Fixtures do
 
   def unique, do: System.unique_integer([:positive])
 
+  @doc """
+  A tailnet client address no other call in the run returns. Rate limits
+  live in ETS for the whole run, so a test that runs into one needs
+  addresses nothing else has counted against.
+  """
+  def client_ip do
+    <<a::16, b::16, c::16, d::16>> = <<unique()::64>>
+    {0xFD7A, 0x115C, 0xA1E0, 0, a, b, c, d} |> :inet.ntoa() |> to_string()
+  end
+
   def user_fixture(attrs \\ []) do
     attrs = Map.new(attrs)
     n = unique()

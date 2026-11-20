@@ -43,6 +43,19 @@ defmodule CrewWeb.AdminLive.Caches do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   @impl true
+  def handle_event("strict", params, socket) do
+    case Caches.set_strict_registry_cache(
+           socket.assigns.current_scope,
+           params["enabled"] == "true"
+         ) do
+      {:ok, _} ->
+        {:noreply, socket |> put_flash(:info, "Registry policy saved for new VMs.") |> load()}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "Only admins can do that.")}
+    end
+  end
+
   def handle_event("hosts", params, socket) do
     hosts = for {host, "true"} <- Map.get(params, "hosts", %{}), do: host
     hosts = Enum.filter(Hosts.names(), &(&1 in hosts))
@@ -231,6 +244,27 @@ defmodule CrewWeb.AdminLive.Caches do
           </.form>
         </.panel>
       </div>
+
+      <.panel title="Registry fallback" class="mt-4">
+        <:subtitle>
+          New VMs pull public images through the box cache. Strict mode blocks private pulls and
+          external pushes. Buildx container builders can use only the cache and loopback for HTTP(S),
+          including remote contexts and cache exports.
+        </:subtitle>
+        <.form for={%{}} id="strict" phx-submit="strict" class="space-y-3">
+          <label class="flex items-center gap-2 text-sm text-ink">
+            <input type="hidden" name="enabled" value="false" />
+            <input
+              type="checkbox"
+              name="enabled"
+              value="true"
+              checked={@config.strict_registry_cache}
+              class="rounded border-line"
+            /> Require the registry cache
+          </label>
+          <.button type="submit" size="sm">Save policy</.button>
+        </.form>
+      </.panel>
 
       <.panel id="ca" title="CA" class="mt-4">
         <div class="flex flex-wrap items-center justify-between gap-3 text-sm">

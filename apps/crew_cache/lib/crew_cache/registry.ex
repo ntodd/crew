@@ -120,6 +120,9 @@ defmodule CrewCache.Registry do
           {:ok, %{digest: digest, content_type: type}} ->
             serve_manifest(conn, host, repo, digest, accept, type)
 
+          {:error, {:rate_limited, retry_after}} ->
+            rate_limited(conn, retry_after)
+
           {:error, status} ->
             error(conn, status, "MANIFEST_UNKNOWN", "the upstream didn't resolve the tag")
         end
@@ -157,6 +160,9 @@ defmodule CrewCache.Registry do
 
         {:ok, %{status: status}} ->
           {:error, if(status >= 500, do: 502, else: 404)}
+
+        {:error, {:rate_limited, _}} = limited ->
+          limited
 
         {:error, reason} ->
           Logger.warning("couldn't resolve #{host.host}/#{repo}:#{tag}: #{describe(reason)}")
@@ -288,6 +294,9 @@ defmodule CrewCache.Registry do
         |> put_resp_header("content-length", Upstream.header(headers, "content-length") || "0")
         |> send_resp(200, "")
 
+      {:error, {:rate_limited, retry_after}} ->
+        rate_limited(conn, retry_after)
+
       _ ->
         error(conn, 404, "BLOB_UNKNOWN", "not available")
     end
@@ -328,6 +337,9 @@ defmodule CrewCache.Registry do
     end
   end
 
+  defp fetch_error(conn, _host, _repo, _digest, {:rate_limited, retry_after}),
+    do: rate_limited(conn, retry_after)
+
   defp fetch_error(conn, host, repo, digest, reason) do
     {status, code} = status_for(reason)
 
@@ -354,6 +366,11 @@ defmodule CrewCache.Registry do
   defp describe(other), do: inspect(other)
 
   # -- responses ----------------------------------------------------------------------
+
+  defp rate_limited(conn, retry_after) do
+    conn = if retry_after, do: put_resp_header(conn, "retry-after", retry_after), else: conn
+    error(conn, 429, "TOOMANYREQUESTS", "the upstream registry rate-limited this pull")
+  end
 
   defp json(conn, status, body) do
     conn
