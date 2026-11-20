@@ -129,6 +129,7 @@ defmodule CrewAgent.VM do
         token_hash: :crypto.hash(:sha256, token),
         payload: %{
           jit_config: p.jit_config,
+          strict_registry_cache: Map.get(p, :strict_registry_cache, false),
           ca_pem: ca,
           mirrors: if(ca == "", do: [], else: CrewAgent.Cache.mirrors(config)),
           policy: p.policy,
@@ -430,11 +431,19 @@ defmodule CrewAgent.VM do
 
   @impl true
   def handle_call(msg, _from, %{exited: true} = state)
-      when msg == :payload or msg == :control or
-             (is_tuple(msg) and elem(msg, 0) in [:state, :steps, :log, :metrics, :stop, :kill]),
+      when msg == :control or
+             (is_tuple(msg) and
+                elem(msg, 0) in [:payload, :state, :steps, :log, :metrics, :stop, :kill]),
       do: {:reply, {:error, :no_vm}, state}
 
-  def handle_call(:payload, _from, %{payload_fetched: false, payload: payload} = state)
+  def handle_call({:payload, false}, _from, %{payload: %{strict_registry_cache: true}} = state),
+    do: {:reply, {:error, :strict_guest_required}, state}
+
+  def handle_call(
+        {:payload, _supports_strict},
+        _from,
+        %{payload_fetched: false, payload: payload} = state
+      )
       when is_map(payload) do
     state = %{state | payload_fetched: true, payload: nil}
     write_guest_json(state, state.epoch, state.n, state.seq)
@@ -442,7 +451,7 @@ defmodule CrewAgent.VM do
     {:reply, {:ok, Guest.payload(payload)}, state}
   end
 
-  def handle_call(:payload, _from, state) do
+  def handle_call({:payload, _supports_strict}, _from, state) do
     state =
       if state.refetch_reported do
         state

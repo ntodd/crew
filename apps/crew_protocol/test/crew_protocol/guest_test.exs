@@ -244,7 +244,9 @@ defmodule CrewProtocol.GuestTest do
         })
 
       assert Map.keys(payload) |> Enum.sort() ==
-               ~w(ca_pem jit_config labels mirrors policy size)
+               ~w(ca_pem jit_config labels mirrors policy size strict_registry_cache)
+
+      refute payload["strict_registry_cache"]
 
       assert payload["policy"] == %{"fork_prs" => "refuse", "repo_full_name" => "o/r"}
       # No cache, no mirrors.

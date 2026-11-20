@@ -32,6 +32,26 @@ defmodule CrewWeb.BoxControllerTest do
     assert get(conn, ~p"/boxes/#{box.id}/reprovision.ign?arch=mips").status == 400
   end
 
+  test "a one-disk box's OS disk that isn't a by-id link is a 400", %{conn: conn} do
+    scope = Crew.Scope.for_user(user_fixture(role: "admin"))
+
+    {:ok, raw} =
+      Crew.Boxes.create_join_token(scope, %{
+        "box_name" => "rack1",
+        "box_type" => "linux-metal",
+        "os_disk" => "/dev/disk/by-id/nvme-Samsung_SSD_990"
+      })
+
+    {public, _} = CrewProtocol.Auth.generate_keypair()
+    {:ok, box} = Crew.Boxes.enroll(raw, %{"public_key" => Base.encode64(public)})
+
+    conn = get(conn, ~p"/boxes/#{box.id}/reprovision.ign?arch=amd64&os_disk=/dev/sda")
+
+    assert json_response(conn, 400) == %{
+             "error" => "the OS disk must be a /dev/disk/by-id/... link"
+           }
+  end
+
   test "members can't", %{box: box} do
     conn = log_in(build_conn(), user_fixture())
     assert get(conn, ~p"/boxes/#{box.id}/reprovision.ign?arch=arm64").status == 404

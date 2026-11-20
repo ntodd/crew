@@ -314,6 +314,13 @@ defmodule Crew.VMs.Server do
       "policy" => %{"fork_prs" => repo.fork_prs, "repo_full_name" => repo.full_name}
     }
 
+    # Older agents reject unknown fields. Only require an upgraded agent
+    # when the deployment explicitly requires a strict guest.
+    payload =
+      if Crew.Caches.config().strict_registry_cache,
+        do: Map.put(payload, "strict_registry_cache", true),
+        else: payload
+
     case Operations.dispatch(vm.box_id, "vm.start", payload, vm_id: vm.id) do
       {:ok, op} ->
         Phoenix.PubSub.subscribe(Crew.PubSub, "op:#{op.id}")

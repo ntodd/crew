@@ -56,6 +56,7 @@ defmodule CrewProtocol.Command do
       labels: {{:list, :label}, required: true, min: 1, max: 10},
       deadline: {:integer, required: true},
       log_limit_bytes: {:integer, required: true, max: 10_737_418_240},
+      strict_registry_cache: {:boolean, []},
       policy:
         {{:object,
           fork_prs: {{:enum, ~w(refuse allow)}, required: true},

@@ -8,6 +8,8 @@ defmodule Crew.Boxes.JoinToken do
     field :box_type, :string
     field :tailscale_auth_key, Crew.Encrypted.Binary, redact: true
     field :data_disk, :string
+    field :os_disk, :string
+    field :disk_layout, :string
     field :ssh_keys, {:array, :string}, default: []
     belongs_to :created_by, Crew.Accounts.User
     belongs_to :box, Crew.Boxes.Box

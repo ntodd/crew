@@ -116,6 +116,20 @@ defmodule CrewGuest.MainTest do
     refute File.exists?(Path.join(cfg.run_dir, "jit"))
   end
 
+  test "a strict guest refuses the job if it cannot configure Docker", %{dir: dir} do
+    Application.put_env(:crew_guest, :fake_system_fail, [:configure_docker])
+    api = start_api(payload(%{"strict_registry_cache" => true}))
+    boot(config(api, dir))
+    assert_receive {:system, :poweroff}, 5_000
+    refute_received {:system, :start_docker}
+    refute_received {:system, {:prepare_runner, _}}
+
+    assert Enum.any?(
+             FakeAPI.log_texts(api),
+             &String.contains?(&1, "strict registry configuration")
+           )
+  end
+
   test "a payload that never comes powers off without starting the runner", %{dir: dir} do
     api = start_api()
     FakeAPI.respond(api, "/v1/payload", [:drop])
