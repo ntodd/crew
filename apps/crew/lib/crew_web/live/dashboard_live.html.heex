@@ -3,6 +3,7 @@
   current_scope={@current_scope}
   current_path={@current_path}
   width="full"
+  content_class="card-grid grid-cols-1"
 >
   <:breadcrumb>Dashboard</:breadcrumb>
   <header class="flex flex-wrap items-center justify-between gap-2">
@@ -41,13 +42,13 @@
   </.panel>
 
   <section id="fleet" class="fleet-overview overflow-hidden rounded-2xl border border-line">
-    <div class="flex items-center justify-between gap-2 px-5 pt-4 sm:px-6">
+    <div class="flex items-center justify-between gap-2 px-5 pt-4">
       <h2 class="flex items-center gap-2 text-sm font-semibold text-ink">
         <.icon name="hero-server-stack" class="size-5 text-accent" /> Fleet capacity
       </h2>
       <.drilldown navigate={~p"/boxes"}>View boxes</.drilldown>
     </div>
-    <div class="grid grid-cols-2 gap-x-6 gap-y-5 px-5 py-5 sm:px-6 xl:grid-cols-4">
+    <div class="grid grid-cols-2 gap-4 px-5 py-4 xl:grid-cols-4">
       <div>
         <p class="text-xs font-medium text-ink-2">Boxes online</p>
         <p class="fleet-figure">{@fleet.online}<span> / {@fleet.boxes}</span></p>
@@ -79,7 +80,7 @@
         </p>
       </div>
     </div>
-    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-line bg-raised/60 px-5 py-3 text-xs text-ink-2 sm:px-6">
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-line bg-raised/60 px-5 py-3 text-xs text-ink-2">
       <span>Host CPU <b class="ml-1 text-ink">{percent(@fleet.cpu_pct)}</b></span>
       <span>Host memory <b class="ml-1 text-ink">{percent(@fleet.memory_pct)}</b></span>
       <span>VM storage free
@@ -96,7 +97,7 @@
   <section
     id="counters"
     aria-label="Current workload"
-    class="grid grid-cols-2 gap-3 lg:grid-cols-4"
+    class="card-grid grid-cols-2 lg:grid-cols-4"
   >
     <.metric
       label="Running"
@@ -152,7 +153,7 @@
   </section>
   <section
     aria-label="Last 24 hours"
-    class="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.15fr)_minmax(0,0.85fr)]"
+    class="card-grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.15fr)_minmax(0,0.85fr)]"
   >
     <Charts.timeseries
       id="chart-started"
@@ -181,7 +182,7 @@
     />
     <.outcome_panel counts={@outcomes} />
   </section>
-  <div class="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1.12fr)_minmax(0,1fr)]">
+  <div class="card-grid grid-cols-1 items-start lg:grid-cols-[minmax(0,1.12fr)_minmax(0,1fr)]">
     <.panel id="recent" title="Recently completed" padded={false}>
       <:actions>
         <.drilldown navigate={~p"/runs"}>Runs</.drilldown>
@@ -201,7 +202,7 @@
         <li :if={@recent == []} class="px-5 py-3 text-ink-3">None yet.</li>
       </ul>
     </.panel>
-    <div class="grid min-w-0 gap-4">
+    <div class="card-grid min-w-0">
       <.panel id="waiting" title="Waiting longest" padded={false}>
         <:actions>
           <.drilldown navigate={~p"/queue"}>Queue</.drilldown>

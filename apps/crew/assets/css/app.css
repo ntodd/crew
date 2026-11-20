@@ -809,6 +809,22 @@ progress.bar.bar-muted { color: var(--color-line-strong); }
 .lv .bg-8 { background: #33333f; } .lv .bg-9 { background: #b0303a; } .lv .bg-10 { background: #2a8f55; } .lv .bg-11 { background: #a08b00; }
 .lv .bg-12 { background: #3f5ab0; } .lv .bg-13 { background: #8f3fb0; } .lv .bg-14 { background: #2a8f8f; } .lv .bg-15 { background: #8a8a99; }
 
+/* Use one gutter for rows, columns and nested stacks on Dashboard and Boxes. */
+@utility card-grid {
+  display: grid;
+  gap: --spacing(4);
+}
+
+/* Anchor sibling charts to the same baseline when a heading or legend wraps. */
+.card-grid > .chart {
+  display: flex;
+  flex-direction: column;
+}
+
+.card-grid > .chart > :has(+ .chart-plot) {
+  margin-bottom: auto;
+}
+
 /* The fleet summary uses the same live capacity figures in both themes. */
 .fleet-overview {
   background: linear-gradient(105deg, color-mix(in srgb, var(--color-accent) 9%, var(--color-raised)), var(--color-raised) 65%);

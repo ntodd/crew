@@ -144,7 +144,7 @@ defmodule CrewWeb.DashboardLive do
     ~H"""
     <.link
       navigate={@navigate}
-      class="group min-w-0 rounded-xl border border-line bg-raised p-4 transition-colors hover:border-line-strong sm:px-5"
+      class="group min-w-0 rounded-xl border border-line bg-raised px-5 py-4 transition-colors hover:border-line-strong"
     >
       <div class="flex items-center justify-between gap-2">
         <p class="text-xs font-medium text-ink-2">{@label}</p>
