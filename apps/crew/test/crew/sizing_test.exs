@@ -622,6 +622,36 @@ defmodule Crew.SizingTest do
       assert [%{name: nil, from: %{name: "l"}}] = Sizing.changes(admin())
     end
 
+    test "a newer run without a full shape hides the move until its summary arrives", %{
+      repo: repo
+    } do
+      ran(repo, 40, 600, @l)
+      ran(repo, 30, 600, [])
+      newest = ran(repo, 20, 600, memory_mib: nil)
+      assert Sizing.changes(admin()) == []
+
+      Repo.update!(Ecto.Changeset.change(newest, memory_mib: 8192))
+      assert [%{runs_before: 1, runs_after: 2}] = Sizing.changes(admin())
+    end
+
+    test "separate batches keep each job's counts and durations, even without a workflow name", %{
+      repo: repo
+    } do
+      for i <- 1..45 do
+        attrs = [name: "job-#{i}", workflow_name: nil]
+        ran(repo, 12, 600, attrs ++ @l)
+        ran(repo, 10, 600 + i, attrs)
+      end
+
+      changes = Sizing.changes(admin())
+      assert length(changes) == 45
+
+      for change <- changes do
+        assert change.name == "job-#{change.median_after_s - 600}"
+        assert {change.runs_before, change.runs_after, change.median_before_s} == {1, 1, 600}
+      end
+    end
+
     test "only the repos the viewer can read", %{repo: repo} do
       for h <- [240, 200], do: ran(repo, h, 600, @l)
       for h <- [40, 30], do: ran(repo, h, 600, [])
