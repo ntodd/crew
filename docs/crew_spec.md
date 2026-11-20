@@ -3102,23 +3102,22 @@ The sidebar has:
 ### 17.3 Pages
 
 **Dashboard (`/`)**
-- **Fleet strip:** a card per box with:
-  - a live 30-minute CPU and memory sparkline;
-  - allocated vs allocatable vCPU and memory bars;
-  - VMs by size;
-  - status: online, draining, rebooting, quarantined, needs approval or
-    offline, plus a "reboot needed" badge;
-  - firewall and virtualisation badges.
-- **Counters:** running, waiting and booting jobs, each linking to a
-  filtered Runs page, and job minutes today (UTC, §16.6) with
+- **Fleet capacity:** a full-width aggregate of online boxes, boxes taking
+  jobs or needing attention, live VMs, and reserved vs allocatable vCPUs
+  and memory. Host CPU is weighted by cores, host memory by bytes, and
+  VM storage free is summed across fresh reports. Boxes has the individual
+  machines and their histories.
+- **Counters:** running and waiting jobs link to filtered Runs, booting VMs
+  link to Queue, and job minutes today (UTC, §16.6) displays
   yesterday's in its note, linking to Usage. Waiting counts regular jobs,
   and its note gives the spare jobs waiting when there are any
   ("+ 42 spare", §7.2). Running and booting count both tiers.
 - **Waiting:** the 10 longest-waiting jobs, each with its reason (§8.3);
   regular jobs first, then spare ones, tagged (§7.2).
 - **Recent:** the last 20 completed jobs.
-- **Charts (24 hours):** jobs started per 5 minutes, stacked by conclusion;
-  p50 and p95 wait and boot times.
+- **Charts (24 hours):** jobs started per half hour, stacked by conclusion;
+  p50 and p95 wait and boot times, plus outcome counts and the share of
+  completed Crew jobs that succeeded.
 - **Activity feed** (Foreman's `Activity`): joins, leaves, quarantines,
   stalls, approvals, image rollouts, CA rotations, OS updates flagged,
   reboots and rollbacks.

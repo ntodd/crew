@@ -52,9 +52,10 @@ defmodule CrewWeb.BoxLive.Index do
       current_scope={@current_scope}
       current_path={@current_path}
       width="full"
+      content_class="card-grid grid-cols-1"
     >
       <:breadcrumb>Boxes</:breadcrumb>
-      <.header>
+      <.header class="pb-0!">
         Boxes
         <:subtitle>The machines that run job VMs.</:subtitle>
         <:actions>
@@ -90,6 +91,7 @@ defmodule CrewWeb.BoxLive.Index do
       <.callout
         :if={@fleet.attention != []}
         id="boxes-attention"
+        class="px-5! py-4!"
         kind="danger"
         icon="hero-exclamation-triangle-mini"
       >
@@ -106,9 +108,14 @@ defmodule CrewWeb.BoxLive.Index do
         </ul>
       </.callout>
 
-      <section :if={@fleet.boxes != []} id="fleet" aria-label="Fleet" class="@container space-y-4">
+      <section
+        :if={@fleet.boxes != []}
+        id="fleet"
+        aria-label="Fleet"
+        class="@container card-grid grid-cols-1"
+      >
         <.totals totals={@fleet.totals} attention={length(@fleet.attention)} />
-        <div class="grid gap-4 @5xl:grid-cols-2">
+        <div class="card-grid grid-cols-1 @5xl:grid-cols-2">
           <.provisioned
             id="provisioned-vcpus"
             title="vCPUs provisioned"
@@ -136,7 +143,7 @@ defmodule CrewWeb.BoxLive.Index do
       </section>
 
       <section :if={@fleet.boxes != []} aria-label="Boxes" class="@container">
-        <div id="boxes-grid" class={["grid gap-4", grid_cols(length(@fleet.boxes))]}>
+        <div id="boxes-grid" class={["card-grid", grid_cols(length(@fleet.boxes))]}>
           <.box_card :for={entry <- @fleet.boxes} entry={entry} fleet={@fleet} />
         </div>
       </section>
@@ -160,7 +167,7 @@ defmodule CrewWeb.BoxLive.Index do
 
   defp totals(assigns) do
     ~H"""
-    <div class="grid grid-cols-2 gap-3 @4xl:grid-cols-4">
+    <div class="card-grid grid-cols-2 @4xl:grid-cols-4">
       <.stat id="fleet-boxes" label="Boxes online">
         {@totals.online} <span class="text-base font-medium text-ink-3">of {@totals.boxes}</span>
         <:note>
@@ -206,7 +213,7 @@ defmodule CrewWeb.BoxLive.Index do
 
   defp stat(assigns) do
     ~H"""
-    <div id={@id} class="rounded-xl border border-line bg-raised px-4 py-3.5 shadow-xs">
+    <div id={@id} class="flex flex-col rounded-xl border border-line bg-raised px-5 py-4 shadow-xs">
       <p class="text-xs font-medium text-ink-2">{@label}</p>
       <p class="mt-1.5 text-2xl font-semibold leading-none tabular-nums text-ink">
         {render_slot(@inner_block)}
@@ -214,7 +221,7 @@ defmodule CrewWeb.BoxLive.Index do
       <p :if={@detail != []} class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-2">
         {render_slot(@detail)}
       </p>
-      <p :if={@note != []} class="mt-2 text-xs text-ink-3">{render_slot(@note)}</p>
+      <p :if={@note != []} class="mt-auto pt-2 text-xs text-ink-3">{render_slot(@note)}</p>
     </div>
     """
   end

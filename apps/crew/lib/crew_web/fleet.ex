@@ -57,28 +57,57 @@ defmodule CrewWeb.Fleet do
     colors = colors(boxes)
 
     entries =
-      Enum.map(boxes, fn box ->
-        box_vms = Map.get(vms, box.id, [])
-        online? = MapSet.member?(online, box.id)
+      for entry <- entries(boxes, online, fleet.until) do
+        id = entry.box.id
+        box_vms = Map.get(vms, id, [])
 
-        %{
-          box: box,
-          online: online?,
-          color: colors[box.id],
-          issues: Boxes.issues(box, online?),
-          latest: fresh(Metrics.latest_box(box.id), fleet.until),
-          series: get_in(fleet, [:boxes_series, box.id]) || [],
+        Map.merge(entry, %{
+          color: colors[id],
+          series: get_in(fleet, [:boxes_series, id]) || [],
           allocation: VMs.allocation_of(box_vms),
-          capacity: Scheduler.capacity(box),
           vms: vm_states(box_vms),
           sizes: sizes(box_vms, fleet.sizes)
-        }
-      end)
+        })
+      end
 
     fleet
     |> Map.put(:boxes, entries)
     |> Map.put(:totals, totals(entries, vms))
     |> Map.put(:attention, Enum.filter(entries, &attention?/1))
+  end
+
+  @doc "Current fleet totals for the dashboard, without loading any per-box histories."
+  def overview do
+    online = MapSet.new(Agents.online_ids())
+    entries = entries(Boxes.list(), online, System.os_time(:second))
+    totals = totals(entries, Enum.group_by(VMs.list_live(), & &1.box_id))
+    reporting = Enum.filter(entries, &(&1.online && &1.latest && &1.box.pinned_capabilities))
+    cores = Enum.sum_by(reporting, & &1.box.pinned_capabilities["vcpus"])
+    cpu = Enum.sum_by(reporting, &(&1.latest.cpu_pct * &1.box.pinned_capabilities["vcpus"]))
+    memory = Enum.sum_by(reporting, & &1.latest.mem_total_mib)
+
+    Map.merge(totals, %{
+      attention: Enum.count(entries, &attention?/1),
+      reporting: length(reporting),
+      cpu_pct: if(cores > 0, do: round(cpu / cores)),
+      memory_pct:
+        if(memory > 0, do: round(100 * Enum.sum_by(reporting, & &1.latest.mem_used_mib) / memory)),
+      disk_free_mib: if(reporting != [], do: Enum.sum_by(reporting, & &1.latest.vm_area_free_mib))
+    })
+  end
+
+  defp entries(boxes, online, now) do
+    for box <- boxes do
+      online? = MapSet.member?(online, box.id)
+
+      %{
+        box: box,
+        online: online?,
+        issues: Boxes.issues(box, online?),
+        latest: fresh(Metrics.latest_box(box.id), now),
+        capacity: Scheduler.capacity(box)
+      }
+    end
   end
 
   # The charts: each box's samples, and what's provisioned, stacked by box.

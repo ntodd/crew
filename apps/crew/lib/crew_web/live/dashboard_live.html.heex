@@ -1,0 +1,254 @@
+<Layouts.app
+  flash={@flash}
+  current_scope={@current_scope}
+  current_path={@current_path}
+  width="full"
+  content_class="card-grid grid-cols-1"
+>
+  <:breadcrumb>Dashboard</:breadcrumb>
+  <header class="flex flex-wrap items-center justify-between gap-2">
+    <h1 class="text-3xl font-semibold tracking-tight text-ink">Dashboard</h1>
+    <p class="flex items-center gap-2 text-xs tabular-nums text-ink-3">
+      <span class="size-1.5 rounded-full bg-accent"></span>
+      Updated {Calendar.strftime(@now, "%H:%M:%S UTC")}
+    </p>
+  </header>
+  <.panel
+    :if={
+      @fleet.boxes == 0 or not @repos? or
+        (@recent == [] and @waiting == [] and @counts.running == 0)
+    }
+    id="dashboard-empty"
+    title="Get started"
+  >
+    <div class="space-y-3 text-sm text-ink-2">
+      <p :if={@fleet.boxes == 0} id="empty-boxes">
+        <.link
+          :if={Crew.Scope.admin?(@current_scope)}
+          navigate={~p"/boxes/new"}
+          class="font-medium text-ink underline-offset-2 hover:underline"
+        >Add your first box.</.link>
+        No boxes have joined the fleet yet.
+      </p>
+      <p :if={not @repos?} id="empty-repos">
+        <span class="font-medium text-ink">Install the App on a repo.</span>
+        Crew only sees jobs from repos the GitHub App is installed on.
+      </p>
+      <div id="empty-jobs">
+        <p>Then ask for a Crew runner in a workflow:</p>
+        <pre class="mt-2 rounded-lg border border-line bg-subtle px-3 py-2 font-mono text-xs text-ink">runs-on: crew-m</pre>
+      </div>
+    </div>
+  </.panel>
+
+  <section id="fleet" class="fleet-overview overflow-hidden rounded-2xl border border-line">
+    <div class="flex items-center justify-between gap-2 px-5 pt-4">
+      <h2 class="flex items-center gap-2 text-sm font-semibold text-ink">
+        <.icon name="hero-server-stack" class="size-5 text-accent" /> Fleet capacity
+      </h2>
+      <.drilldown navigate={~p"/boxes"}>View boxes</.drilldown>
+    </div>
+    <div class="grid grid-cols-2 gap-4 px-5 py-4 xl:grid-cols-4">
+      <div>
+        <p class="text-xs font-medium text-ink-2">Boxes online</p>
+        <p class="fleet-figure">{@fleet.online}<span> / {@fleet.boxes}</span></p>
+        <p class="mt-1 text-xs text-ink-2">
+          {@fleet.boxes - @fleet.attention - @fleet.draining} taking jobs<span :if={
+            @fleet.draining > 0
+          }> · {@fleet.draining} draining</span><span
+            :if={@fleet.attention > 0}
+            class="text-warning"
+          > · {@fleet.attention} {if @fleet.attention == 1, do: "needs", else: "need"} attention</span>
+        </p>
+      </div>
+      <.allocation
+        label="vCPUs reserved"
+        used={@fleet.provisioned_vcpus}
+        total={trunc(@fleet.allocatable_vcpus)}
+      />
+      <.allocation
+        label="Memory reserved"
+        used={@fleet.provisioned_memory_mib}
+        total={@fleet.allocatable_memory_mib}
+        memory
+      />
+      <div>
+        <p class="text-xs font-medium text-ink-2">Live VMs</p>
+        <p class="fleet-figure">{@fleet.vms.total}</p>
+        <p class="mt-1 text-xs text-ink-2">
+          {@fleet.vms.busy} busy · {@fleet.vms.idle} idle<span :if={@fleet.vms.ending > 0}> · {@fleet.vms.ending} ending</span>
+        </p>
+      </div>
+    </div>
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-line bg-raised/60 px-5 py-3 text-xs text-ink-2">
+      <span>Host CPU <b class="ml-1 text-ink">{percent(@fleet.cpu_pct)}</b></span>
+      <span>Host memory <b class="ml-1 text-ink">{percent(@fleet.memory_pct)}</b></span>
+      <span>VM storage free
+      <b class="ml-1 text-ink">{if @fleet.disk_free_mib,
+        do: gib(@fleet.disk_free_mib) <> " GiB",
+        else: "—"}</b></span>
+      <span class="text-ink-3 sm:ml-auto"><%= if @fleet.online > 0 do %>
+        {@fleet.reporting} of {@fleet.online} online boxes reporting
+      <% else %>
+        No boxes online
+      <% end %></span>
+    </div>
+  </section>
+  <section
+    id="counters"
+    aria-label="Current workload"
+    class="card-grid grid-cols-2 lg:grid-cols-4"
+  >
+    <.metric
+      label="Running"
+      value={@counts.running}
+      navigate={~p"/runs?status=in_progress"}
+      icon="hero-play"
+      tone="text-running-ink"
+    >
+      <%= if @counts.running_repos == 0 do %>
+        No active repos
+      <% else %>
+        Across {@counts.running_repos} {if @counts.running_repos == 1, do: "repo", else: "repos"}
+      <% end %>
+    </.metric>
+    <.metric
+      label="Waiting"
+      value={@counts.waiting}
+      navigate={~p"/runs?status=queued"}
+      icon="hero-queue-list"
+      tone="text-warning"
+    >
+      <span :if={@counts.waiting_spare > 0} id="waiting-spare">+ {@counts.waiting_spare} spare</span>
+      <span :if={oldest = List.first(@waiting)}><%= unless oldest.spare do %>
+        <span :if={@counts.waiting_spare > 0}> · </span>Oldest {JobStatus.format(
+          JobStatus.duration(oldest.queued_at || oldest.seen_at, @now)
+        )}
+      <% end %></span>
+      <span :if={@waiting == []}>Queue clear</span>
+    </.metric>
+    <.metric
+      label="Booting"
+      value={@counts.booting}
+      navigate={~p"/queue"}
+      icon="hero-bolt"
+      tone="text-accent"
+    >
+      <%= if @phases.boot_p95 do %>
+        24h p95 boot · {JobStatus.format(@phases.boot_p95)}
+      <% else %>
+        No boot times in 24h
+      <% end %>
+    </.metric>
+    <.metric
+      label="Job minutes today"
+      value={UsageComponents.minutes(@job_minutes.today)}
+      value_id="job-minutes-today"
+      navigate={~p"/usage"}
+      icon="hero-clock"
+      tone="text-ink-2"
+    >
+      {UsageComponents.minutes(@job_minutes.yesterday)} yesterday, UTC
+    </.metric>
+  </section>
+  <section
+    aria-label="Last 24 hours"
+    class="card-grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1.15fr)_minmax(0,0.85fr)]"
+  >
+    <Charts.timeseries
+      id="chart-started"
+      title="Job throughput"
+      value={UsageComponents.delimit(@starts_total)}
+      note="Jobs started in 24h · per half hour"
+      series={if @starts_total > 0, do: @starts_chart, else: []}
+      since={@started.since}
+      until={@started.until}
+      ymax={Geometry.nice_max(stack_max(@started))}
+      gap={@started.interval}
+      format={&to_string(round(&1))}
+      empty="No Crew jobs started in the last 24 hours."
+    />
+    <Charts.timeseries
+      id="chart-wait"
+      title="Wait and boot"
+      note="Placement and startup · p50 and p95 by hour"
+      series={phase_series(@phases)}
+      since={@phases.since}
+      until={@phases.until}
+      ymax={Geometry.nice_max(phase_max(@phases))}
+      gap={7200}
+      format={&JobStatus.format(round(&1))}
+      empty="No placements in the last 24 hours."
+    />
+    <.outcome_panel counts={@outcomes} />
+  </section>
+  <div class="card-grid grid-cols-1 items-start lg:grid-cols-[minmax(0,1.12fr)_minmax(0,1fr)]">
+    <.panel id="recent" title="Recently completed" padded={false}>
+      <:actions>
+        <.drilldown navigate={~p"/runs"}>Runs</.drilldown>
+      </:actions>
+      <ul class="max-h-[27rem] overflow-y-auto divide-y divide-line text-sm">
+        <li :for={job <- @recent} class="flex items-center justify-between gap-3 px-5 py-2.5">
+          <span class="min-w-0 truncate">
+            <%= if readable?(@readable, job.repo_id) do %>
+              <.job_link job={job} />
+              <span class="text-xs text-ink-3"> · {job.repo.full_name}</span>
+            <% else %>
+              <span class="text-ink-2">a job in another repo</span>
+            <% end %>
+          </span>
+          <.job_status job={job} now={@now} />
+        </li>
+        <li :if={@recent == []} class="px-5 py-3 text-ink-3">None yet.</li>
+      </ul>
+    </.panel>
+    <div class="card-grid min-w-0">
+      <.panel id="waiting" title="Waiting longest" padded={false}>
+        <:actions>
+          <.drilldown navigate={~p"/queue"}>Queue</.drilldown>
+        </:actions>
+        <ul class="max-h-72 overflow-y-auto divide-y divide-line text-sm">
+          <li
+            :for={job <- @waiting}
+            id={"waiting-#{job.id}"}
+            class="flex items-start justify-between gap-3 px-5 py-2.5"
+          >
+            <span class="min-w-0">
+              <%= if readable?(@readable, job.repo_id) do %>
+                <span class="block truncate text-ink">
+                  <.job_link job={job} />
+                  <.badge :if={job.spare} size="sm" data-tier="spare" class="ml-1 align-middle">
+                    spare
+                  </.badge>
+                </span>
+                <span class="block truncate text-xs text-ink-3">{job.repo.full_name}</span>
+              <% else %>
+                <span class="block truncate text-ink-2">a job in another repo</span>
+                <span class="block text-xs text-ink-3">{job.size && job.size.name}</span>
+              <% end %>
+              <span :if={job.blocked_reason || job.wait_reason} class="block text-xs text-warning">
+                {reason(@readable, job)}
+              </span>
+            </span>
+            <span class="shrink-0 tabular-nums text-xs text-ink-3">
+              {JobStatus.format(JobStatus.duration(job.queued_at || job.seen_at, @now))}
+            </span>
+          </li>
+          <li :if={@waiting == []} class="px-5 py-3 text-ink-3">Nothing is waiting.</li>
+        </ul>
+      </.panel>
+
+      <.panel id="activity" title="Fleet activity" padded={false}>
+        <ul :if={@activity != []} class="max-h-64 overflow-y-auto divide-y divide-line">
+          <li :for={event <- @activity} id={"activity-#{event.id}"} class="px-5 py-2.5 text-sm">
+            <span class="text-ink">{event.message}</span>
+            <span class="ml-2 text-xs text-ink-3">
+              {Calendar.strftime(event.inserted_at, "%b %-d, %H:%M UTC")}
+            </span>
+          </li>
+        </ul>
+        <p :if={@activity == []} class="px-5 py-4 text-sm text-ink-3">Nothing yet.</p>
+      </.panel>
+    </div>
+  </div>
+</Layouts.app>

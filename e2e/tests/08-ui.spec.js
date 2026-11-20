@@ -9,6 +9,12 @@ const layer = "08-ui"
 let agent
 const violations = []
 
+async function expectCardGap(first, next, axis = "y") {
+  const [a, b] = await Promise.all([first.boundingBox(), next.boundingBox()])
+  const gap = axis === "x" ? b.x - a.x - a.width : b.y - a.y - a.height
+  expect(gap).toBeCloseTo(16, 0)
+}
+
 test.describe.configure({mode: "serial"})
 test.afterAll(() => stopAgent(agent))
 test.beforeEach(({page}) => {
@@ -38,13 +44,33 @@ test("the dashboard, with a box and work", async ({page, request}) => {
     {timeout: 120_000}).toBe(builds.length)
 
   await page.goto("/")
-  await expect(page.locator("#fleet")).toContainText("null-ui")
+  await expect(page.locator("#fleet")).toContainText("Boxes online")
+  await expect(page.locator("#fleet")).not.toContainText("null-ui")
+  await expect(page.locator("#fleet").getByRole("link", {name: "View boxes"})).toHaveAttribute("href", "/boxes")
   await expect(page.locator("#counters")).toContainText("Waiting")
+  const counters = page.locator("#counters > a")
+  await expectCardGap(page.locator("#fleet"), counters.first())
+  await expectCardGap(counters.first(), counters.nth(1), "x")
   await expect(page.locator("#recent li").first()).toBeVisible()
-  await expect(page.locator("#chart-started")).toBeVisible()
+  const bars = page.locator("#chart-started-plot")
+  await expect(bars).toHaveAttribute("tabindex", "0", {timeout: 45_000})
   await shot(page, layer, "dashboard")
   await setTheme(page, "dark")
   await shot(page, layer, "dashboard-dark")
+  await page.setViewportSize({width: 360, height: 800})
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+  await expect(page.locator("#job-outcomes")).toContainText("completed in 24h")
+  await expectCardGap(counters.first(), counters.nth(2))
+  await expectCardGap(page.locator("#chart-started"), page.locator("#chart-wait"))
+  await shot(page, layer, "dashboard-mobile")
+  await bars.focus()
+  await bars.press("ArrowRight")
+  await expect(bars.locator("[data-tooltip]")).toContainText("Succeeded")
+  await page.getByRole("link", {name: "View boxes"}).click()
+  await expect(page.locator("[id^=box-]", {hasText: "null-ui"}).first()).toBeVisible()
+  await expectCardGap(page.locator("#fleet-boxes"), page.locator("#fleet-cores"), "x")
+  await expectCardGap(page.locator("#fleet-boxes"), page.locator("#fleet-memory"))
+  await expectCardGap(page.locator("#provisioned-memory"), page.locator("#boxes-grid"))
   await setTheme(page, "light")
 })
 

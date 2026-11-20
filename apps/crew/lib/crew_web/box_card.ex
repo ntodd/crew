@@ -1,8 +1,7 @@
 defmodule CrewWeb.BoxCard do
   @moduledoc """
   A box at a glance: its status, its last half hour of CPU and memory,
-  what its VMs hold of what it offers job VMs, and its VMs by size. The
-  dashboard's fleet strip is a row of these, and the run page shows one
+  what its VMs hold of what it offers job VMs, and its VMs by size. The run page shows it
   when you hover the box a job ran on.
   """
   use Phoenix.Component

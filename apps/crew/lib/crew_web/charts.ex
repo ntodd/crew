@@ -4,8 +4,9 @@ defmodule CrewWeb.Charts do
   the crosshair and tooltip.
 
   A chart has one value axis. Series are `%{label, color, kind, points}`:
-  `gap` (optional) overrides the chart's for that series. `kind` is `:line` (`[{at, value}]`) or `:area` (`[{at, lower, upper}]`,
-  for stacks; see `Geometry.stack/1`). `color` is a class that sets the
+  Lines use `[{at, value}]`. Stacked areas and bars use `[{at, lower, upper}]`
+  from `Geometry.stack/1`. Bars also set their bucket `interval` in seconds.
+  An optional `gap` overrides the chart's for that series. `color` sets the
   series hue (`series-1`..`series-8`, `series-other`, `series-accent`):
   production's CSP allows no inline style attributes, so nothing here
   uses one, and the hook positions the tick labels from data attributes. `format` turns a value
@@ -110,6 +111,11 @@ defmodule CrewWeb.Charts do
           aria-hidden="true"
         >
           <%= for s <- @series do %>
+            <path
+              :if={s.kind == :bar}
+              d={Geometry.bar_path(s.points, s.interval, @dom)}
+              class={["chart-bars", s.color]}
+            />
             <path
               :if={s.kind == :area}
               d={Geometry.area_path(s.points, series_dom(s, @dom))}

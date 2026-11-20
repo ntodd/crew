@@ -798,10 +798,11 @@ defmodule Crew.Jobs do
 
   @doc "Running, waiting (regular, with spare apart) and booting counts for Crew's jobs."
   def counts do
-    running =
-      Repo.aggregate(
-        from(j in Job, where: j.classification == "ours" and j.gh_state == "in_progress"),
-        :count
+    {running, running_repos} =
+      Repo.one(
+        from j in Job,
+          where: j.classification == "ours" and j.gh_state == "in_progress",
+          select: {count(j.id), count(j.repo_id, :distinct)}
       )
 
     # Waiting is regular jobs; spare ones (§7.2) are counted apart.
@@ -822,6 +823,7 @@ defmodule Crew.Jobs do
 
     %{
       running: running,
+      running_repos: running_repos,
       waiting: Map.get(waiting, false, 0),
       waiting_spare: Map.get(waiting, true, 0),
       booting: booting
@@ -851,41 +853,56 @@ defmodule Crew.Jobs do
     )
   end
 
+  @doc "Completed Crew jobs in the last 24 hours, grouped by their GitHub conclusion."
+  def completed_outcomes(now \\ DateTime.utc_now()) do
+    since = DateTime.add(now, -86_400)
+
+    Repo.all(
+      from j in Job,
+        where:
+          j.classification == "ours" and j.gh_state == "completed" and
+            j.completed_at > ^since and j.completed_at <= ^now,
+        group_by: j.conclusion,
+        select: {j.conclusion, count(j.id)}
+    )
+    |> Map.new()
+  end
+
   @doc """
-  Crew jobs started per 5 minutes over the last day, by conclusion (the
+  Crew jobs started per half hour over the last day, by conclusion (the
   dashboard's stacked chart). Times are Unix seconds.
   """
   def started_series(now \\ DateTime.utc_now()) do
     since = DateTime.add(now, -86_400)
-    step = 300
+    step = 1800
+    start = DateTime.to_unix(since)
 
     rows =
       Repo.all(
         from j in Job,
-          where: j.classification == "ours" and j.started_at > ^since,
+          where: j.classification == "ours" and j.started_at > ^since and j.started_at <= ^now,
           select: {j.started_at, j.conclusion}
       )
 
-    bucket = fn at -> div(DateTime.to_unix(at), step) * step end
+    # The 48 bars span the rolling window. Timestamp them at their centres.
+    counts =
+      Enum.frequencies_by(rows, fn {at, conclusion} ->
+        bucket = min(div(DateTime.to_unix(at) - start, step), 47)
+        outcome = if conclusion in ["success", "failure"], do: conclusion, else: "other"
+        {bucket, outcome}
+      end)
 
-    ticks =
-      for i <- 0..div(86_400, step), do: div(DateTime.to_unix(since), step) * step + i * step
-
-    by = fn pick ->
-      counts =
-        rows
-        |> Enum.filter(fn {_, c} -> pick.(c) end)
-        |> Enum.frequencies_by(fn {at, _} -> bucket.(at) end)
-
-      for t <- ticks, do: {t, Map.get(counts, t, 0)}
+    by = fn outcome ->
+      for i <- 0..47, do: {start + i * step + div(step, 2), Map.get(counts, {i, outcome}, 0)}
     end
 
     %{
       since: DateTime.to_unix(since),
       until: DateTime.to_unix(now),
-      success: by.(&(&1 == "success")),
-      failure: by.(&(&1 == "failure")),
-      other: by.(&(&1 not in ["success", "failure"]))
+      interval: step,
+      success: by.("success"),
+      failure: by.("failure"),
+      other: by.("other")
     }
   end
 
@@ -901,7 +918,7 @@ defmodule Crew.Jobs do
         from v in Crew.VMs.VM,
           join: j in Job,
           on: j.id == v.job_id,
-          where: v.requested_at > ^since,
+          where: v.requested_at > ^since and v.requested_at <= ^now,
           select: {v.requested_at, j.seen_at, v.idle_at}
       )
 
@@ -930,7 +947,8 @@ defmodule Crew.Jobs do
       since: DateTime.to_unix(since),
       until: DateTime.to_unix(now),
       wait: series.(waits),
-      boot: series.(boots)
+      boot: series.(boots),
+      boot_p95: Insights.percentile(Enum.map(boots, &elem(&1, 1)), 0.95)
     }
   end
 
