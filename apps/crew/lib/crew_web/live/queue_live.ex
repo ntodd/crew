@@ -27,6 +27,14 @@ defmodule CrewWeb.QueueLive do
 
   defp load(socket) do
     view = Scheduler.queue_view()
+    now = DateTime.utc_now()
+
+    oldest_wait =
+      view.jobs
+      |> Map.values()
+      |> Enum.map(&JobStatus.duration(&1.queued_at || &1.seen_at, now))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.max(fn -> nil end)
 
     assign(socket,
       queue: view.queue,
@@ -34,7 +42,9 @@ defmodule CrewWeb.QueueLive do
       repos: view.repos,
       readable: Repos.readable_ids(socket.assigns.current_scope),
       series: Crew.Cache.fetch(:queue_series, chart_cache_ms(), &Jobs.queue_series/0),
-      now: DateTime.utc_now()
+      oldest_wait: oldest_wait,
+      blocked: length(view.queue.blocked) + Enum.count(view.queue.units, & &1.blocked_reason),
+      now: now
     )
   end
 
@@ -82,165 +92,221 @@ defmodule CrewWeb.QueueLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} current_scope={@current_scope} current_path={@current_path}>
+    <Layouts.app
+      flash={@flash}
+      current_scope={@current_scope}
+      current_path={@current_path}
+      width="full"
+      content_class="card-grid grid-cols-1"
+    >
       <:breadcrumb>Queue</:breadcrumb>
 
-      <.header>
+      <.header class="pb-0!">
         Queue
         <:subtitle>
           Waiting jobs in the order Crew would place them, and each class's supply.
         </:subtitle>
       </.header>
 
-      <div class="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-        <.panel id="units" title="Waiting" padded={false}>
-          <:subtitle>
-            {length(@queue.units)} waiting · {length(@queue.covered)} with a runner on its way
-          </:subtitle>
-          <ol class="divide-y divide-line text-sm">
-            <li
-              :for={{unit, i} <- Enum.with_index(@queue.units, 1)}
-              :if={job = @jobs[unit.job_id]}
-              id={"unit-#{unit.job_id}"}
-              class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5 px-5 py-2.5"
-            >
-              <span class="tabular-nums text-ink-3">{i}</span>
-              <span class="min-w-0">
-                <%= if readable?(@readable, job.repo_id) do %>
-                  <span class="block truncate text-ink">{job.name}</span>
-                  <span class="block truncate text-xs text-ink-3">
-                    {repo_label(assigns, job.repo_id)} ·
-                    <span class="font-mono">{Enum.join(job.label_key || [], ", ")}</span>
-                    <.tier_tag spare={job.spare} />
-                  </span>
-                <% else %>
-                  <span class="block truncate text-ink-2">a job in another repo</span>
-                  <span class="block text-xs text-ink-3">
-                    {job.size && job.size.name} <.tier_tag spare={job.spare} />
-                  </span>
-                <% end %>
-                <span :if={unit.wait_reason || unit.blocked_reason} class="block text-xs text-warning">
-                  {reason(assigns, job, unit.blocked_reason || unit.wait_reason)}
-                </span>
-                <span :if={unit.placed} class="block text-xs text-success">placing now</span>
-              </span>
-              <span class="tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
-            </li>
-            <li
-              :for={{id, reason} <- @queue.blocked}
-              :if={job = @jobs[id]}
-              id={"blocked-#{id}"}
-              class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 px-5 py-2.5"
-            >
-              <.icon name="hero-pause-circle" class="size-4 text-warning" />
-              <span class="min-w-0">
-                <%= if readable?(@readable, job.repo_id) do %>
-                  <span class="block truncate text-ink">{job.name}</span>
-                  <span class="block truncate text-xs text-ink-3">
-                    {repo_label(assigns, job.repo_id)} ·
-                    <span class="font-mono">{Enum.join(job.label_key || [], ", ")}</span>
-                    <.tier_tag spare={job.spare} />
-                  </span>
-                <% else %>
-                  <span class="block truncate text-ink-2">
-                    a job in another repo <.tier_tag spare={job.spare} />
-                  </span>
-                <% end %>
-                <span class="block text-xs text-warning">Blocked: {reason(assigns, job, reason)}</span>
-              </span>
-              <span class="tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
-            </li>
-            <li
-              :if={@queue.units == [] and @queue.blocked == [] and @queue.covered == []}
-              class="px-5 py-4 text-ink-3"
-            >
-              Nothing is waiting.
-            </li>
-          </ol>
-          <div :if={@queue.covered != []} id="covered" class="border-t border-line">
-            <p class="px-5 pt-3 text-xs font-medium text-ink-3">
-              A runner is booting or idle for these; GitHub hands them over.
-            </p>
-            <ul class="divide-y divide-line text-sm">
-              <li
-                :for={id <- @queue.covered}
-                :if={job = @jobs[id]}
-                id={"covered-#{id}"}
-                class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 px-5 py-2.5"
-              >
-                <.icon name="hero-arrow-path" class="size-4 text-ink-3" />
-                <span class="min-w-0">
-                  <%= if readable?(@readable, job.repo_id) do %>
-                    <span class="block truncate text-ink">{job.name}</span>
-                    <span class="block truncate text-xs text-ink-3">{repo_label(assigns, job.repo_id)}</span>
-                  <% else %>
-                    <span class="block truncate text-ink-2">a job in another repo</span>
-                  <% end %>
-                </span>
-                <span class="tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
-              </li>
-            </ul>
-          </div>
-        </.panel>
+      <section
+        id="queue-totals"
+        aria-label="Current queue"
+        class="card-grid grid-cols-2 lg:grid-cols-4"
+      >
+        <.stat_card value_id="queue-count" label="Queued jobs" icon="hero-queue-list">
+          {map_size(@jobs)}
+        </.stat_card>
+        <.stat_card value_id="queue-covered-count" label="With a runner" icon="hero-cube">
+          {length(@queue.covered)}
+          <:note>Booting or idle</:note>
+        </.stat_card>
+        <.stat_card value_id="queue-blocked-count" label="Blocked" icon="hero-pause-circle">
+          {@blocked}
+        </.stat_card>
+        <.stat_card value_id="queue-oldest" label="Oldest wait" icon="hero-clock">
+          {JobStatus.format(@oldest_wait)}
+        </.stat_card>
+      </section>
 
-        <div class="space-y-4">
+      <div class="card-grid grid-cols-1 items-start xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <div class="card-grid min-w-0 grid-cols-1">
+          <.panel id="units" title="Waiting" padded={false}>
+            <:subtitle>
+              Jobs in placement order, with the reason each is waiting.
+            </:subtitle>
+            <div class="max-h-[32rem] overflow-y-auto">
+              <ol class="divide-y divide-line text-sm">
+                <li
+                  :for={{unit, i} <- Enum.with_index(@queue.units, 1)}
+                  :if={job = @jobs[unit.job_id]}
+                  id={"unit-#{unit.job_id}"}
+                  class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 gap-y-0.5 px-5 py-2.5"
+                >
+                  <span class="tabular-nums text-ink-3">{i}</span>
+                  <span class="min-w-0">
+                    <%= if readable?(@readable, job.repo_id) do %>
+                      <span class="block truncate text-ink">{job.name}</span>
+                      <span class="block truncate text-xs text-ink-3">
+                        {repo_label(assigns, job.repo_id)} ·
+                        <span class="font-mono">{Enum.join(job.label_key || [], ", ")}</span>
+                        <.tier_tag spare={job.spare} />
+                      </span>
+                    <% else %>
+                      <span class="block truncate text-ink-2">a job in another repo</span>
+                      <span class="block text-xs text-ink-3">
+                        {job.size && job.size.name} <.tier_tag spare={job.spare} />
+                      </span>
+                    <% end %>
+                    <span
+                      :if={unit.wait_reason || unit.blocked_reason}
+                      class="block text-xs text-warning"
+                    >
+                      {reason(assigns, job, unit.blocked_reason || unit.wait_reason)}
+                    </span>
+                    <span :if={unit.placed} class="block text-xs text-success">placing now</span>
+                  </span>
+                  <span class="whitespace-nowrap tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
+                </li>
+                <li
+                  :for={{id, reason} <- @queue.blocked}
+                  :if={job = @jobs[id]}
+                  id={"blocked-#{id}"}
+                  class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 px-5 py-2.5"
+                >
+                  <.icon name="hero-pause-circle" class="size-4 text-warning" />
+                  <span class="min-w-0">
+                    <%= if readable?(@readable, job.repo_id) do %>
+                      <span class="block truncate text-ink">{job.name}</span>
+                      <span class="block truncate text-xs text-ink-3">
+                        {repo_label(assigns, job.repo_id)} ·
+                        <span class="font-mono">{Enum.join(job.label_key || [], ", ")}</span>
+                        <.tier_tag spare={job.spare} />
+                      </span>
+                    <% else %>
+                      <span class="block truncate text-ink-2">
+                        a job in another repo <.tier_tag spare={job.spare} />
+                      </span>
+                    <% end %>
+                    <span class="block text-xs text-warning">Blocked: {reason(assigns, job, reason)}</span>
+                  </span>
+                  <span class="whitespace-nowrap tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
+                </li>
+                <li
+                  :if={@queue.units == [] and @queue.blocked == [] and @queue.covered == []}
+                  class="px-5 py-4 text-ink-3"
+                >
+                  Nothing is waiting.
+                </li>
+              </ol>
+              <div :if={@queue.covered != []} id="covered" class="border-t border-line">
+                <p class="px-5 pt-3 text-xs font-medium text-ink-3">
+                  A runner is booting or idle for these; GitHub hands them over.
+                </p>
+                <ul class="divide-y divide-line text-sm">
+                  <li
+                    :for={id <- @queue.covered}
+                    :if={job = @jobs[id]}
+                    id={"covered-#{id}"}
+                    class="grid grid-cols-[2rem_minmax(0,1fr)_auto] items-baseline gap-x-3 px-5 py-2.5"
+                  >
+                    <.icon name="hero-arrow-path" class="size-4 text-ink-3" />
+                    <span class="min-w-0">
+                      <%= if readable?(@readable, job.repo_id) do %>
+                        <span class="block truncate text-ink">{job.name}</span>
+                        <span class="block truncate text-xs text-ink-3">{repo_label(
+                          assigns,
+                          job.repo_id
+                        )}</span>
+                      <% else %>
+                        <span class="block truncate text-ink-2">a job in another repo</span>
+                      <% end %>
+                    </span>
+                    <span class="whitespace-nowrap tabular-nums text-xs text-ink-3">{wait(job, @now)}</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </.panel>
+
+          <Charts.timeseries
+            id="queue-chart"
+            title="Queue depth and booting VMs, 6 hours"
+            series={[
+              %{label: "Waiting", color: Charts.series_color(0), kind: :line, points: @series.depth},
+              %{label: "Booting", color: Charts.series_color(1), kind: :line, points: @series.booting}
+            ]}
+            since={@series.since}
+            until={@series.until}
+            ymax={
+              CrewWeb.Charts.Geometry.nice_max(
+                Enum.max(Enum.map(@series.depth ++ @series.booting, &elem(&1, 1)), fn -> 1 end)
+              )
+            }
+            gap={600}
+            format={&to_string(round(&1))}
+            empty="Nothing has queued in the last 6 hours."
+          />
+        </div>
+        <div class="card-grid min-w-0 grid-cols-1">
           <.panel id="classes" title="Classes" padded={false}>
             <:subtitle>
               Demand is waiting jobs; supply is VMs booting or idle for the class.
             </:subtitle>
-            <table class="w-full text-sm">
-              <thead class="text-left text-xs text-ink-3">
-                <tr>
-                  <th class="px-5 py-2 font-medium">Class</th>
-                  <th class="px-2 py-2 text-right font-medium">Demand</th>
-                  <th class="px-2 py-2 text-right font-medium">Supply</th>
-                  <th class="px-5 py-2 text-right font-medium">Deficit</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-line">
-                <tr
-                  :for={
-                    {{repo_id, key} = class, c} <-
-                      Enum.sort_by(@queue.classes, fn {_, c} -> -c.deficit end)
-                  }
-                  id={class_id(class)}
-                >
-                  <td class="px-5 py-2">
-                    <span class="block truncate text-ink">{repo_label(assigns, repo_id)}</span>
-                    <span :if={readable?(@readable, repo_id)} class="font-mono text-xs text-ink-3">
-                      {Enum.join(key, ", ")}
-                    </span>
-                    <.badge
-                      :if={c.tier in [:spare, :mixed]}
-                      size="sm"
-                      color={if c.tier == :mixed, do: "amber", else: "zinc"}
-                      data-tier={c.tier}
-                      title={
-                        if c.tier == :mixed,
-                          do:
-                            "Some of these jobs are spare and some regular while a size rename hands the label over"
-                      }
-                    >
-                      {c.tier}
-                    </.badge>
-                    <span :if={c.blocked > 0} class="block text-xs text-ink-3">
-                      {c.blocked} blocked
-                    </span>
-                    <span :if={c.stalled} class="block text-xs text-warning">Stalled: GitHub isn't assigning these runners</span>
-                    <span :if={c.backoff} class="block text-xs text-danger">
-                      Backing off{if readable?(@readable, repo_id) and c.last_error,
-                        do: ": #{c.last_error}"}
-                    </span>
-                  </td>
-                  <td class="px-2 py-2 text-right tabular-nums">{c.demand}</td>
-                  <td class="px-2 py-2 text-right tabular-nums">{c.supply}</td>
-                  <td class="px-5 py-2 text-right tabular-nums">{c.deficit}</td>
-                </tr>
-                <tr :if={@queue.classes == %{}}>
-                  <td colspan="4" class="px-5 py-3 text-ink-3">No demand.</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="text-left text-xs text-ink-3">
+                  <tr>
+                    <th class="px-5 py-2 font-medium">Class</th>
+                    <th class="px-2 py-2 text-right font-medium">Demand</th>
+                    <th class="px-2 py-2 text-right font-medium">Supply</th>
+                    <th class="px-5 py-2 text-right font-medium">Deficit</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-line">
+                  <tr
+                    :for={
+                      {{repo_id, key} = class, c} <-
+                        Enum.sort_by(@queue.classes, fn {_, c} -> -c.deficit end)
+                    }
+                    id={class_id(class)}
+                  >
+                    <td class="px-5 py-2">
+                      <span class="block truncate text-ink">{repo_label(assigns, repo_id)}</span>
+                      <span :if={readable?(@readable, repo_id)} class="font-mono text-xs text-ink-3">
+                        {Enum.join(key, ", ")}
+                      </span>
+                      <.badge
+                        :if={c.tier in [:spare, :mixed]}
+                        size="sm"
+                        color={if c.tier == :mixed, do: "amber", else: "zinc"}
+                        data-tier={c.tier}
+                        title={
+                          if c.tier == :mixed,
+                            do:
+                              "Some of these jobs are spare and some regular while a size rename hands the label over"
+                        }
+                      >
+                        {c.tier}
+                      </.badge>
+                      <span :if={c.blocked > 0} class="block text-xs text-ink-3">
+                        {c.blocked} blocked
+                      </span>
+                      <span :if={c.stalled} class="block text-xs text-warning">Stalled: GitHub isn't assigning these runners</span>
+                      <span :if={c.backoff} class="block text-xs text-danger">
+                        Backing off{if readable?(@readable, repo_id) and c.last_error,
+                          do: ": #{c.last_error}"}
+                      </span>
+                    </td>
+                    <td class="px-2 py-2 text-right tabular-nums">{c.demand}</td>
+                    <td class="px-2 py-2 text-right tabular-nums">{c.supply}</td>
+                    <td class="px-5 py-2 text-right tabular-nums">{c.deficit}</td>
+                  </tr>
+                  <tr :if={@queue.classes == %{}}>
+                    <td colspan="4" class="px-5 py-3 text-ink-3">No demand.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </.panel>
 
           <.panel
@@ -274,27 +340,6 @@ defmodule CrewWeb.QueueLive do
             </ul>
           </.panel>
         </div>
-      </div>
-
-      <div class="mt-4">
-        <Charts.timeseries
-          id="queue-chart"
-          title="Queue depth and booting VMs, 6 hours"
-          series={[
-            %{label: "Waiting", color: Charts.series_color(0), kind: :line, points: @series.depth},
-            %{label: "Booting", color: Charts.series_color(1), kind: :line, points: @series.booting}
-          ]}
-          since={@series.since}
-          until={@series.until}
-          ymax={
-            CrewWeb.Charts.Geometry.nice_max(
-              Enum.max(Enum.map(@series.depth ++ @series.booting, &elem(&1, 1)), fn -> 1 end)
-            )
-          }
-          gap={600}
-          format={&to_string(round(&1))}
-          empty="Nothing has queued in the last 6 hours."
-        />
       </div>
     </Layouts.app>
     """

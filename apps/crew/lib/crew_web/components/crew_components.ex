@@ -268,6 +268,36 @@ defmodule CrewWeb.CrewComponents do
     """
   end
 
+  @doc "A fleet metric with a value, an optional breakdown, and a note."
+  attr :id, :string, default: nil
+  attr :value_id, :string, default: nil
+  attr :icon, :string, required: true
+  attr :label, :string, required: true
+  slot :inner_block, required: true
+  slot :detail, doc: "a breakdown of the value, under it"
+  slot :note
+
+  def stat_card(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class="flex min-w-0 flex-col rounded-xl border border-line bg-raised px-5 py-4 shadow-xs"
+    >
+      <div class="flex items-center justify-between gap-2">
+        <p class="text-xs font-medium text-ink-2">{@label}</p>
+        <.icon name={@icon} class="size-4 shrink-0 text-accent-ink" />
+      </div>
+      <p id={@value_id} class="mt-2 text-2xl font-semibold leading-none tabular-nums text-ink">
+        {render_slot(@inner_block)}
+      </p>
+      <p :if={@detail != []} class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-2">
+        {render_slot(@detail)}
+      </p>
+      <p :if={@note != []} class="mt-auto pt-2 text-xs text-ink-3">{render_slot(@note)}</p>
+    </div>
+    """
+  end
+
   @doc "A titled panel, the basic surface for page sections."
   attr :title, :string, default: nil
   attr :id, :string, default: nil

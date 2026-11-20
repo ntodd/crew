@@ -538,6 +538,7 @@ progress.bar::-moz-progress-bar {
   background-color: currentColor;
 }
 
+progress.bar.phase-bar { color: var(--c); }
 progress.bar.bar-warning { color: var(--color-warning); }
 progress.bar.bar-danger { color: var(--color-danger); }
 progress.bar.bar-muted { color: var(--color-line-strong); }

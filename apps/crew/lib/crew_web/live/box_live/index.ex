@@ -57,7 +57,7 @@ defmodule CrewWeb.BoxLive.Index do
       <:breadcrumb>Boxes</:breadcrumb>
       <.header class="pb-0!">
         Boxes
-        <:subtitle>The machines that run job VMs.</:subtitle>
+        <:subtitle>Machine health, available capacity and VM reservations.</:subtitle>
         <:actions>
           <span
             :if={@fleet.boxes != []}
@@ -88,6 +88,15 @@ defmodule CrewWeb.BoxLive.Index do
         </:actions>
       </.header>
 
+      <section
+        :if={@fleet.boxes != []}
+        id="fleet"
+        aria-label="Fleet"
+        class="@container card-grid grid-cols-1"
+      >
+        <.totals totals={@fleet.totals} attention={length(@fleet.attention)} />
+      </section>
+
       <.callout
         :if={@fleet.attention != []}
         id="boxes-attention"
@@ -108,13 +117,13 @@ defmodule CrewWeb.BoxLive.Index do
         </ul>
       </.callout>
 
-      <section
-        :if={@fleet.boxes != []}
-        id="fleet"
-        aria-label="Fleet"
-        class="@container card-grid grid-cols-1"
-      >
-        <.totals totals={@fleet.totals} attention={length(@fleet.attention)} />
+      <section :if={@fleet.boxes != []} aria-label="Boxes" class="@container">
+        <div id="boxes-grid" class={["card-grid", grid_cols(length(@fleet.boxes))]}>
+          <.box_card :for={entry <- @fleet.boxes} entry={entry} fleet={@fleet} />
+        </div>
+      </section>
+
+      <section :if={@fleet.boxes != []} class="@container" aria-label="Provisioned capacity">
         <div class="card-grid grid-cols-1 @5xl:grid-cols-2">
           <.provisioned
             id="provisioned-vcpus"
@@ -142,12 +151,6 @@ defmodule CrewWeb.BoxLive.Index do
         </div>
       </section>
 
-      <section :if={@fleet.boxes != []} aria-label="Boxes" class="@container">
-        <div id="boxes-grid" class={["card-grid", grid_cols(length(@fleet.boxes))]}>
-          <.box_card :for={entry <- @fleet.boxes} entry={entry} fleet={@fleet} />
-        </div>
-      </section>
-
       <.panel :if={@fleet.boxes == []}>
         <.empty_state id="boxes-empty" icon="hero-server-stack" title="Add your first box">
           A box is a machine that runs job VMs: a Mac with Virtualization.framework, or Linux with KVM.
@@ -168,7 +171,7 @@ defmodule CrewWeb.BoxLive.Index do
   defp totals(assigns) do
     ~H"""
     <div class="card-grid grid-cols-2 @4xl:grid-cols-4">
-      <.stat id="fleet-boxes" label="Boxes online">
+      <.stat_card icon="hero-server-stack" id="fleet-boxes" label="Boxes online">
         {@totals.online} <span class="text-base font-medium text-ink-3">of {@totals.boxes}</span>
         <:note>
           <span :if={@attention > 0} class="inline-flex items-center gap-1 text-danger">
@@ -183,8 +186,8 @@ defmodule CrewWeb.BoxLive.Index do
             <.icon name="hero-check-circle-micro" class="size-3.5" /> All taking jobs
           </span>
         </:note>
-      </.stat>
-      <.stat id="fleet-cores" label="Cores">
+      </.stat_card>
+      <.stat_card icon="hero-cpu-chip" id="fleet-cores" label="Cores">
         {@totals.cores}
         <:detail :if={@totals.cores_by_arch != []}>
           <span :for={{arch, n} <- @totals.cores_by_arch} id={"fleet-cores-#{arch}"}>
@@ -192,36 +195,15 @@ defmodule CrewWeb.BoxLive.Index do
           </span>
         </:detail>
         <:note>For job VMs, on the online boxes</:note>
-      </.stat>
-      <.stat id="fleet-memory" label="Memory">
+      </.stat_card>
+      <.stat_card icon="hero-square-3-stack-3d" id="fleet-memory" label="Memory">
         {gib(@totals.memory_mib)} <span class="text-base font-medium text-ink-3">GiB</span>
         <:note>For job VMs, on the online boxes</:note>
-      </.stat>
-      <.stat id="fleet-vms" label="VMs">
+      </.stat_card>
+      <.stat_card icon="hero-cube" id="fleet-vms" label="VMs">
         {@totals.vms.total}
         <:note>{vm_states(@totals.vms)}</:note>
-      </.stat>
-    </div>
-    """
-  end
-
-  attr :id, :string, required: true
-  attr :label, :string, required: true
-  slot :inner_block, required: true
-  slot :detail, doc: "a breakdown of the value, under it"
-  slot :note
-
-  defp stat(assigns) do
-    ~H"""
-    <div id={@id} class="flex flex-col rounded-xl border border-line bg-raised px-5 py-4 shadow-xs">
-      <p class="text-xs font-medium text-ink-2">{@label}</p>
-      <p class="mt-1.5 text-2xl font-semibold leading-none tabular-nums text-ink">
-        {render_slot(@inner_block)}
-      </p>
-      <p :if={@detail != []} class="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-ink-2">
-        {render_slot(@detail)}
-      </p>
-      <p :if={@note != []} class="mt-auto pt-2 text-xs text-ink-3">{render_slot(@note)}</p>
+      </.stat_card>
     </div>
     """
   end

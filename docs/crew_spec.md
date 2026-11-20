@@ -3146,6 +3146,8 @@ The sidebar has:
 **Job (`/jobs/:id`):** §17.6.
 
 **Queue (`/queue`)**
+- The summary shows all queued jobs, how many already have a runner, how
+  many are blocked and the longest current wait.
 - **Waiting units** in placement order (§8.4), with class, wait and reason,
   and a "spare" tag on spare ones (§7.2), which list after the regular
   ones because of the order.
@@ -3159,11 +3161,11 @@ The sidebar has:
 - **The range:** the last 7, 30 or 90 UTC days (`?days=`, 30 by
   default); the subtitle says the days are UTC.
 - **Tiles:** job minutes, with the rounded-up minutes GitHub would bill;
-  VM minutes; overhead (boot, idle and teardown as a share of VM time,
-  with each one's minutes); and what was reserved, in GiB-hours and
-  vCPU-hours.
+  VM minutes, overhead as a share of VM time, and the memory and vCPUs
+  reserved, in GiB-hours and vCPU-hours.
 - **A chart** of VM minutes per day stacked by phase, with job minutes
-  as a line.
+  as a line. Beside it, each phase shows its minutes and share of the
+  selected period.
 - **By box:** VM minutes, busy share, job minutes, memory and vCPU use,
   reserved GiB-hours. Every box, for members too; a revoked one says so.
 - **By repo:** jobs, job minutes, rounded-up minutes, VM minutes and
@@ -3219,15 +3221,16 @@ The sidebar has:
 - **The list,** over 30 minutes, 1 hour, 6 hours or 24 hours (in the
   URL), live:
   - **the fleet:** boxes online, the cores and memory the online boxes
-    offer job VMs, and VMs by state; then vCPUs and memory provisioned
-    against what's allocatable, each as a meter and a chart stacked by
-    box (from the VMs' rows, so a revoked box's past stays);
+    offer job VMs, and VMs by state;
   - **a callout** naming each box that can't take jobs for a problem
     (offline, not reported, firewall not verified, needs approval,
     quarantined) and why;
   - **a card per box:** CPU and memory trends, allocated vs allocatable,
     VMs by state and size, agent version, driver, arch, badges (an
-    unverified firewall among them), and what keeps jobs off it.
+    unverified firewall among them), and what keeps jobs off it;
+  - below the cards, vCPUs and memory provisioned against what is
+    allocatable, each as a meter and a chart stacked by box. Revoked
+    boxes keep their VM history.
 - **A box page:**
   - **Charts,** 15 minutes to 7 days (Foreman's ranges): CPU and memory as
     the box total with each VM's share stacked beneath, then disk, load

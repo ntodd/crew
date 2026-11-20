@@ -823,12 +823,8 @@ defmodule CrewWeb.RepoLive.Show do
     ~H"""
     <div class="flex items-center gap-2">
       <span class="w-9 shrink-0 text-right tabular-nums text-ink-2">{pct(@rate)}</span>
-      <span class="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-line" aria-hidden="true">
-        <span
-          :if={@rate}
-          class={["block h-full rounded-full", if(@rate >= 0.9, do: "bg-success", else: "bg-warning")]}
-          style={"width: #{round(@rate * 100)}%"}
-        />
+      <span class="w-16 shrink-0" aria-hidden="true">
+        <progress value={@rate || 0} max="1" class={["bar", @rate && @rate < 0.9 && "bar-warning"]}></progress>
       </span>
     </div>
     """
