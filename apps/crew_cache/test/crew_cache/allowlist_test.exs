@@ -33,6 +33,10 @@ defmodule CrewCache.AllowlistTest do
       assert Allowlist.allowed?(list, "public.ecr.aws", "docker/library/postgres")
       assert Allowlist.allowed?(list, "ghcr.io", "actions/runner")
       assert Allowlist.allowed?(list, "mcr.microsoft.com", "dotnet/sdk")
+      assert Allowlist.allowed?(list, "registry-1.docker.io", "hexpm/elixir")
+      assert Allowlist.allowed?(list, "quay.io", "coreos/ignition-validate")
+      refute Allowlist.allowed?(list, "registry-1.docker.io", "hexpm/other")
+      refute Allowlist.allowed?(list, "quay.io", "coreos/ignition-validate-other")
     end
 
     test "a * spans path segments", %{list: list} do

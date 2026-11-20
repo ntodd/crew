@@ -31,6 +31,47 @@ defmodule CrewCache.RegistryTest do
   end
 
   describe "a pull through the mirror (Design A)" do
+    test "a cold ECR manifest succeeds after a brief throttle and is cached", %{ctx: ctx} do
+      repo = "docker/library/registry"
+      image = FakeRegistry.put_image(repo, "2", layers())
+      path = "/v2/#{repo}/manifests/#{image.manifest}"
+      mirror = "/v2/public.ecr.aws/#{repo}/manifests/#{image.manifest}?ns=public.ecr.aws"
+      FakeRegistry.throttle(path, ["0"])
+
+      assert %{status: 200, body: body} = req(ctx, :get, mirror)
+      assert FakeRegistry.digest(body) == image.manifest
+      FakeRegistry.clear_requests()
+      assert %{status: 200, body: ^body} = req(ctx, :get, mirror)
+      assert FakeRegistry.requests() == []
+    end
+
+    test "persistent throttling reaches the client with the upstream retry advice", %{ctx: ctx} do
+      repo = "docker/library/registry"
+      image = FakeRegistry.put_image(repo, "2", layers())
+
+      for {method, ref} <- [
+            head: "manifests/2",
+            get: "manifests/#{image.manifest}",
+            head: "blobs/#{image.config}",
+            get: "blobs/#{image.config}"
+          ] do
+        path = "/v2/#{repo}/#{ref}"
+        FakeRegistry.clear_requests()
+        FakeRegistry.throttle(path, ["0", "60"])
+        response = req(ctx, method, "/v2/public.ecr.aws/#{repo}/#{ref}?ns=public.ecr.aws")
+        assert response.status == 429
+        assert response.headers["retry-after"] == ["60"]
+        if method == :get, do: assert(response.body =~ "TOOMANYREQUESTS")
+        assert FakeRegistry.count(:registry, String.upcase(to_string(method)), path) == 2
+      end
+
+      FakeRegistry.throttle("/token", ["60"])
+      response = req(ctx, :head, "/v2/public.ecr.aws/#{repo}/manifests/2")
+      assert response.status == 429
+      assert response.headers["retry-after"] == ["60"]
+      assert FakeRegistry.count(:registry, "GET", "/token") == 1
+    end
+
     test "HEAD by tag, the manifest by digest, then blobs; the second pull is all hits",
          %{ctx: ctx} do
       image = FakeRegistry.put_image("library/alpine", "3.22", layers())

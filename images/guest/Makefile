@@ -43,6 +43,7 @@ build-test:
 # The conformance check's input handling (bash and jq, any OS).
 conformance-test:
 	conformance/check_test.sh
+	python3 rootfs/crew_cache_runc_test.py
 
 tools:
 	cd tools && $(MIX) deps.get --check-locked >/dev/null && $(MIX) compile --warnings-as-errors

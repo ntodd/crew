@@ -80,14 +80,17 @@ defmodule Crew.Boxes do
   its hash is stored.
 
   For a Flatcar box (§12.2) it also keeps what the box's Ignition needs:
-  the data disk (`linux-metal` only, required there), a break-glass SSH
-  key for `core`, and a Tailscale auth key the admin pasted (stored
-  encrypted, and forgotten at enrollment).
+  on `linux-metal`, its disks (the OS disk, and the data disk with the
+  `separate` layout; `one`, the default, puts `/srv/crew` on the OS
+  disk), a break-glass SSH key for `core`, and a Tailscale auth key the
+  admin pasted (stored encrypted, and forgotten at enrollment).
   """
   def create_join_token(%Scope{} = scope, attrs) do
     types = %{
       box_name: :string,
       box_type: :string,
+      disk_layout: :string,
+      os_disk: :string,
       data_disk: :string,
       ssh_keys: :string,
       tailscale_auth_key: :string
@@ -103,7 +106,7 @@ defmodule Crew.Boxes do
           else: [box_name: "must be a lowercase DNS label of at most 40 characters"]
       end)
       |> Ecto.Changeset.validate_inclusion(:box_type, Box.types())
-      |> validate_data_disk()
+      |> validate_disks()
       |> Ecto.Changeset.validate_change(:ssh_keys, fn :ssh_keys, keys ->
         if Enum.all?(split_keys(keys), &Flatcar.ssh_key?/1),
           do: [],
@@ -125,12 +128,16 @@ defmodule Crew.Boxes do
         raw = "cj_" <> (32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false))
 
         flatcar? = data.box_type in Flatcar.types()
+        metal? = data.box_type == "linux-metal"
+        layout = if metal?, do: disk_layout(data)
 
         Repo.insert!(%JoinToken{
           token_hash: hash(raw),
           box_name: data.box_name,
           box_type: data.box_type,
-          data_disk: if(data.box_type == "linux-metal", do: data[:data_disk]),
+          disk_layout: layout,
+          os_disk: if(metal?, do: data[:os_disk]),
+          data_disk: if(layout == "separate", do: data[:data_disk]),
           ssh_keys: if(flatcar?, do: split_keys(data[:ssh_keys]), else: []),
           tailscale_auth_key: if(flatcar?, do: data[:tailscale_auth_key]),
           created_by_id: scope.user.id,
@@ -142,20 +149,49 @@ defmodule Crew.Boxes do
     end
   end
 
-  defp validate_data_disk(changeset) do
+  defp disk_layout(data), do: data[:disk_layout] || "one"
+
+  # linux-metal's disks. The OS disk is a by-id link, the same disk under
+  # the same name in every live image and at first boot: with one disk the
+  # Ignition partitions it, and either way flatcar-install writes over
+  # whatever the box page's command names.
+  defp validate_disks(changeset) do
     if Ecto.Changeset.get_field(changeset, :box_type) == "linux-metal" do
       changeset
-      |> Ecto.Changeset.validate_required([:data_disk],
+      |> Ecto.Changeset.validate_inclusion(:disk_layout, Flatcar.disk_layouts())
+      |> Ecto.Changeset.validate_required([:os_disk],
         message: "is needed for a dedicated Linux machine"
       )
-      |> Ecto.Changeset.validate_change(:data_disk, fn :data_disk, disk ->
-        if Flatcar.data_disk?(disk),
-          do: [],
-          else: [data_disk: "must be a device like /dev/sdb or /dev/disk/by-id/..."]
+      |> Ecto.Changeset.validate_change(:os_disk, fn :os_disk, disk ->
+        if Flatcar.os_disk?(disk), do: [], else: [os_disk: "must be a /dev/disk/by-id/... link"]
       end)
+      |> then(&validate_layout(&1, disk_layout(Ecto.Changeset.apply_changes(&1))))
     else
       changeset
     end
+  end
+
+  defp validate_layout(changeset, "one"), do: changeset
+
+  defp validate_layout(changeset, _separate) do
+    os_disk = Ecto.Changeset.get_field(changeset, :os_disk)
+
+    changeset
+    |> Ecto.Changeset.validate_required([:data_disk],
+      message: "is needed with a separate data disk"
+    )
+    |> Ecto.Changeset.validate_change(:data_disk, fn :data_disk, disk ->
+      cond do
+        not Flatcar.data_disk?(disk) ->
+          [data_disk: "must be a device like /dev/sdb or /dev/disk/by-id/..."]
+
+        disk == os_disk ->
+          [data_disk: "must be another disk than the OS disk"]
+
+        true ->
+          []
+      end
+    end)
   end
 
   # SSH keys, given as a list or one per line.
@@ -240,6 +276,8 @@ defmodule Crew.Boxes do
              name: token.box_name,
              type: token.box_type,
              arch: arch,
+             disk_layout: token.disk_layout,
+             os_disk: token.os_disk,
              data_disk: token.data_disk,
              ssh_keys: token.ssh_keys ++ split_keys(params["ssh_keys"]),
              url: Crew.Config.base_url(),
@@ -324,24 +362,42 @@ defmodule Crew.Boxes do
   end
 
   @doc """
-  The data disk a `linux-metal` box was added with (its newest join
-  token's), or nil.
+  The disks a `linux-metal` box was added with, from the join token that
+  enrolled it last: `%{disk_layout: "one" | "separate", os_disk: _,
+  data_disk: _}`. A token from before layouts (#140) had a data disk of
+  its own.
   """
-  def data_disk(%Box{id: id}) do
-    Repo.one(
-      from t in JoinToken,
-        where: t.box_id == ^id and not is_nil(t.data_disk),
-        order_by: [desc: t.inserted_at],
-        limit: 1,
-        select: t.data_disk
-    )
+  def disks(%Box{id: id}) do
+    token =
+      Repo.one(
+        from t in JoinToken,
+          where: t.box_id == ^id and t.box_type == "linux-metal",
+          order_by: [desc: t.used_at, desc: t.inserted_at],
+          limit: 1
+      )
+
+    %{
+      disk_layout: (token && token.disk_layout) || "separate",
+      os_disk: token && token.os_disk,
+      data_disk: token && token.data_disk
+    }
+  end
+
+  @doc "Applies the reprovision form's disk overrides to the enrolled layout."
+  def reprovision_disks(disks, params) do
+    %{
+      disks
+      | os_disk: present(params["os_disk"]) || disks.os_disk,
+        data_disk: present(params["data_disk"]) || disks.data_disk
+    }
   end
 
   @doc """
   The reprovision Ignition for a Flatcar box (§12.2): no join token, no
-  Tailscale key, for a new OS disk over the box's data disk. A
-  `linux-metal` box's data disk is `params["data_disk"]`, or the one it
-  was added with. Admins only; audited.
+  Tailscale key, for a new OS disk over the box's data. A `linux-metal`
+  box keeps the layout it was added with; its OS disk and data disk are
+  `params["os_disk"]` and `params["data_disk"]`, or the ones it was added
+  with. Admins only; audited.
   """
   def reprovision_ignition(%Scope{} = scope, %Box{} = box, params) do
     cond do
@@ -352,7 +408,7 @@ defmodule Crew.Boxes do
         {:error, :not_flatcar}
 
       true ->
-        disk = present(params["data_disk"]) || data_disk(box)
+        disks = if box.type == "linux-metal", do: reprovision_disks(disks(box), params), else: %{}
 
         with {:ok, config} <-
                Flatcar.ignition(%{
@@ -360,7 +416,9 @@ defmodule Crew.Boxes do
                  name: box.name,
                  type: box.type,
                  arch: params["arch"],
-                 data_disk: disk,
+                 disk_layout: disks[:disk_layout],
+                 os_disk: disks[:os_disk],
+                 data_disk: disks[:data_disk],
                  ssh_keys: split_keys(params["ssh_keys"]),
                  # Root's copy, for the updates' root half (§20.2).
                  release_key: Crew.Config.release_public_key()
@@ -409,7 +467,13 @@ defmodule Crew.Boxes do
     end
   end
 
-  defp present(value) when is_binary(value) and value != "", do: String.trim(value)
+  defp present(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
   defp present(_), do: nil
 
   defp upsert_enrolled_box(token, public_key, attrs) do

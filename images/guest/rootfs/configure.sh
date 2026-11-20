@@ -29,6 +29,12 @@ visudo -cqf /etc/sudoers.d/runner
 # crew-guest adds the cache CA's variables to .env at boot (§13.5).
 install -m 0644 "$files/home/runner/actions-runner/.env" /home/runner/actions-runner/.env
 install -m 0644 "$files/home/runner/actions-runner/.path" /home/runner/actions-runner/.path
+# Buildx reads buildkitd.default.toml when creating a builder and copies
+# its registry CAs. crew-guest supplies the target at boot on cached boxes.
+for user_home in /root /home/runner; do
+  install -d -m 0700 "$user_home/.docker" "$user_home/.docker/buildx"
+  ln -s /etc/buildkit/buildkitd.toml "$user_home/.docker/buildx/buildkitd.default.toml"
+done
 # The tool cache where GitHub's runners keep it, the runner's: setup-ruby
 # and setup-python only install their prebuilt builds there, and fail if
 # they can't create it. .env points the runner at it.
@@ -49,6 +55,8 @@ install -m 0644 /crew/conformance/probe.py /crew/conformance/requirements.txt /o
 
 # systemd: crew-guest is the one service that matters; it starts Docker
 # itself once Docker's config is written.
+install -D -m 0755 /crew/rootfs/crew-cache-runc /opt/crew/bin/crew-cache-runc
+test -x /usr/bin/runc
 install -m 0644 /crew-guest-unit /etc/systemd/system/crew-guest.service
 for d in logind.conf.d journald.conf.d system.conf.d; do
   install -D -m 0644 "$files/etc/systemd/$d/crew.conf" "/etc/systemd/$d/crew.conf"

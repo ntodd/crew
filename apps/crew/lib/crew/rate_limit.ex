@@ -6,8 +6,12 @@ defmodule Crew.RateLimit do
   before the attempt, `failed/3` after a failed one), so a client sending
   junk uses up its own allowance and never a correctly signed agent's.
   Keys use the real client address (`CrewWeb.ClientIP`).
+
+  Each key's window starts at its first hit, not on a wall-clock
+  boundary, so a burst is counted whole wherever it falls on the clock.
+  A key always takes the same `scale`.
   """
-  use Hammer, backend: :ets
+  use Hammer, backend: :ets, algorithm: :fix_window_per_key
 
   @doc "Whether `key` has used up `limit` within `scale` ms, without counting anything."
   @spec exhausted?(String.t(), pos_integer(), pos_integer()) :: boolean()

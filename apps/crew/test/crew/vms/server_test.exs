@@ -26,6 +26,7 @@ defmodule Crew.VMs.ServerTest do
       assert body["labels"] == ["crew-m"]
 
       cmd = assert_command("vm.start")
+      refute Map.has_key?(cmd.payload, :strict_registry_cache)
       assert cmd.payload.vm_id == id
       assert cmd.payload.image.id == image.id
       assert cmd.payload.labels == ["crew-m"]
@@ -42,6 +43,12 @@ defmodule Crew.VMs.ServerTest do
       # The JIT config is never stored (§6.3).
       refute Repo.get!(Crew.Operations.Operation, cmd.op_id).args["jit_config"] ==
                cmd.payload.jit_config
+    end
+
+    test "requires cache-only pulls when the deployment opts in", %{box: box, repo: repo} do
+      Repo.update_all(Crew.Caches.Config, set: [strict_registry_cache: true])
+      place(box, repo)
+      assert assert_command("vm.start").payload.strict_registry_cache
     end
 
     test "walks to idle on the agent's events, and a success clears the box's failures", %{

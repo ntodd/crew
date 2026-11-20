@@ -85,6 +85,7 @@ defmodule CrewAgent.FirecrackerCleanupTest do
 
     start_supervised!({FakeVmctl, {config.vmctl_socket, answer, self()}})
     attach()
+    servers = vm_servers()
 
     on_exit(fn ->
       System.put_env("PATH", path)
@@ -94,6 +95,11 @@ defmodule CrewAgent.FirecrackerCleanupTest do
       File.rm_rf!(root)
     end)
 
+    # A VM a test leaves running finds its cgroup gone once the test's
+    # tree is, and sends its cleanup to whichever crew-vmctl the next
+    # test configured: each test ends the VMs it starts.
+    on_exit(fn -> assert_ended(vm_servers() -- servers) end)
+
     %{
       config: config,
       root: root,
@@ -102,6 +108,28 @@ defmodule CrewAgent.FirecrackerCleanupTest do
       jails: jails,
       list_fails: list_fails
     }
+  end
+
+  defp vm_servers do
+    for {_, pid, _, _} <- DynamicSupervisor.which_children(CrewAgent.VMs.Supervisor),
+        is_pid(pid),
+        do: pid
+  end
+
+  # A server outlives its vm.exited for a moment.
+  defp assert_ended(pids) do
+    assert Enum.reject(pids, &ended?/1) == [], "the test left a VM running"
+  end
+
+  # One that hasn't is killed, so it can't reach the next test either.
+  defp ended?(pid) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, _, _, _} -> true
+    after
+      1_000 -> Process.exit(pid, :kill) && false
+    end
   end
 
   # A VM's clone is a reflink, which a CI runner's ext4 can't make. There
@@ -182,6 +210,11 @@ defmodule CrewAgent.FirecrackerCleanupTest do
       |> Jason.decode!()
 
     assert vm["size"]["memory_mib"] == 1024
+
+    # It ends here, its cleanup releasing its lease.
+    :counters.put(ctx.works, 1, 1)
+    File.rm_rf!(cgroup(ctx, vm_id))
+    assert await("vm.exited", &(&1.vm_id == vm_id), 10_000).payload.cleanup == "ok"
   end
 
   test "a failed cleanup is reported, keeps the lease and the clone, and is retried", ctx do

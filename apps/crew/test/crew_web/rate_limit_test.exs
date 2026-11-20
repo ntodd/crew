@@ -6,9 +6,6 @@ defmodule CrewWeb.RateLimitTest do
   """
   use CrewWeb.ConnCase
 
-  # A fresh tailnet address per test, so buckets don't leak between tests.
-  defp client, do: "100.64.#{:rand.uniform(250)}.#{:rand.uniform(250)}"
-
   describe "sign-in" do
     setup do
       Application.put_env(:crew, :github_app, %{
@@ -36,12 +33,14 @@ defmodule CrewWeb.RateLimitTest do
         {"POST", "/login/oauth/access_token"} => {200, %{"error" => "bad_verification_code"}}
       })
 
-      busy = client()
+      busy = client_ip()
+      # From the proxy on loopback, so the limit keys on the forwarded client.
+      conn = %{conn | remote_ip: {127, 0, 0, 1}}
 
       for _ <- 1..20, do: callback(conn, busy)
       assert Phoenix.Flash.get(callback(conn, busy).assigns.flash, :error) =~ "Too many"
 
-      refute Phoenix.Flash.get(callback(build_conn(), client()).assigns.flash, :error) =~
+      refute Phoenix.Flash.get(callback(build_conn(), client_ip()).assigns.flash, :error) =~
                "Too many"
     end
 
