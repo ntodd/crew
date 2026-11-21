@@ -158,6 +158,27 @@ defmodule Crew.Boxes.FlatcarInstallTest do
     refute File.exists?(Path.join(ctx.data, "root/current"))
   end
 
+  test "native install under a private umask exposes only its selected VMM in root/current",
+       ctx do
+    files = write_release(Path.join(ctx.root, "native"), ctx.key, "0.3.0", "linux-amd64")
+
+    etc = render_etc(ctx.root, ctx.key, release(files), %{arch: "amd64"})
+    File.write!(Path.join(etc, "native-worker"), "{}")
+    File.write!(Path.join(etc, "box.env"), "CREW_BOX_TYPE=linux-native\nCREW_BOX_NAME=test\n")
+
+    {out, status} =
+      System.cmd("sh", ["-c", ~S(umask 077; exec sh "$1/agent-install.sh"), "sh", etc],
+        env: [{"CREW_BOX_ETC", etc}, {"CREW_BOX_DATA", ctx.data}],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, out
+    bin = Path.join(ctx.data, "root/current/bin")
+    assert Enum.sort(File.ls!(bin)) == ["cloud-hypervisor", "crew-vmctl"]
+    assert Bitwise.band(File.stat!(bin).mode, 0o001) == 1
+    assert File.read!(Path.join(ctx.data, "agent/env")) =~ "CREW_DRIVER=cloud-hypervisor"
+  end
+
   test "refuses a tarball that isn't the one the Ignition names", ctx do
     File.write!(ctx.files["agent"].path, tarball(agent_entries("evil")))
     etc = render_etc(ctx.root, ctx.key, release(ctx.files))

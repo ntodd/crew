@@ -1,0 +1,32 @@
+[Unit]
+Description=Crew's registry cache (crew_cache)
+Wants=network-online.target
+After=network-online.target crew-net.service crew-quota.service
+Requires=crew-net.service
+RequiresMountsFor=/srv/crew
+ConditionPathExists=/srv/crew/agent/current/cache/bin/crew_cache
+
+[Service]
+User=crewcache
+Group=crewcache
+# Its share of the disk (crew-quota), then the agent's and admin's settings.
+EnvironmentFile=-/run/crew-box/cache.env
+EnvironmentFile=-/srv/crew/cache/env
+Environment=HOME=/srv/crew/cache CREW_DATA_DIR=/srv/crew RELEASE_TMP=/run/crew-cache RELEASE_DISTRIBUTION=none
+RuntimeDirectory=crew-cache
+RuntimeDirectoryMode=0700
+WorkingDirectory=/run/crew-cache
+ExecStart=/srv/crew/agent/current/cache/bin/crew_cache start
+Restart=always
+RestartSec=3
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+OOMScoreAdjust=-900
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/crew/cache
+
+[Install]
+WantedBy=multi-user.target

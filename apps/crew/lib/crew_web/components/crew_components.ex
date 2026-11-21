@@ -74,7 +74,7 @@ defmodule CrewWeb.CrewComponents do
     do: {"Reboot needed", "Updates are applied and wait for a reboot."}
 
   @doc "What the agent's firewall check is, so a reader knows where to look."
-  def firewall_hint(%{driver: "firecracker"}),
+  def firewall_hint(%{driver: driver}) when driver in ["firecracker", "cloud-hypervisor"],
     do: "It checks with crew-vmctl nft-verify: see the agent's log on the box."
 
   def firewall_hint(%{driver: "vz"}),

@@ -1,0 +1,13 @@
+[Unit]
+Description=Lay out Crew's data disk and its quotas
+RequiresMountsFor=/srv/crew
+Requires=srv-crew.mount
+After=srv-crew.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/crew-box/quota.sh
+
+[Install]
+WantedBy=multi-user.target

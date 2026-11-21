@@ -349,3 +349,21 @@ func TestUplinkNames(t *testing.T) {
 		}
 	}
 }
+
+func TestNativeWorkerKeepsHostForwardPolicy(t *testing.T) {
+	current := strings.Replace(etc.ConnlimitRules, ":FORWARD ACCEPT", ":FORWARD DROP", 1)
+	want, err := WithHostPolicies(etc.ConnlimitRules, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := SharedMangleScript(etc.ConnlimitRules, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(script, ":FORWARD ") || !strings.Contains(script, "-I FORWARD 1 -i crewt+ -j CREW-CONNLIMIT") {
+		t.Fatal(script)
+	}
+	if diffs := compareMangle(want, current); len(diffs) > 0 {
+		t.Fatal(diffs)
+	}
+}

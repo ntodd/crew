@@ -33,7 +33,7 @@ case "$arch" in
   # The power button: VZ's requestStop and Firecracker arm64's both arrive
   # through gpio-keys on a PL061.
   arm64) crew_arch="INPUT_EVDEV KEYBOARD_GPIO GPIO_PL061" ;;
-  x64) crew_arch="SERIO_I8042 KEYBOARD_ATKBD" ;;
+  x64) crew_arch="PVH SERIO_I8042 KEYBOARD_ATKBD" ;;
   *) echo "check: unknown arch $arch" >&2; exit 1 ;;
 esac
 

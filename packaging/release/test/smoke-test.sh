@@ -31,6 +31,7 @@ agent() {
   mkdir -p "$T/root/bin" "$T/root/etc/systemd"
   fake crew_agent "crew_agent ${2:-$1}"
   fake crew-vmctl "crew-vmctl $1"
+  fake cloud-hypervisor "cloud-hypervisor v54.1"
   fake firecracker "Firecracker v1.14.1"
   fake jailer "Jailer v1.14.1"
   echo "table inet crew {}" > "$T/root/etc/nft.conf"

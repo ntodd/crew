@@ -71,8 +71,14 @@ defmodule Crew.AgentReleaseFixtures do
     File.mkdir_p!(dir)
 
     for component <- Keyword.get(opts, :components, ["agent", "cache"]), into: %{} do
-      bytes =
-        tarball(if component == "agent", do: agent_entries(version), else: cache_entries(version))
+      entries =
+        case {component, target} do
+          {"agent", "linux-amd64"} -> [{"bin/cloud-hypervisor", "VMM"} | agent_entries(version)]
+          {"agent", _} -> agent_entries(version)
+          {"cache", _} -> cache_entries(version)
+        end
+
+      bytes = tarball(entries)
 
       file = "crew-#{component}-#{version}-#{target}.tar.gz"
       sha = :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)

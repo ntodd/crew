@@ -108,7 +108,7 @@ defmodule CrewAgent.Site do
     changed = egress() != ip
     :persistent_term.put({__MODULE__, :egress}, ip)
 
-    if config.driver == "firecracker" and changed do
+    if config.driver in ["firecracker", "cloud-hypervisor"] and changed do
       dir = Config.agent_dir(config)
       File.mkdir_p!(dir)
       :ok = CrewAgent.SafeFS.write_atomic(egress_file(config), ip <> "\n", 0o644)
@@ -126,7 +126,7 @@ defmodule CrewAgent.Site do
   so site4 can be held to it before the echo service answers again.
   """
   def load_egress(config) do
-    with "firecracker" <- config.driver,
+    with driver when driver in ["firecracker", "cloud-hypervisor"] <- config.driver,
          {:ok, body} <- File.read(egress_file(config)),
          ip when is_binary(ip) <- parse_egress(body) do
       :persistent_term.put({__MODULE__, :egress}, ip)

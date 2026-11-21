@@ -160,7 +160,16 @@ jobs:
           "$sc" --shell=sh docker/crew-update docker/test/crew-update-test.sh docker/test/crew-update-fakes.sh \
             packaging/release/check.sh packaging/release/test/check-test.sh \
             packaging/release/smoke.sh packaging/release/test/smoke-test.sh
-          "$sc" -x images/guest/sign.sh packaging/release/build-linux.sh
+          "$sc" -x images/guest/sign.sh packaging/release/build-linux.sh packaging/release/fetch-cloud-hypervisor.sh \
+            packaging/debian/build.sh packaging/debian/verify.sh
+      - name: Build and verify the native worker enrollment package
+        run: |
+          packaging/debian/build.sh 0.0.1 "$RUNNER_TEMP"
+          deb="$RUNNER_TEMP/crew-worker_0.0.1_amd64.deb"
+          images/guest/sign.sh --key-file images/guest/keys/test-signing.key "$deb"
+          packaging/debian/verify.sh "$deb" images/guest/keys/test-signing.pub
+          dpkg-deb -x "$deb" "$RUNNER_TEMP/worker"
+          "$RUNNER_TEMP/worker/usr/sbin/crew-worker-enroll" --help
       - name: crew-update's decisions
         run: docker/test/crew-update-test.sh
       - name: The release's smoke test

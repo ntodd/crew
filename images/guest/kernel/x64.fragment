@@ -3,9 +3,8 @@
 # kernel-config ARCH=x64` merges it and writes the full x64.config, which is
 # what the build uses and what the checks read. Edit this, never x64.config.
 #
-# x64 guests only run on Firecracker (VZ is Apple Silicon only), which boots
-# the uncompressed vmlinux with pci=off: every device is virtio-mmio, named
-# on the command line.
+# Cloud Hypervisor boots the PVH ELF and uses PCI. Firecracker boots
+# the same vmlinux with PCI disabled and uses virtio-mmio.
 #
 # There's no initrd: whatever boot needs is built in (=y). So is everything
 # Docker and the Crew list need, so nothing waits on a module at boot. The
@@ -24,6 +23,8 @@ CONFIG_DEBUG_INFO_BTF=n
 CONFIG_HYPERVISOR_GUEST=y
 CONFIG_PARAVIRT=y
 CONFIG_KVM_GUEST=y
+# Direct ELF boot on Cloud Hypervisor.
+CONFIG_PVH=y
 
 # Firecracker's devices are virtio-mmio. VIRTIO_PCI stays in (the Crew list
 # asks for it on both arches); Firecracker's pci=off leaves it idle.

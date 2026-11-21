@@ -47,6 +47,8 @@ defmodule CrewAgent.ConformanceTest do
   alias CrewAgent.{Config, Conformance, Handler, Images, VMs}
   alias CrewAgent.ConformanceTest.Recorder
 
+  @linux_drivers ["firecracker", "cloud-hypervisor"]
+
   @moduletag :conformance
   @moduletag timeout: 1_800_000
 
@@ -168,12 +170,12 @@ defmodule CrewAgent.ConformanceTest do
     %{env: env, teardown: teardown, cache: cache, caps: %{conns: 1024}}
   end
 
-  defp box("firecracker", image_dir) do
+  defp box(driver, image_dir) when driver in @linux_drivers do
     cache = cache_settings()
 
     env =
       [
-        driver: "firecracker",
+        driver: driver,
         data_dir: System.get_env("CREW_KVM_DATA_DIR", "/srv/crew"),
         vmctl_socket: System.get_env("CREW_VMCTL_SOCKET", "/run/crew/vmctl.sock"),
         guest_api_port: 7777,
@@ -279,8 +281,9 @@ defmodule CrewAgent.ConformanceTest do
 
   # On Firecracker blocked traffic is dropped, never refused: a refusal
   # means the packet reached something that answered.
-  defp failed?(%{driver: "firecracker"}, %{item: "5." <> rest, status: "ok", detail: detail}),
-    do: not String.starts_with?(rest, "reach_") and detail =~ ~r/ refused$/
+  defp failed?(%{driver: driver}, %{item: "5." <> rest, status: "ok", detail: detail})
+       when driver in @linux_drivers,
+       do: not String.starts_with?(rest, "reach_") and detail =~ ~r/ refused$/
 
   defp failed?(_ctx, _r), do: false
 
@@ -319,7 +322,7 @@ defmodule CrewAgent.ConformanceTest do
     IO.puts("  item 6 (host): A's token on B's socket 401, B's own refetch 410")
   end
 
-  defp host_side_tokens(%{driver: "firecracker"} = ctx, a, _b) do
+  defp host_side_tokens(%{driver: driver} = ctx, a, _b) when driver in @linux_drivers do
     # From the host's own address: the source isn't A's lease.
     status =
       Req.get!("http://#{service_ip()}:7777/v1/payload",
@@ -681,7 +684,7 @@ defmodule CrewAgent.ConformanceTest do
     swept(vm)
   end
 
-  defp assert_clean(%{driver: "firecracker"} = ctx, vm) do
+  defp assert_clean(%{driver: driver} = ctx, vm) when driver in @linux_drivers do
     alias CrewAgent.Driver.Firecracker
     refute driver_alive?(ctx, vm)
 
@@ -721,7 +724,7 @@ defmodule CrewAgent.ConformanceTest do
   # -- helpers ------------------------------------------------------------------------------------------
 
   defp driver(%{driver: "vz"}), do: CrewAgent.Driver.VZ
-  defp driver(%{driver: "firecracker"}), do: CrewAgent.Driver.Firecracker
+  defp driver(%{driver: driver}) when driver in @linux_drivers, do: CrewAgent.Driver.Firecracker
   defp driver_alive?(ctx, vm), do: driver(ctx).alive?(vm.vm_id)
 
   defp read_json(_ctx, vm_id, file),
@@ -732,7 +735,7 @@ defmodule CrewAgent.ConformanceTest do
   defp token(%{driver: "vz"} = ctx, vm),
     do: cmdline_token(read_json(ctx, vm.vm_id, "vz.json")["cmdline"])
 
-  defp token(%{driver: "firecracker"} = ctx, vm),
+  defp token(%{driver: driver} = ctx, vm) when driver in @linux_drivers,
     do: cmdline_token(read_json(ctx, vm.vm_id, "fc.json")["boot-source"]["boot_args"])
 
   defp cmdline_token(cmdline),
@@ -741,7 +744,7 @@ defmodule CrewAgent.ConformanceTest do
   defp console_path(%{driver: "vz"}, vm),
     do: Path.join(Config.vm_dir(Config.get(), vm.vm_id), "console.log")
 
-  defp console_path(%{driver: "firecracker"}, vm),
+  defp console_path(%{driver: driver}, vm) when driver in @linux_drivers,
     do: Path.join([Config.get().data_dir, "jail", "firecracker", vm.vm_id, "console.log"])
 
   defp sample_max(path, vm, ctx, max \\ 0) do

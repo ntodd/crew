@@ -72,5 +72,8 @@ if project 10 "$data/vms" "$data/jail" &&
   xfs_quota -x -c "limit -p bhard=${rest_mib}m 12" "$data"; then
   echo "data disk: ${total_mib} MiB; clones ${clone_mib}, cache ${cache_mib}, agent and images ${rest_mib}"
 else
+  if [ -f /etc/crew-box/native-worker ]; then
+    fail "couldn't set or verify the native worker's disk quotas"
+  fi
   say "couldn't set the data disk's quotas; one area filling up can starve the others (journalctl -u crew-quota)"
 fi

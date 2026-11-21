@@ -23,6 +23,7 @@ type Peer struct{ UID, GID int }
 type Jail struct {
 	VM     VM
 	Config []byte // the chroot's fc.json
+	Cloud  bool   // serial output is opened by the unprivileged VMM
 	Owner  Peer   // who the clone and kernel must belong to, and who gets the console
 }
 
@@ -62,11 +63,12 @@ type Sys interface {
 
 // Server answers requests.
 type Server struct {
-	Paths   Paths
-	Net     VMNet
-	Sys     Sys
-	Now     func() time.Time
-	Version string
+	Paths           Paths
+	Net             VMNet
+	Sys             Sys
+	Now             func() time.Time
+	Version         string
+	CloudHypervisor bool // selected by the root-owned helper unit
 }
 
 // Response is the one line written back.
@@ -94,9 +96,10 @@ type VMStatus struct {
 // Info is what the agent reports as driver_version and checks against
 // §11.3's requirements.
 type Info struct {
-	Vmctl       string `json:"vmctl"`
-	Firecracker string `json:"firecracker"`
-	Systemd     int    `json:"systemd"`
+	Vmctl        string `json:"vmctl"`
+	Firecracker  string `json:"firecracker"`
+	CloudVersion string `json:"cloud-hypervisor,omitempty"`
+	Systemd      int    `json:"systemd"`
 }
 
 const (
@@ -151,6 +154,9 @@ func (s *Server) handle(ctx context.Context, r Request, peer Peer) (Response, er
 	case "site4":
 		return Response{}, s.RefreshSite4(ctx)
 	case "reboot":
+		if s.CloudHypervisor {
+			return Response{}, fail(ErrBadRequest, "host reboot is managed by the shared host operator")
+		}
 		return s.reboot(ctx, r.BootID, r.IsForce())
 	case "cleanup":
 		return Response{}, s.cleanup(ctx, r.VMID, peer)
@@ -198,10 +204,14 @@ func (s *Server) start(ctx context.Context, vmID string, peer Peer) (Response, e
 	if err := s.ensureFilter(ctx); err != nil {
 		return Response{}, err
 	}
-	if err := s.Sys.PrepareJail(Jail{VM: vm, Config: cfg, Owner: peer}); err != nil {
+	if err := s.Sys.PrepareJail(Jail{VM: vm, Config: cfg, Cloud: s.CloudHypervisor, Owner: peer}); err != nil {
 		return Response{}, err
 	}
-	if _, err := s.Sys.Run(ctx, nil, SystemdRunArgv(vm, s.Paths, now)...); err != nil {
+	argv := SystemdRunArgv(vm, s.Paths, now)
+	if s.CloudHypervisor {
+		argv = cloudUnit(vm, s.Paths, now)
+	}
+	if _, err := s.Sys.Run(ctx, nil, argv...); err != nil {
 		return Response{}, fail(ErrFailed, "systemd-run: %v", err)
 	}
 	st, err = s.status(ctx, vmID)
@@ -506,6 +516,12 @@ func (s *Server) verifyRuleset(ctx context.Context) error {
 	if err != nil {
 		return fail(ErrNftMismatch, "%v", err)
 	}
+	if s.Sys.Exists(NativeWorkerMarker) {
+		ref.Mangle, err = ruleset.WithHostPolicies(ref.Mangle, string(mangle))
+		if err != nil {
+			return fail(ErrNftMismatch, "%v", err)
+		}
+	}
 	if err := ruleset.Compare(ref, ruleset.Listing{Nft: nft, Mangle: string(mangle)}); err != nil {
 		return fail(ErrNftMismatch, "%v", err)
 	}
@@ -521,7 +537,11 @@ func loadMangle(ctx context.Context, sys Sys) error {
 	if err != nil {
 		return err
 	}
-	script, err := ruleset.MangleScript(etc.ConnlimitRules, string(current))
+	build := ruleset.MangleScript
+	if sys.Exists(NativeWorkerMarker) {
+		build = ruleset.SharedMangleScript
+	}
+	script, err := build(etc.ConnlimitRules, string(current))
 	if err != nil {
 		return err
 	}
@@ -551,7 +571,7 @@ func (s *Server) NetUp(ctx context.Context) error {
 			return err
 		}
 	}
-	script, err := ruleset.LoadScript(etc.NftConf, up)
+	script, err := networkScript(s.Sys, up)
 	if err != nil {
 		return err
 	}
@@ -630,7 +650,11 @@ var versionRe = regexp.MustCompile(`v?(\d+\.\d+\.\d+)`)
 
 func (s *Server) info(ctx context.Context) *Info {
 	i := &Info{Vmctl: s.Version}
-	if out, err := s.Sys.Run(ctx, nil, s.Paths.Firecracker(), "--version"); err == nil {
+	if s.CloudHypervisor {
+		if out, err := s.Sys.Run(ctx, nil, s.Paths.bin("cloud-hypervisor"), "--version"); err == nil {
+			i.CloudVersion = strings.TrimPrefix(firstLine(out), "cloud-hypervisor ")
+		}
+	} else if out, err := s.Sys.Run(ctx, nil, s.Paths.Firecracker(), "--version"); err == nil {
 		if m := versionRe.FindStringSubmatch(firstLine(out)); m != nil {
 			i.Firecracker = m[1]
 		}

@@ -2,7 +2,7 @@ defmodule Crew.Boxes.Box do
   @moduledoc "A machine that runs jobs: one agent, one driver (§3, §22)."
   use Crew.Schema
 
-  @types ~w(linux-metal linux-vm mac-vm mac-vz)
+  @types ~w(linux-native linux-metal linux-vm mac-vm mac-vz)
 
   schema "boxes" do
     field :name, :string

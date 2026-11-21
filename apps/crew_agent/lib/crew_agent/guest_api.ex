@@ -100,7 +100,8 @@ defmodule CrewAgent.GuestAPI do
     :exit, _ -> :ok
   end
 
-  defp ip(%Config{driver: "firecracker", service_ip: service_ip}) do
+  defp ip(%Config{driver: driver, service_ip: service_ip})
+       when driver in ["firecracker", "cloud-hypervisor"] do
     {:ok, ip} = :inet.parse_ipv4strict_address(String.to_charlist(service_ip))
     ip
   end
@@ -154,7 +155,7 @@ defmodule CrewAgent.GuestAPI do
   # address must be the lease's.
   defp source_ok?(opts, vm_id, guest_ip, source) do
     case Keyword.get(opts, :vm_id) do
-      nil -> Config.get().driver != "firecracker" or guest_ip == source
+      nil -> Config.get().driver not in ["firecracker", "cloud-hypervisor"] or guest_ip == source
       pinned -> pinned == vm_id
     end
   end

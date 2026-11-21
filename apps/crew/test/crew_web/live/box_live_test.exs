@@ -203,6 +203,31 @@ defmodule CrewWeb.BoxLiveTest do
   end
 
   describe "adding a box" do
+    test "enrolls a native Linux box without Flatcar provisioning", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-native"}}) |> render_change()
+      refute has_element?(view, "#flatcar-fields")
+
+      html =
+        view
+        |> form("#add-box", %{"box" => %{"box_name" => "debian01", "box_type" => "linux-native"}})
+        |> render_submit()
+
+      assert has_element?(view, "#join-command", "sudo crew-worker-enroll")
+      refute has_element?(view, "#ignition-download")
+      [token] = Regex.run(~r/cj_[A-Za-z0-9_-]+/, html)
+      {public, _} = CrewProtocol.Auth.generate_keypair()
+
+      assert {:ok,
+              %{
+                type: "linux-native",
+                reserve_vcpus: 0,
+                reserve_memory_mib: 0,
+                cpu_overcommit: 1.0
+              }} =
+               Boxes.enroll(token, %{"public_key" => Base.encode64(public)})
+    end
+
     test "makes a join token and shows the mac-vz steps", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/boxes/new")
 

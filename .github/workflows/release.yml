@@ -164,6 +164,7 @@ jobs:
             linux-*) packaging/release/build-linux.sh "$TARGET" "$VERSION" out ;;
             darwin-*) packaging/release/build-darwin.sh "$TARGET" "$VERSION" out ;;
           esac
+          if [ "$TARGET" = linux-amd64 ]; then packaging/debian/build.sh "$VERSION" out; fi
           ls -l out
       - name: Smoke test
         run: |
@@ -173,7 +174,9 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarballs-${{ matrix.target }}
-          path: out/*.tar.gz
+          path: |
+            out/*.tar.gz
+            out/*.deb
           compression-level: 0
           if-no-files-found: error
 
@@ -224,7 +227,7 @@ jobs:
           CREW_RELEASE_SIGNING_KEY: ${{ secrets.CREW_RELEASE_SIGNING_KEY }}
         run: |
           images/guest/sign.sh --release --public-key-file packaging/release/release-key.pub \
-            out/tarballs/*.tar.gz out/guest/*.manifest.json
+            out/tarballs/*.tar.gz out/tarballs/*.deb out/guest/*.manifest.json
           mkdir signatures
           cp out/tarballs/*.sha256 out/tarballs/*.sig out/guest/*.manifest.sig signatures/
           ls -l signatures
@@ -274,6 +277,8 @@ jobs:
           for m in "$RELEASE"/*.manifest.json; do
             mix crew_image.verify --release --public-key-file "$KEY" "$m"
           done
+          deb="$RELEASE/crew-worker_${{ needs.check.outputs.version }}_amd64.deb"
+          "$GITHUB_WORKSPACE/packaging/debian/verify.sh" "$deb" "$KEY"
           ls -l "$RELEASE"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

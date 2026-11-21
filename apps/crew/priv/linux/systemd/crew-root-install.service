@@ -1,0 +1,10 @@
+[Unit]
+Description=Install an agent update's root half from its signed tarballs
+RequiresMountsFor=/srv/crew
+After=crew-quota.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/crew-box/root-install.sh
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,42 @@
+[Unit]
+Description=Crew agent
+Wants=network-online.target
+After=network-online.target crew-net.service crew-vmctl.socket
+After=crew-agent-install.service crew-root-units.service
+Requires=crew-net.service
+Wants=crew-vmctl.socket crew-cache.service
+RequiresMountsFor=/srv/crew
+ConditionPathExists=/srv/crew/agent/current/bin/crew_agent
+OnFailure=crew-agent-rollback.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+User=_crewagent
+Group=_crewagent
+SupplementaryGroups=crewvm
+EnvironmentFile=/srv/crew/agent/env
+Environment=HOME=/srv/crew/agent RELEASE_TMP=/run/crew-agent RELEASE_DISTRIBUTION=none
+RuntimeDirectory=crew-agent
+RuntimeDirectoryMode=0700
+WorkingDirectory=/run/crew-agent
+ExecStart=/srv/crew/agent/current/bin/crew_agent start
+Restart=always
+RestartSec=3
+# An update that hasn't joined within 5 minutes exits 75: failed, so
+# the rollback unit runs and moves root's half back too (§20.2).
+RestartPreventExitStatus=75
+OOMScoreAdjust=-900
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images /srv/crew/jail
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

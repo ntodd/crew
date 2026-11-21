@@ -195,7 +195,11 @@ defmodule CrewGuest.System.Linux do
   # reboot=k on its command line turns into an exit (§13.3, §13.5).
   @impl true
   def poweroff(_cfg, opts \\ []) do
-    verb = if x86_64?(opts), do: "reboot", else: "poweroff"
+    verb =
+      case File.read(path(opts, "/proc/cmdline")) do
+        {:ok, args} -> if "reboot=k" in String.split(args), do: "reboot", else: "poweroff"
+        {:error, _} -> "poweroff"
+      end
 
     case run(opts, "systemctl", [verb]) do
       :ok ->
@@ -206,13 +210,6 @@ defmodule CrewGuest.System.Linux do
         _ = run(opts, "systemctl", [verb, "--force"])
         :ok
     end
-  end
-
-  defp x86_64?(opts) do
-    arch =
-      Keyword.get_lazy(opts, :arch, fn -> to_string(:erlang.system_info(:system_architecture)) end)
-
-    String.starts_with?(arch, "x86_64")
   end
 
   @impl true

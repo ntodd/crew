@@ -12,6 +12,8 @@ defmodule CrewAgent.Config do
             join_token: nil,
             box_name: nil,
             driver: "null",
+            worker_vcpus: nil,
+            worker_memory_mib: nil,
             data_dir: "/srv/crew",
             service_ip: "10.199.0.1",
             vm_net: "10.200.0.0/16",
@@ -96,7 +98,9 @@ defmodule CrewAgent.Config do
 
   @doc "The driver module for the configured driver."
   def driver_module(%__MODULE__{driver: "vz"}), do: CrewAgent.Driver.VZ
-  def driver_module(%__MODULE__{driver: "firecracker"}), do: CrewAgent.Driver.Firecracker
+
+  def driver_module(%__MODULE__{driver: driver})
+      when driver in ["firecracker", "cloud-hypervisor"], do: CrewAgent.Driver.Firecracker
 
   def driver_module(%__MODULE__{driver: "null"}) do
     # Compiled only in dev and test (§11.5); a release refuses it.

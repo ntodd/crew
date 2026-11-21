@@ -1,0 +1,6 @@
+[Unit]
+Description=Roll the Crew agent back to its previous release
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /etc/crew-box/agent-rollback.sh

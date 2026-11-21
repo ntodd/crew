@@ -38,7 +38,7 @@ for app in crew_agent crew_cache; do
   echo "build-linux: $app for $target"
   docker run --rm --platform "$platform" \
     -v "$root/apps/crew_protocol:/src/crew_protocol:ro" -v "$root/apps/$app:/src/$app:ro" \
-    -v "$work:/out" -e MIX_ENV=prod -e APP="$app" -e CREW_VERSION="$version" \
+    -v "$work:/out" -e MIX_ENV=prod -e ERL_AFLAGS -e APP="$app" -e CREW_VERSION="$version" \
     "$ELIXIR_IMAGE" bash -euc '
       # muontrap builds a small C port: the image has no compiler. Its amd64
       # variant has no CA certificates either (its arm64 one does), and Hex
@@ -66,6 +66,9 @@ agent="$work/crew_agent"
 install -m 0755 "$root/native/crew-vmctl/bin/linux-$goarch/crew-vmctl" "$agent/bin/crew-vmctl"
 install -m 0755 "$work/firecracker/firecracker" "$agent/bin/firecracker"
 install -m 0755 "$work/firecracker/jailer" "$agent/bin/jailer"
+if [ "$target" = linux-amd64 ]; then
+  "$root/packaging/release/fetch-cloud-hypervisor.sh" "$agent/bin/cloud-hypervisor"
+fi
 mkdir -p "$agent/etc/systemd"
 install -m 0644 "$root/native/crew-vmctl/etc/nft.conf" "$root/native/crew-vmctl/etc/connlimit.rules" "$agent/etc/"
 install -m 0644 "$root/native/crew-vmctl/etc/systemd/"* "$agent/etc/systemd/"

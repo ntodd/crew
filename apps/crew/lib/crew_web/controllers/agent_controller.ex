@@ -136,9 +136,7 @@ defmodule CrewWeb.AgentController do
   defp ignition_error(:bad_ssh_key, _), do: {:bad_request, "ssh_keys must be SSH public keys"}
 
   defp ignition_error(:not_flatcar, _),
-    do:
-      {:bad_request,
-       "this join token is for a mac-vz box, which doesn't run Flatcar; its Add box page has the steps"}
+    do: {:bad_request, "use the installation steps on the Add box page for this box type"}
 
   defp ignition_error(:no_release, params),
     do:

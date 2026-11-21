@@ -1,6 +1,7 @@
 defmodule CrewAgent.Driver.Firecracker do
   @moduledoc """
-  The Linux driver (§11.3): each job VM is Firecracker under jailer, in a
+  The Linux driver (§11.3): each job VM runs under Cloud Hypervisor on
+  native Debian/Ubuntu workers, or Firecracker and jailer on Flatcar, in a
   transient systemd unit `crew-vm-<vm_id>`, so it outlives the agent
   (§10.7). The agent runs as `_crewagent` and holds no root powers:
   everything that needs root goes through crew-vmctl's socket
@@ -43,6 +44,8 @@ defmodule CrewAgent.Driver.Firecracker do
     config = Config.get()
     vcpus = cpus(config)
     memory = HostMetrics.linux_memory(read(Path.join(config.proc, "meminfo"))).total
+    vcpus = min(vcpus, config.worker_vcpus || vcpus)
+    memory = min(memory, config.worker_memory_mib || memory)
     {area, _free} = HostMetrics.disk(Config.vms_dir(config))
     info = info()
     {virtualized, vendor} = virtualization()
@@ -50,16 +53,20 @@ defmodule CrewAgent.Driver.Firecracker do
 
     {:ok,
      %{
-       driver: "firecracker",
-       driver_version: driver_version(info),
+       driver: config.driver,
+       driver_version: driver_version(info, config.driver),
        guest_arch: guest_arch(),
        vcpus: vcpus,
        memory_mib: max(memory, 1),
        vm_area_mib: area,
        max_vcpus_per_vm: min(vcpus, @max_vcpus),
        # What's left after placement's default reserve (§8.3).
-       max_memory_mib_per_vm: max(memory - 2048 - div(memory, 20), 1),
-       vmm_overhead_mib: @overhead_mib,
+       max_memory_mib_per_vm:
+         if(config.driver == "cloud-hypervisor",
+           do: max(memory - 256, 1),
+           else: max(memory - 2048 - div(memory, 20), 1)
+         ),
+       vmm_overhead_mib: if(config.driver == "cloud-hypervisor", do: 256, else: @overhead_mib),
        features: features(config, info),
        virtualized: virtualized,
        hypervisor_vendor: vendor,
@@ -74,10 +81,15 @@ defmodule CrewAgent.Driver.Firecracker do
     end
   end
 
-  defp driver_version(%{"firecracker" => fc, "vmctl" => v}) when fc != "",
-    do: String.slice("firecracker #{fc}, crew-vmctl #{v}", 0, 64)
+  defp driver_version(info, driver) do
+    case info do
+      %{^driver => version, "vmctl" => helper} when version != "" ->
+        String.slice("#{driver} #{version}, crew-vmctl #{helper}", 0, 64)
 
-  defp driver_version(_), do: "unknown"
+      _ ->
+        "unknown"
+    end
+  end
 
   defp firewall_ok? do
     case Monitor.firewall_ok?() do
@@ -339,7 +351,14 @@ defmodule CrewAgent.Driver.Firecracker do
   def alive?(vm_id), do: File.dir?(cgroup(vm_id))
 
   defp cgroup(vm_id) do
-    Path.join([Config.get().sys, "fs/cgroup/system.slice", "crew-vm-#{vm_id}.service"])
+    config = Config.get()
+
+    slice =
+      if config.driver == "cloud-hypervisor",
+        do: "crew.slice/crew-jobs.slice",
+        else: "system.slice"
+
+    Path.join([config.sys, "fs/cgroup", slice, "crew-vm-#{vm_id}.service"])
   end
 
   @impl true

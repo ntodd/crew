@@ -28,7 +28,7 @@ func NftReference(ctx context.Context, sys Sys, uplink string) (ReferenceOutput,
 	if strings.TrimSpace(string(tables)) != "" {
 		return ReferenceOutput{}, fmt.Errorf("nft-reference runs in a fresh network namespace, and this one has tables")
 	}
-	script, err := ruleset.LoadScript(etc.NftConf, uplink)
+	script, err := networkScript(sys, uplink)
 	if err != nil {
 		return ReferenceOutput{}, err
 	}
@@ -47,4 +47,16 @@ func NftReference(ctx context.Context, sys Sys, uplink string) (ReferenceOutput,
 		return ReferenceOutput{}, err
 	}
 	return ReferenceOutput{Nft: nft, Mangle: string(mangle)}, nil
+}
+
+const NativeWorkerMarker = "/etc/crew-box/native-worker"
+
+// The native worker shares the forwarding hook with Foreman and the host.
+// Accept unrelated traffic in Crew's chain; other base chains still apply.
+func networkScript(sys Sys, uplink string) (string, error) {
+	script, err := ruleset.LoadScript(etc.NftConf, uplink)
+	if err == nil && sys.Exists(NativeWorkerMarker) {
+		script += "\nadd rule inet crew forward iifname != \"crewt*\" oifname != \"crewt*\" accept\n"
+	}
+	return script, err
 }

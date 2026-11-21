@@ -46,6 +46,7 @@ for f in "$@"; do
   base=$(basename -- "$f")
   case "$base" in
     *[!A-Za-z0-9._-]*) echo "sign: $f: not a name sign.sh signs" >&2; exit 1 ;;
+    crew-worker_*_amd64.deb) [[ "$base" =~ ^crew-worker_[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?_amd64\.deb$ ]] || exit 1 ;;
     *.manifest.json) ;;
     *.tar.gz)
       printf '%s\n' "$base" | grep -Eq "$tarball_re" ||
@@ -104,6 +105,13 @@ sign() {
 for f in "$@"; do
   base=$(basename -- "$f")
   case "$base" in
+    *.deb)
+      sha=$(openssl dgst -sha256 -r "$f" | cut -d ' ' -f 1)
+      printf '%s  %s\n' "$sha" "$base" > "$f.sha256"
+      chmod 0644 "$f.sha256"
+      sig=$f.sig
+      sign "$f.sha256" "$sig"
+      ;;
     *.manifest.json)
       sig=${f%.manifest.json}.manifest.sig
       { printf 'crew-manifest-v1\n'; cat "$f"; } > "$tmp/message"
