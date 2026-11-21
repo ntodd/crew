@@ -577,6 +577,29 @@ defmodule Crew.VMs.ServerTest do
       assert await_state(id, "failed").fail_reason == "boot_timeout"
     end
 
+    @tag timers: %{boot: 500}
+    test "a timer that fires just as its state ends neither crashes the server nor times out the next state",
+         %{box: box, repo: repo} do
+      id = place(box, repo)
+      ack_start(box, assert_command("vm.start"))
+      await_state(id, "starting")
+      pid = Server.whereis(id)
+
+      # booted is queued first, and the boot timer fires behind it: the
+      # server disarms a timer whose message is already in its mailbox.
+      :sys.suspend(pid)
+      boot_timer = :sys.get_state(pid).timers.state
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "booted", "at" => 1})
+      assert is_integer(Process.read_timer(boot_timer)), "the boot timer fired before booted"
+      eventually(fn -> Process.read_timer(boot_timer) == false end)
+      :sys.resume(pid)
+
+      await_state(id, "booted")
+      assert Server.whereis(id) == pid
+      refute_receive {:runner_deleted, _}, 300
+      assert VMs.get!(id).state == "booted"
+    end
+
     test "the JIT config isn't in the server's status, which crash reports print", %{
       box: box,
       repo: repo
