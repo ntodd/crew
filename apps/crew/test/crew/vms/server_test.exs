@@ -542,7 +542,7 @@ defmodule Crew.VMs.ServerTest do
       assert_command("vm.start")
       eventually(fn -> VMs.get!(id).start_op_id end)
 
-      Process.exit(Server.whereis(id), :kill)
+      kill_server(id)
       assert await_state(id, "failed").fail_reason == "cp_restart"
       refute_received {:jit_requested, _}
     end
@@ -559,7 +559,7 @@ defmodule Crew.VMs.ServerTest do
         id = place(box, repo)
         assert_command("vm.start")
         eventually(fn -> VMs.get!(id).start_op_id end)
-        Process.exit(Server.whereis(id), :kill)
+        kill_server(id)
         assert await_state(id, "failed").fail_reason == "cp_restart"
       end
 
@@ -571,8 +571,7 @@ defmodule Crew.VMs.ServerTest do
       id = place(box, repo)
       ack_start(box, assert_command("vm.start"))
       await_state(id, "starting")
-      pid = Server.whereis(id)
-      Process.exit(pid, :kill)
+      pid = kill_server(id)
       eventually(fn -> Server.whereis(id) not in [nil, pid] end)
       assert await_state(id, "failed").fail_reason == "boot_timeout"
     end
