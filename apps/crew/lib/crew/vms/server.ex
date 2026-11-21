@@ -216,37 +216,14 @@ defmodule Crew.VMs.Server do
 
   def handle_info(:retry_jit, state), do: {:noreply, state}
 
-  # A failed or finished VM that hasn't exited: a forced stop while it's
-  # alive, and the box's inventory, which destroys it once it isn't
-  # listed (§8.6, §10.6). A VM the agent never started gets no vm.exited.
-  def handle_info({:timer, :check, _}, state) do
-    state = Map.update!(state, :timers, &Map.delete(&1, :check))
-
-    state =
-      if state.vm.state == "failed" and state.vm.alive,
-        do: apply_transition(state, :failed_alive_tick),
-        else: state
-
-    Operations.dispatch(state.vm.box_id, "box.inventory", %{})
-
-    if state.vm.state in ["failed", "finished"],
-      do: {:noreply, arm(state, :check, ms(:check), :check)},
-      else: {:noreply, state}
-  end
-
-  # The deadline: a forced stop, and then every minute a forced stop and
-  # the box's inventory until the VM is gone (the agent enforces it too,
-  # §10.7).
-  def handle_info({:timer, :deadline, _}, state) do
-    state =
-      state |> Map.update!(:timers, &Map.delete(&1, :deadline)) |> apply_transition(:deadline)
-
-    if state.vm.state == "busy", do: Operations.dispatch(state.vm.box_id, "box.inventory", %{})
-    {:noreply, state}
-  end
-
-  def handle_info({:timer, name, event}, state) do
-    {:noreply, state |> Map.update!(:timers, &Map.delete(&1, name)) |> apply_transition(event)}
+  # A timer's message carries its ref. One that isn't armed any more
+  # fired just before it was disarmed or re-armed: the state it timed is
+  # over, and its message is dropped.
+  def handle_info({:timeout, ref, {name, event}}, state) when is_reference(ref) do
+    case Map.pop(state.timers, name) do
+      {^ref, timers} -> on_timer(name, event, %{state | timers: timers})
+      _ -> {:noreply, state}
+    end
   end
 
   def handle_info({:runner_delete_result, result, reason}, state) do
@@ -286,6 +263,34 @@ defmodule Crew.VMs.Server do
   def handle_info(:stop_self, state), do: {:stop, :normal, state}
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # A failed or finished VM that hasn't exited: a forced stop while it's
+  # alive, and the box's inventory, which destroys it once it isn't
+  # listed (§8.6, §10.6). A VM the agent never started gets no vm.exited.
+  defp on_timer(:check, _event, state) do
+    state =
+      if state.vm.state == "failed" and state.vm.alive,
+        do: apply_transition(state, :failed_alive_tick),
+        else: state
+
+    Operations.dispatch(state.vm.box_id, "box.inventory", %{})
+
+    if state.vm.state in ["failed", "finished"],
+      do: {:noreply, arm(state, :check, ms(:check), :check)},
+      else: {:noreply, state}
+  end
+
+  # The deadline: a forced stop, and then every minute a forced stop and
+  # the box's inventory until the VM is gone (the agent enforces it too,
+  # §10.7).
+  defp on_timer(:deadline, _event, state) do
+    state = apply_transition(state, :deadline)
+
+    if state.vm.state == "busy", do: Operations.dispatch(state.vm.box_id, "box.inventory", %{})
+    {:noreply, state}
+  end
+
+  defp on_timer(_name, event, state), do: {:noreply, apply_transition(state, event)}
 
   defp send_start(%{vm: vm, jit_config: jit} = state) do
     repo = Repos.get!(vm.repo_id)
@@ -722,7 +727,7 @@ defmodule Crew.VMs.Server do
 
   defp arm(state, name, ms, event) do
     state = disarm(state, name)
-    ref = Process.send_after(self(), {:timer, name, event}, max(ms, 0))
+    ref = :erlang.start_timer(max(ms, 0), self(), {name, event})
     put_in(state.timers[name], ref)
   end
 
@@ -732,8 +737,13 @@ defmodule Crew.VMs.Server do
 
   defp disarm(state, name) do
     case Map.pop(state.timers, name) do
-      {nil, _} -> state
-      {ref, timers} -> Process.cancel_timer(ref) && %{state | timers: timers}
+      {nil, _} ->
+        state
+
+      {ref, timers} ->
+        # False when it has already fired; handle_info drops its message.
+        Process.cancel_timer(ref)
+        %{state | timers: timers}
     end
   end
 
