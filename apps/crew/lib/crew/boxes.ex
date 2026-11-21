@@ -477,7 +477,7 @@ defmodule Crew.Boxes do
   defp present(_), do: nil
 
   defp upsert_enrolled_box(token, public_key, attrs) do
-    box = get_by_name(token.box_name) || %Box{name: token.box_name}
+    box = get_by_name(token.box_name) || new_worker(token)
 
     if box.revoked_at do
       {:error, :revoked}
@@ -493,6 +493,13 @@ defmodule Crew.Boxes do
       |> Repo.insert_or_update()
     end
   end
+
+  # A native worker advertises the operator's job slice, with host and
+  # Foreman headroom already excluded. Re-enrollment keeps admin overrides.
+  defp new_worker(%{box_type: "linux-native", box_name: name}),
+    do: %Box{name: name, reserve_vcpus: 0, reserve_memory_mib: 0, cpu_overcommit: 1.0}
+
+  defp new_worker(token), do: %Box{name: token.box_name}
 
   defp decode_key(key) when is_binary(key) do
     case Base.decode64(key) do

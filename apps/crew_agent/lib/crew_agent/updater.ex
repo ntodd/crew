@@ -437,7 +437,7 @@ defmodule CrewAgent.Updater do
 
   defp root_step(config, opts) do
     Keyword.get_lazy(opts, :root_step, fn ->
-      if config.driver == "firecracker",
+      if config.driver in ["firecracker", "cloud-hypervisor"],
         do: &RootStep.install(config, &1),
         else: fn _staged -> :ok end
     end)
@@ -445,7 +445,7 @@ defmodule CrewAgent.Updater do
 
   defp after_swap(config, opts) do
     Keyword.get_lazy(opts, :after_swap, fn ->
-      if config.driver == "firecracker",
+      if config.driver in ["firecracker", "cloud-hypervisor"],
         do: fn -> RootStep.restart_cache(config) end,
         else: fn -> :ok end
     end)
@@ -603,7 +603,7 @@ defmodule CrewAgent.Updater do
       not rollback_due?(config, now, opts) ->
         :ok
 
-      config.driver == "firecracker" ->
+      config.driver in ["firecracker", "cloud-hypervisor"] ->
         Logger.error("agent #{running} hasn't joined since it was installed; rolling back")
         {:stop, @rollback_exit}
 

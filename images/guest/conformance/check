@@ -380,7 +380,9 @@ fi
 # -- item 4: what a job does ---------------------------------------------------------------
 
 if wants tls_clients; then
-  node=$(ls -d /home/runner/actions-runner/externals/node*/bin/node 2>/dev/null | sort -V | tail -1)
+  # The runner also ships musl binaries for Alpine; the guest uses glibc.
+  node=$(printf '%s\n' /home/runner/actions-runner/externals/node*/bin/node |
+    grep -E '/node[0-9]+/bin/node$' | sort -V | tail -1)
   if [ -z "$node" ]; then
     result 4.node_fetch fail "no node in the runner's externals"
   else

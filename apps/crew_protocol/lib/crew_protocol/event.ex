@@ -112,7 +112,7 @@ defmodule CrewProtocol.Event do
       vms_running: {:integer, default: 0}
     ],
     "box.capabilities" => [
-      driver: {{:enum, ~w(firecracker vz null)}, required: true},
+      driver: {{:enum, ~w(firecracker cloud-hypervisor vz null)}, required: true},
       driver_version: {:string, required: true, max: 64},
       guest_arch: {{:enum, ~w(x64 arm64)}, required: true},
       vcpus: {:integer, required: true, min: 1, max: 4096},

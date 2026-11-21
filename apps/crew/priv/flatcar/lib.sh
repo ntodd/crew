@@ -87,9 +87,14 @@ root_units="crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site
 # from the agent's directory.
 # shellcheck disable=SC2034 # $why is for the scripts that source this
 root_half() {
-  for f in bin/crew_agent bin/crew-vmctl bin/jailer bin/firecracker; do
-    if [ ! -x "$1/$f" ]; then
-      why="the release has no $f"
+  if [ -f "${CREW_BOX_ETC:-/etc/crew-box}/native-worker" ]; then
+    bins="crew-vmctl cloud-hypervisor"
+  else
+    bins="crew-vmctl jailer firecracker"
+  fi
+  for b in crew_agent $bins; do
+    if [ ! -x "$1/bin/$b" ]; then
+      why="the release has no bin/$b"
       return 1
     fi
   done
@@ -106,7 +111,7 @@ root_half() {
     fi
   done
   mkdir -p "$2/bin" "$2/etc/systemd"
-  for b in crew-vmctl jailer firecracker; do
+  for b in $bins; do
     cp "$1/bin/$b" "$2/bin/$b"
     chmod 0755 "$2/bin/$b"
   done

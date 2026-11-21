@@ -74,6 +74,30 @@ func parseMangle(s string) (mangle, error) {
 	return m, nil
 }
 
+// WithHostPolicies retains the host's existing built-in policies when
+// installing or verifying Crew's part of a shared mangle table.
+func WithHostPolicies(rules, current string) (string, error) {
+	have, err := parseMangle(current)
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Split(rules, "\n")
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || !strings.HasPrefix(fields[0], ":") {
+			continue
+		}
+		chain := strings.TrimPrefix(fields[0], ":")
+		if policy, ok := have.policies[chain]; ok && builtinChains[chain] {
+			if policy != "ACCEPT" && policy != "DROP" {
+				return "", fmt.Errorf("unexpected %s policy %q", chain, policy)
+			}
+			lines[i] = fields[0] + " " + policy + " " + fields[2]
+		}
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
 // MangleScript is crew-net's load of etc/connlimit.rules, for
 // `iptables-nft-restore --noflush`: one transaction that sets the
 // built-in chains' policies, empties and refills Crew's chains, and puts
@@ -82,6 +106,17 @@ func parseMangle(s string) (mangle, error) {
 // there fails the whole load, so the count is current's. Nothing else in
 // current is touched.
 func MangleScript(rules, current string) (string, error) {
+	return mangleScript(rules, current, false)
+}
+
+// SharedMangleScript installs the Crew chains and jumps without writing
+// the host's built-in policies, even if another service changes one while
+// the restore transaction is being prepared.
+func SharedMangleScript(rules, current string) (string, error) {
+	return mangleScript(rules, current, true)
+}
+
+func mangleScript(rules, current string, shared bool) (string, error) {
 	want, err := parseMangle(rules)
 	if err != nil {
 		return "", fmt.Errorf("connlimit.rules: %w", err)
@@ -97,6 +132,9 @@ func MangleScript(rules, current string) (string, error) {
 	var b strings.Builder
 	b.WriteString("*mangle\n")
 	for _, c := range want.chains {
+		if shared && builtinChains[c] {
+			continue
+		}
 		if !builtinChains[c] && !strings.HasPrefix(c, crewChainPrefix) {
 			return "", fmt.Errorf("connlimit.rules: chain %s isn't Crew's (%s*)", c, crewChainPrefix)
 		}

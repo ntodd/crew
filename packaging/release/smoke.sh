@@ -66,7 +66,9 @@ case $component-$target in
     prints bin/crew_agent version "crew_agent $version"
     prints bin/crew-vmctl version "crew-vmctl $version"
     starts bin/crew_agent
-    for bin in firecracker jailer; do
+    bins="firecracker jailer"
+    if [ "$target" = linux-amd64 ]; then need bin/cloud-hypervisor; bins="$bins cloud-hypervisor"; fi
+    for bin in $bins; do
       if [ -x "bin/$bin" ] && ! "bin/$bin" --version > /dev/null 2>&1; then problem "bin/$bin --version fails"; fi
     done
     if [ -c /dev/kvm ]; then echo "smoke: /dev/kvm is here"; else echo "smoke: no /dev/kvm on this runner"; fi

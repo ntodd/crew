@@ -33,6 +33,8 @@ if config_env() != :test do
     join_token: System.get_env("CREW_JOIN_TOKEN"),
     box_name: System.get_env("CREW_BOX_NAME"),
     driver: driver,
+    worker_vcpus: int.("CREW_WORKER_VCPUS", nil),
+    worker_memory_mib: int.("CREW_WORKER_MEMORY_MIB", nil),
     data_dir: System.get_env("CREW_DATA_DIR", os_data_dir),
     service_ip: System.get_env("CREW_SERVICE_IP", "10.199.0.1"),
     vm_net: System.get_env("CREW_VM_NET", "10.200.0.0/16"),

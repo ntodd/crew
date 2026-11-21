@@ -53,6 +53,7 @@ defmodule Crew.Boxes.Flatcar do
             into: %{},
             do: {key, value}
 
+  @linux_units Path.expand("../../../priv/linux/systemd", __DIR__)
   @scripts_dir Path.expand("../../../priv/flatcar", __DIR__)
   @script_names ~w(lib.sh provision.sh agent-install.sh format-data.sh quota.sh root-units.sh
                    root-install.sh agent-rollback.sh flatcar-update-check update-sysexts.sh
@@ -898,46 +899,17 @@ defmodule Crew.Boxes.Flatcar do
     """
   end
 
-  defp quota do
-    """
-    [Unit]
-    Description=Lay out Crew's data disk and its quotas
-    RequiresMountsFor=/srv/crew
-    Requires=srv-crew.mount
-    After=srv-crew.mount
-
-    [Service]
-    Type=oneshot
-    RemainAfterExit=yes
-    ExecStart=/bin/sh /etc/crew-box/quota.sh
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-  end
+  @external_resource Path.join(@linux_units, "crew-quota.service")
+  @quota_unit File.read!(Path.join(@linux_units, "crew-quota.service"))
+  defp quota, do: @quota_unit
 
   # crew-net (crew0, the ruleset, site4) and crew-vmctl's socket are
   # crew-vmctl's, and their units come with the release
   # (native/crew-vmctl/etc/systemd); this puts them in place from
   # /srv/crew/root, root's copy, at every boot.
-  defp root_units do
-    """
-    [Unit]
-    Description=Install the release's crew-net and crew-vmctl units
-    RequiresMountsFor=/srv/crew
-    After=crew-quota.service crew-agent-install.service
-    Before=crew-agent.service crew-cache.service
-    ConditionPathExists=/srv/crew/root/current/etc/systemd
-
-    [Service]
-    Type=oneshot
-    RemainAfterExit=yes
-    ExecStart=/bin/sh /etc/crew-box/root-units.sh
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-  end
+  @external_resource Path.join(@linux_units, "crew-root-units.service")
+  @root_units_unit File.read!(Path.join(@linux_units, "crew-root-units.service"))
+  defp root_units, do: @root_units_unit
 
   # An agent update's root half (§10.8, §20.2): the agent stages the
   # tarballs and a request in agent/update/, and root installs crew-vmctl,
@@ -947,35 +919,13 @@ defmodule Crew.Boxes.Flatcar do
   # Not ordered after crew-quota: a path unit comes before paths.target,
   # and so before basic.target, which crew-quota comes after. The service
   # it starts is.
-  defp root_install_path do
-    """
-    [Unit]
-    Description=Watch for an agent update's root half to install
-    RequiresMountsFor=/srv/crew
+  @external_resource Path.join(@linux_units, "crew-root-install.path")
+  @root_install_path_unit File.read!(Path.join(@linux_units, "crew-root-install.path"))
+  defp root_install_path, do: @root_install_path_unit
 
-    [Path]
-    PathExists=/srv/crew/agent/update/request
-    Unit=crew-root-install.service
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-  end
-
-  defp root_install do
-    """
-    [Unit]
-    Description=Install an agent update's root half from its signed tarballs
-    RequiresMountsFor=/srv/crew
-    After=crew-quota.service
-
-    [Service]
-    Type=oneshot
-    ExecStart=/bin/sh /etc/crew-box/root-install.sh
-    StandardOutput=journal
-    StandardError=journal
-    """
-  end
+  @external_resource Path.join(@linux_units, "crew-root-install.service")
+  @root_install_unit File.read!(Path.join(@linux_units, "crew-root-install.service"))
+  defp root_install, do: @root_install_unit
 
   defp provision do
     """
@@ -1024,100 +974,17 @@ defmodule Crew.Boxes.Flatcar do
   # is root's; RELEASE_TMP is where the release writes its runtime config.
   # /srv/crew/jail: the agent caps the console files it owns there
   # (crew-vmctl's README); the directories are root's.
-  defp agent do
-    """
-    [Unit]
-    Description=Crew agent
-    Wants=network-online.target
-    After=network-online.target crew-net.service crew-vmctl.socket
-    After=crew-agent-install.service crew-root-units.service
-    Requires=crew-net.service
-    Wants=crew-vmctl.socket crew-cache.service
-    RequiresMountsFor=/srv/crew
-    ConditionPathExists=/srv/crew/agent/current/bin/crew_agent
-    OnFailure=crew-agent-rollback.service
-    StartLimitIntervalSec=120
-    StartLimitBurst=5
+  @external_resource Path.join(@linux_units, "crew-agent.service")
+  @agent_unit File.read!(Path.join(@linux_units, "crew-agent.service"))
+  defp agent, do: @agent_unit
 
-    [Service]
-    User=_crewagent
-    Group=_crewagent
-    SupplementaryGroups=crewvm
-    EnvironmentFile=/srv/crew/agent/env
-    Environment=HOME=/srv/crew/agent RELEASE_TMP=/run/crew-agent RELEASE_DISTRIBUTION=none
-    RuntimeDirectory=crew-agent
-    RuntimeDirectoryMode=0700
-    WorkingDirectory=/run/crew-agent
-    ExecStart=/srv/crew/agent/current/bin/crew_agent start
-    Restart=always
-    RestartSec=3
-    # An update that hasn't joined within 5 minutes exits 75: failed, so
-    # the rollback unit runs and moves root's half back too (§20.2).
-    RestartPreventExitStatus=75
-    OOMScoreAdjust=-900
-    NoNewPrivileges=true
-    ProtectSystem=strict
-    ProtectHome=true
-    PrivateTmp=true
-    ReadWritePaths=/srv/crew/agent /srv/crew/vms /srv/crew/images /srv/crew/jail
-    ProtectKernelModules=true
-    RestrictSUIDSGID=true
-    LockPersonality=true
-    CapabilityBoundingSet=
-    AmbientCapabilities=
+  @external_resource Path.join(@linux_units, "crew-agent-rollback.service")
+  @agent_rollback_unit File.read!(Path.join(@linux_units, "crew-agent-rollback.service"))
+  defp agent_rollback, do: @agent_rollback_unit
 
-    [Install]
-    WantedBy=multi-user.target
-    """
-  end
-
-  defp agent_rollback do
-    """
-    [Unit]
-    Description=Roll the Crew agent back to its previous release
-
-    [Service]
-    Type=oneshot
-    ExecStart=/bin/sh /etc/crew-box/agent-rollback.sh
-    """
-  end
-
-  defp cache do
-    """
-    [Unit]
-    Description=Crew's registry cache (crew_cache)
-    Wants=network-online.target
-    After=network-online.target crew-net.service crew-quota.service
-    Requires=crew-net.service
-    RequiresMountsFor=/srv/crew
-    ConditionPathExists=/srv/crew/agent/current/cache/bin/crew_cache
-
-    [Service]
-    User=crewcache
-    Group=crewcache
-    # Its share of the disk (crew-quota), then the agent's and admin's settings.
-    EnvironmentFile=-/run/crew-box/cache.env
-    EnvironmentFile=-/srv/crew/cache/env
-    Environment=HOME=/srv/crew/cache CREW_DATA_DIR=/srv/crew RELEASE_TMP=/run/crew-cache RELEASE_DISTRIBUTION=none
-    RuntimeDirectory=crew-cache
-    RuntimeDirectoryMode=0700
-    WorkingDirectory=/run/crew-cache
-    ExecStart=/srv/crew/agent/current/cache/bin/crew_cache start
-    Restart=always
-    RestartSec=3
-    AmbientCapabilities=CAP_NET_BIND_SERVICE
-    CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-    OOMScoreAdjust=-900
-    NoNewPrivileges=true
-    ProtectSystem=strict
-    ProtectHome=true
-    PrivateTmp=true
-    ReadWritePaths=/srv/crew/cache
-
-    [Install]
-    WantedBy=multi-user.target
-    """
-  end
+  @external_resource Path.join(@linux_units, "crew-cache.service")
+  @cache_unit File.read!(Path.join(@linux_units, "crew-cache.service"))
+  defp cache, do: @cache_unit
 
   defp status do
     """

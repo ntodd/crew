@@ -46,6 +46,8 @@ Admins can change sizes under **Sizes & labels**. [Runner labels and sizes](docs
 The control plane runs in Docker and handles GitHub events, scheduling, and
 the web UI. Boxes supply the compute. A dedicated Linux machine can run
 Flatcar directly, or a Linux host with nested KVM can run a Flatcar VM.
+On x86-64 Debian and Ubuntu hosts, the [native worker](docs/setup/native-linux.md)
+runs Linux jobs directly through KVM using Cloud Hypervisor.
 Apple Silicon Macs can run arm64 Linux guests with Virtualization.framework.
 An M3 or later on macOS 15+ can also host a nested Flatcar VM.
 

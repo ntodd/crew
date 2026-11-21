@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch for an agent update's root half to install
+RequiresMountsFor=/srv/crew
+
+[Path]
+PathExists=/srv/crew/agent/update/request
+Unit=crew-root-install.service
+
+[Install]
+WantedBy=multi-user.target

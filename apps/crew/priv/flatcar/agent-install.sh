@@ -24,6 +24,9 @@
 # CREW_BOX_ETC and CREW_BOX_DATA move /etc/crew-box and /srv/crew, for
 # the control plane's tests.
 set -eu
+# The release runs as three different users. Secrets are written inside
+# the private staging directory below with an explicit mode.
+umask 022
 
 etc=${CREW_BOX_ETC:-/etc/crew-box}
 data=${CREW_BOX_DATA:-/srv/crew}
@@ -108,7 +111,6 @@ rm -rf "$dest" "${root_dir:?}/${CREW_VERSION:?}"
 mv "$priv" "$root_dir/$CREW_VERSION"
 mv "$new" "$dest"
 relink "$root_dir" current "$CREW_VERSION"
-relink "$agent" current "$CREW_VERSION"
 rm -f "$agent/previous" "$agent/update-pending"
 
 # The agent's settings (§21.2). systemd reads them as root; the agent
@@ -120,7 +122,11 @@ if [ ! -s "$agent/env" ] || [ -n "$CREW_JOIN_TOKEN" ]; then
     echo "CREW_URL=$CREW_AGENT_SOCKET_URL"
     echo "CREW_BOX_NAME=$CREW_BOX_NAME"
     echo "CREW_DATA_DIR=$data"
-    echo "CREW_DRIVER=firecracker"
+    if [ "$CREW_BOX_TYPE" = linux-native ]; then
+      echo "CREW_DRIVER=cloud-hypervisor"
+    else
+      echo "CREW_DRIVER=firecracker"
+    fi
     echo "CREW_CACHE_MGMT_URL=http://127.0.0.1:7780"
     echo "CREW_RELEASE_PUBLIC_KEY=$CREW_RELEASE_PUBLIC_KEY"
     if [ "${CREW_DEV:-}" = 1 ]; then echo "CREW_DEV=1"; fi
@@ -131,4 +137,6 @@ if [ ! -s "$agent/env" ] || [ -n "$CREW_JOIN_TOKEN" ]; then
   mv -f "$tmp/env" "$agent/env"
 fi
 
+# current is also the completion marker on a retry.
+relink "$agent" current "$CREW_VERSION"
 say "installed the agent $CREW_VERSION"

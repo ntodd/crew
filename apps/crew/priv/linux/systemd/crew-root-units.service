@@ -1,0 +1,14 @@
+[Unit]
+Description=Install the release's crew-net and crew-vmctl units
+RequiresMountsFor=/srv/crew
+After=crew-quota.service crew-agent-install.service
+Before=crew-agent.service crew-cache.service
+ConditionPathExists=/srv/crew/root/current/etc/systemd
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh /etc/crew-box/root-units.sh
+
+[Install]
+WantedBy=multi-user.target

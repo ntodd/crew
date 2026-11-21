@@ -369,7 +369,11 @@ func (h *LinuxSys) PrepareJail(j Jail) (err error) {
 		return err
 	}
 	for _, name := range []string{"console.log", "fc.stderr"} {
-		if err := createAt(vfd, name, 0o640, nil, j.Owner.UID, j.Owner.GID); err != nil {
+		mode, group := uint32(0o640), j.Owner.GID
+		if j.Cloud && name == "console.log" {
+			mode, group = 0o660, gid
+		}
+		if err := createAt(vfd, name, mode, nil, j.Owner.UID, group); err != nil {
 			return err
 		}
 	}

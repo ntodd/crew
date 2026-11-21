@@ -18,6 +18,7 @@ defmodule CrewWeb.BoxLive.New do
   alias Crew.Boxes.Flatcar
 
   @types [
+    {"linux-native", "Debian or Ubuntu on x86-64 (Cloud Hypervisor)"},
     {"mac-vz", "Mac (Virtualization.framework)"},
     {"mac-vm", "Mac, M3 or later (Firecracker in a Flatcar VM)"},
     {"linux-vm", "Linux with KVM (Flatcar VM)"},
@@ -284,6 +285,17 @@ defmodule CrewWeb.BoxLive.New do
         </p>
 
         <%= case @box_type do %>
+          <% "linux-native" -> %>
+            <p class="mb-2 text-sm text-ink-2">
+              Install crew-worker from the matching GitHub release. Mount a dedicated XFS
+              volume with reflinks and project quotas at /srv/crew. Run the command below
+              and paste the join token when prompted.
+            </p>
+            <.command
+              id="join-command"
+              command={"sudo crew-worker-enroll #{Crew.Config.base_url()} #{@box_name}"}
+            />
+            <.command id="native-token" command={@token} />
           <% "mac-vz" -> %>
             <ol class="list-decimal space-y-2 pl-5 text-sm text-ink-2">
               <li>

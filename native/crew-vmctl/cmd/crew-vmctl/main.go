@@ -39,7 +39,7 @@ func main() {
 	// systemd's view of how a unit ended, for `exited`; then nothing of
 	// the environment is kept.
 	env := map[string]string{}
-	for _, k := range []string{"SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS", "CREW_VM_NET"} {
+	for _, k := range []string{"SERVICE_RESULT", "EXIT_CODE", "EXIT_STATUS", "CREW_VM_NET", "NOTIFY_SOCKET"} {
 		env[k] = os.Getenv(k)
 	}
 	os.Clearenv()
@@ -61,12 +61,20 @@ func main() {
 		os.Exit(78)
 	}
 	paths := vmctl.Paths{Data: *data}
-	srv := &vmctl.Server{Paths: paths, Net: net, Sys: vmctl.NewSys(paths), Now: time.Now, Version: version}
+	sys := vmctl.NewSys(paths)
+	srv := &vmctl.Server{Paths: paths, Net: net, Sys: sys, Now: time.Now, Version: version, CloudHypervisor: sys.Exists(vmctl.NativeWorkerMarker)}
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	args := fs.Args()
 
 	if args[0] == "version" {
 		fmt.Println("crew-vmctl", version)
+		return
+	}
+	if args[0] == "cloud-run" && len(args) == 2 && vmctl.IsUUID(args[1]) && os.Geteuid() != 0 {
+		if err := vmctl.RunCloud(paths, args[1], env["NOTIFY_SOCKET"]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 		return
 	}
 	if os.Geteuid() != 0 {

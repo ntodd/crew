@@ -48,10 +48,12 @@ units="crew-vmctl.socket crew-vmctl@.service crew-net.service crew-net-site4.ser
 docker_sock=/run/crew-kvm-docker.sock
 keep=0
 conformance=0
+driver=firecracker
 for arg in "$@"; do
   case $arg in
     --keep) keep=1 ;;
     --conformance) conformance=1 ;;
+    --cloud-hypervisor) driver=cloud-hypervisor; conformance=1 ;;
     *) echo "kvm: unknown argument $arg" >&2 && exit 64 ;;
   esac
 done
@@ -75,6 +77,8 @@ for t in systemctl systemd-run nft iptables-nft-restore iptables-nft ip curl sha
 done
 [ -d "$data" ] || die "$data doesn't exist (an XFS with reflink=1)"
 [ "$(stat -f -c %T "$data")" = xfs ] || die "$data must be an XFS (with reflink=1)"
+exec 9>/run/lock/crew-kvm-test.lock
+flock -n 9 || die "another KVM test is running"
 for d in agent root vmctl; do
   if [ -e "$data/$d" ] && [ ! -e "$marker" ]; then
     die "$data/$d exists and this script didn't make it: is this a Crew box? Not here."
@@ -85,6 +89,27 @@ case $image/ in
     die "keep the image out of $data/{agent,root,vms,images,jail}"
     ;;
 esac
+[ ! -e /etc/crew-box/native-worker ] || die "this is an enrolled native worker"
+if [ "$driver" = cloud-hypervisor ]; then
+  for path in "$data/agent" "$data/root" "$data/images" "$data/vms" "$data/jail" "$data/vmctl" /run/crew "$marker"; do
+    [ ! -e "$path" ] || die "$path already exists; use a clean test host"
+  done
+  for unit in $units crew-kvm-dockerd.service; do
+    case "$unit" in crew-vmctl@.service) unit=crew-vmctl@preflight.service ;; esac
+    [ "$(systemctl show "$unit" -p LoadState --value)" = not-found ] || die "$unit already exists"
+  done
+  tables=$(nft list tables)
+  if printf '%s\n' "$tables" | grep -Eq '^table (inet crew|ip mangle)$'; then
+    die "this harness needs a test host without inet crew or ip mangle tables"
+  fi
+  links=$(ip -o link show)
+  if printf '%s\n' "$links" | grep -Eq '^[0-9]+: (crew0|crewt[0-9]+)[:@]'; then
+    die "a Crew network interface is already present"
+  fi
+  [ ! -e /etc/crew-box ] || die "use a disposable host without /etc/crew-box"
+  [ "$(uname -m)" = x86_64 ] || die "Cloud Hypervisor jobs need x86-64"
+  [ "$keep" = 0 ] || die "--keep is unavailable for the native worker test"
+fi
 touch "$marker"
 mkdir -p "$work"
 
@@ -102,6 +127,9 @@ dock() { DOCKER_HOST=unix://$docker_sock docker "$@"; }
 # shellcheck disable=SC2329 # the EXIT trap's
 teardown() {
   status=$?
+  if [ "$driver" = cloud-hypervisor ] && [ -f /etc/crew-box/native-worker ]; then
+    rm -f /etc/crew-box/native-worker; rmdir /etc/crew-box || true
+  fi
   [ "$conformance" = 0 ] || "$here/cache.sh" down --if-ours || true
   if [ "$keep" = 0 ]; then
     say "taking it down"
@@ -145,7 +173,13 @@ fi
 
 # -- 2. Firecracker ---------------------------------------------------------------
 
-"$vmctl_src/fetch-firecracker.sh" "$work/firecracker" "$(uname -m)"
+if [ "$driver" = cloud-hypervisor ]; then
+  "$repo/packaging/release/fetch-cloud-hypervisor.sh" "$work/cloud-hypervisor"
+  mkdir -m0700 /etc/crew-box
+  touch /etc/crew-box/native-worker
+else
+  "$vmctl_src/fetch-firecracker.sh" "$work/firecracker" "$(uname -m)"
+fi
 
 # -- 3. crew-vmctl ------------------------------------------------------------------
 
@@ -188,7 +222,12 @@ project 10 jail
 project 12 agent
 project 12 images
 say "project quotas: vms/ and jail/ in 10, agent/ and images/ in 12"
-install -m 0755 "$work/firecracker/firecracker" "$work/firecracker/jailer" "$work/bin/crew-vmctl" "$release/bin/"
+install -m 0755 "$work/bin/crew-vmctl" "$release/bin/"
+if [ "$driver" = cloud-hypervisor ]; then
+  install -m0755 "$work/cloud-hypervisor" "$release/bin/"
+else
+  install -m0755 "$work/firecracker/firecracker" "$work/firecracker/jailer" "$release/bin/"
+fi
 cp "$vmctl_src/etc/nft.conf" "$vmctl_src/etc/connlimit.rules" "$release/etc/"
 cp "$vmctl_src/etc/systemd/"* "$release/etc/systemd/"
 ln -sfn kvm-test "$data/root/current"
@@ -225,7 +264,7 @@ only=kvm
 if [ "$conformance" = 1 ]; then
   # Item 4's cache, on 10.199.0.1 as a box's (crew0 is crew-net's now).
   "$here/cache.sh" up
-  export CREW_CONFORMANCE_DRIVER=firecracker CREW_CONFORMANCE_CACHE_MGMT=http://127.0.0.1:7780
+  export CREW_CONFORMANCE_DRIVER="$driver" CREW_CONFORMANCE_CACHE_MGMT=http://127.0.0.1:7780
   CREW_CONFORMANCE_CACHE_TOKEN=$(cat "$work/cache.token")
   export CREW_CONFORMANCE_CACHE_TOKEN
   paths=test/conformance

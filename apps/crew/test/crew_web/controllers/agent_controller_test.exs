@@ -142,9 +142,24 @@ defmodule CrewWeb.AgentControllerTest do
       assert format["contents"] =~ "format-data.sh /dev/vdb"
     end
 
-    test "a mac-vz box's token doesn't get one", %{conn: conn, token: vz_token} do
-      conn = post(conn, "/agent/flatcar/ignition", %{"join_token" => vz_token, "arch" => "arm64"})
-      assert json_response(conn, 400)["error"] =~ "mac-vz"
+    test "boxes installed without Flatcar get their own setup instructions", %{token: vz_token} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+
+      {:ok, native_token} =
+        Crew.Boxes.create_join_token(admin, %{
+          "box_name" => "native01",
+          "box_type" => "linux-native"
+        })
+
+      for token <- [vz_token, native_token] do
+        conn =
+          post(new_client(), "/agent/flatcar/ignition", %{
+            "join_token" => token,
+            "arch" => "arm64"
+          })
+
+        assert json_response(conn, 400)["error"] =~ "installation steps on the Add box page"
+      end
     end
 
     test "bad tokens count against the enrollment limit" do

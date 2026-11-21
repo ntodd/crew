@@ -290,6 +290,7 @@ defmodule CrewAgent.VM do
   def boot_args(config, lease, vm_id, token) do
     console =
       case {config.driver, guest_arch()} do
+        {"cloud-hypervisor", "x64"} -> "console=ttyS0 panic=1 quiet loglevel=4 net.ifnames=0"
         {"vz", _} -> "console=hvc0 panic=1 quiet loglevel=4"
         {_, "arm64"} -> "console=ttyS0 panic=1 quiet loglevel=4"
         _ -> "console=ttyS0 reboot=k panic=1 pci=off quiet loglevel=4"
