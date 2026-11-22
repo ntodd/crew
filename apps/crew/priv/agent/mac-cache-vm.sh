@@ -135,7 +135,7 @@ status() {
 ssh_box() {
   ip=$(address)
   [ -n "$ip" ] || fail "the box has no address yet"
-  exec ssh -i "$BOX/id_ed25519" -o UserKnownHostsFile="$BOX/known_hosts" \
+  exec ssh -o IdentitiesOnly=yes -i "$BOX/id_ed25519" -o UserKnownHostsFile="$BOX/known_hosts" \
     -o StrictHostKeyChecking=accept-new "core@$ip" "$@"
 }
 
@@ -263,7 +263,7 @@ reimage() {
   rm -rf "$work" "$images"
   rm -f "$BOX/efi-vars" "$BOX/serial.log" "$BOX/serial.log.1"
   start
-  follow 'cache ready|crew_cache didn.t|the cache.s management token'
+  follow 'cache ready'
   say "reimaged $(conf name) with Flatcar $FLATCAR_VERSION; it updates itself from here"
 }
 

@@ -300,7 +300,7 @@ defmodule CrewWeb.BoxLive.New do
             </ol>
             <.command
               id="join-command"
-              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token}#{release_key_option()} --cache-vm"}
+              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token} --name #{@box_name}#{release_key_option()} --cache-vm"}
             />
             <p id="cache-vm-note" class="mt-3 text-xs text-ink-3">
               <span class="font-mono">--cache-vm</span>

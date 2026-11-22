@@ -35,7 +35,9 @@ defmodule Crew.BoxesTest do
     test "a retired worker drains and keeps its original identity during migration", %{
       admin: admin
     } do
-      box = box_fixture(type: "mac-vm", draining: false)
+      attrs = %{"box_name" => "old-mac", "box_type" => "mac-vz"}
+      {:ok, stale_token} = Boxes.create_join_token(admin, attrs)
+      box = box_fixture(name: "old-mac", type: "mac-vm", draining: false)
       assert :draining in Boxes.issues(box, true)
       assert Enum.find(Crew.Scheduler.snapshot().boxes, &(&1.id == box.id)).draining
 
@@ -43,6 +45,8 @@ defmodule Crew.BoxesTest do
                Boxes.create_join_token(admin, %{"box_name" => box.name, "box_type" => "mac-vz"})
 
       assert errors_on(cs)[:box_name]
+      {replacement_key, _} = CrewProtocol.Auth.generate_keypair()
+      assert {:error, :invalid_token} = Boxes.enroll(stale_token, enroll_attrs(replacement_key))
       assert Boxes.public_key(box.id) == {:ok, box.public_key}
     end
 

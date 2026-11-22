@@ -1,6 +1,6 @@
 // Physical mac-vz cache VM installation, recovery and cleanup.
 // The launcher wants root and launchd's system domain. Here it runs as
-// you: CREW_BOX_ROOT moves its paths under /private/tmp/cmv, and shims
+// you: CREW_BOX_ROOT uses a fresh directory under /private/tmp, and shims
 // on PATH answer `id -u` with 0, skip `chown`, and send `launchctl`'s
 // system domain to your GUI domain (gui/<uid>), with the box's root in
 // the job's environment. vfkit, Flatcar, the disks, the staging boot and
@@ -15,7 +15,7 @@
 //
 // Run on Apple silicon with room for the Flatcar downloads and sparse disks.
 import {spawn, execFileSync} from "node:child_process"
-import {chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync} from "node:fs"
+import {chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync} from "node:fs"
 import {resolve} from "node:path"
 import {expect, test} from "@playwright/test"
 import {addBox, signIn} from "./helpers.js"
@@ -25,9 +25,8 @@ const state = resolve(repoRoot, "tmp/mac-cache-vm-e2e")
 const shims = resolve(state, "shims")
 // Short: vfkit's REST socket lives in the box's directory, and Unix
 // socket paths are capped at 104 bytes.
-const root = "/private/tmp/cmv"
-const hostvm = `${root}/Library/Application Support/Crew/hostvm`
-const label = "com.crew.hostvm.cachevm"
+let root, hostvm
+const label = `com.crew.e2e.cachevm.${process.pid}`
 const uid = process.getuid()
 let launcher, tunnel
 
@@ -41,6 +40,7 @@ test.afterAll(async () => {
   // Hooks keep the 60 s default; this one may wait 90 s on launchd and
   // 30 s on vfkit before it kills.
   test.setTimeout(150_000)
+  if (!root) return
   closeTunnel()
   if (launcher && launcher.exitCode === null) {
     try { process.kill(-launcher.pid, "SIGTERM") } catch (_e) {}
@@ -53,6 +53,7 @@ test.afterAll(async () => {
   if (launcher && launcher.exitCode === null) {
     try { process.kill(-launcher.pid, "SIGKILL") } catch (_e) {}
   }
+  rmSync(root, {recursive: true, force: true})
 })
 
 function running(pattern) {
@@ -74,7 +75,10 @@ test("a mac-vz box's cache VM installs, serves the Mac alone and restarts on req
   const exited = new Promise(done => launcher.on("exit", code => done(code)))
 
   // Its first boot installs crew_cache from the control plane: the tunnel.
-  await expect.poll(() => sshReady(cache), {timeout: 900_000, intervals: [5_000]}).toBe(true)
+  await Promise.race([
+    expect.poll(() => sshReady(cache), {timeout: 900_000, intervals: [5_000]}).toBe(true),
+    exited.then(code => { throw new Error(`cache installer exited before SSH was ready (status ${code})`) }),
+  ])
   openTunnel(cache)
   expect(await exited, readFileSync(log, "utf8")).toBe(0)
   const out = readFileSync(log, "utf8")
@@ -85,20 +89,29 @@ test("a mac-vz box's cache VM installs, serves the Mac alone and restarts on req
   // From the Mac: the cache, and management behind the token.
   const ip = address(cache)
   const mgmt = readFileSync(`${cache}/mgmt-token`, "utf8").trim()
-  expect(await (await fetch(`http://${ip}/healthz`)).text()).toContain("ok")
-  expect((await fetch(`http://${ip}:7780/host`)).status).toBe(401)
-  const host = async () =>
-    (await (await fetch(`http://${ip}:7780/host`, {headers: {authorization: `Bearer ${mgmt}`}})).json()).boot_id
-  const boot = await host()
+  const get = (url, args = [], input = "") =>
+    execFileSync("/usr/bin/curl", ["--noproxy", "*", "--max-time", "5", "-sS", ...args, url],
+      {encoding: "utf8", input})
+  expect(get(`http://${ip}/healthz`, ["-f"])).toContain("ok")
+  expect(get(`http://${ip}:7780/host`, ["-o", "/dev/null", "-w", "%{http_code}"])).toBe("401")
+  const host = () => JSON.parse(get(`http://${ip}:7780/host`, ["-f", "-H", "@-"],
+    `Authorization: Bearer ${mgmt}\n`)).boot_id
+  const boot = host()
   expect(boot).toMatch(/^[0-9a-f-]{36}$/)
   expect(crewBox("status", "cachevm")).toContain("role:    cache")
+
+  // Updating the launcher on an installed Mac preserves the running guest and its identity.
+  execFileSync("sh", [script, "--role", "cache"], {env: env(), timeout: 120_000})
+  expect(host()).toBe(boot)
+  expect(address(cache)).toBe(ip)
+  expect(readFileSync(`${cache}/mgmt-token`, "utf8").trim()).toBe(mgmt)
 
   // The agent's request: launchd runs this when the file appears.
   const trigger = resolve(state, "restart-cachevm")
   writeFileSync(trigger, boot + "\n")
   crewBox("restart", "--role", "cache", "--trigger", trigger)
   expect(existsSync(trigger)).toBe(false)
-  await expect.poll(async () => { try { return await host() } catch (_e) { return boot } },
+  await expect.poll(() => { try { return host() } catch (_e) { return boot } },
     {timeout: 300_000, intervals: [5_000]}).not.toBe(boot)
 
   crewBox("uninstall", "--yes", "cachevm")
@@ -108,10 +121,8 @@ test("a mac-vz box's cache VM installs, serves the Mac alone and restarts on req
 
 // The Mac's paths under CREW_BOX_ROOT, and the shims for running as you.
 function setUp() {
-  closeTunnel()
-  try { execFileSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], {stdio: "ignore"}) } catch (_e) {}
-  rmSync(root, {recursive: true, force: true})
-  rmSync(state, {recursive: true, force: true})
+  root = mkdtempSync("/private/tmp/cmv-")
+  hostvm = `${root}/Library/Application Support/Crew/hostvm`
   mkdirSync(`${root}/Library/LaunchDaemons`, {recursive: true})
   mkdirSync(`${root}/var/db`, {recursive: true})
   symlinkSync("/var/db/dhcpd_leases", `${root}/var/db/dhcpd_leases`)
@@ -128,10 +139,11 @@ n=$#
 for a in "$@"; do
   case $a in
     system) a=gui/$uid ;;
-    system/*) a=gui/$uid/\${a#system/} ;;
+    system/com.crew.hostvm.cachevm) a=gui/$uid/${label} ;;
     *.plist)
       e2e=\${a%.plist}.e2e.plist
       cp "$a" "$e2e" || exit 1
+      /usr/bin/plutil -replace Label -string "${label}" "$e2e" || exit 1
       /usr/bin/plutil -insert EnvironmentVariables -json "{\\"CREW_BOX_ROOT\\":\\"$CREW_BOX_ROOT\\",\\"PATH\\":\\"$PATH\\"}" "$e2e" || exit 1
       a=$e2e ;;
   esac
@@ -171,7 +183,7 @@ function address(dir) {
 }
 
 function sshArgs(dir) {
-  return ["-i", `${dir}/id_ed25519`, "-o", `UserKnownHostsFile=${state}/known_hosts`,
+  return ["-o", "IdentitiesOnly=yes", "-i", `${dir}/id_ed25519`, "-o", `UserKnownHostsFile=${state}/known_hosts`,
     "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
 }
 
