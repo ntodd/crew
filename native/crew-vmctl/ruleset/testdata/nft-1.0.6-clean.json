@@ -647,7 +647,7 @@
                 "family": "inet",
                 "table": "crew",
                 "chain": "forward",
-                "handle": 23,
+                "handle": 24,
                 "expr": [
                     {
                         "match": {
@@ -672,6 +672,23 @@
                         }
                     },
                     {
+                        "match": {
+                            "op": "==",
+                            "left": {
+                                "ct": {
+                                    "key": "state"
+                                }
+                            },
+                            "right": {
+                                "set": [
+                                    "established",
+                                    "related",
+                                    "new"
+                                ]
+                            }
+                        }
+                    },
+                    {
                         "accept": null
                     }
                 ]
@@ -682,7 +699,7 @@
                 "family": "inet",
                 "table": "crew",
                 "chain": "forward",
-                "handle": 24,
+                "handle": 25,
                 "expr": [
                     {
                         "match": {
@@ -720,7 +737,7 @@
                 "family": "inet",
                 "table": "crew",
                 "chain": "post",
-                "handle": 25,
+                "handle": 26,
                 "expr": [
                     {
                         "match": {
