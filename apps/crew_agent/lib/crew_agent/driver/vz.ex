@@ -16,7 +16,7 @@ defmodule CrewAgent.Driver.VZ do
   """
   @behaviour CrewAgent.Driver
 
-  alias CrewAgent.{Config, Images}
+  alias CrewAgent.{Config, Images, Site}
   alias CrewAgent.Driver.VZ.Daemon
 
   @overhead_mib 128
@@ -47,14 +47,19 @@ defmodule CrewAgent.Driver.VZ do
          # crew-vzd's default ceiling: the Mac's memory less 2 GiB.
          max_memory_mib_per_vm: min(memory, mem_mib - 2048),
          vmm_overhead_mib: @overhead_mib,
-         features: ["graceful_stop"],
+         features:
+           if(Site.echo_configured?(),
+             do: ["graceful_stop"],
+             else: ["graceful_stop", "no_egress_echo"]
+           ),
          virtualized: virtualized,
          hypervisor_vendor: if(virtualized, do: "apple"),
          # The boundary is crew-vzd's helpers; with a cache VM, guests
          # also need it for DNS, so the box takes no jobs until it answers
          # (after a Mac reboot the agent can be up first, §15.6).
          firewall_ok:
-           match?({:ok, _}, daemon(%{"op" => "list"})) and CrewAgent.CacheVM.ready?(config),
+           (not Site.echo_configured?() or is_binary(Site.egress())) and
+             match?({:ok, _}, daemon(%{"op" => "list"})) and CrewAgent.CacheVM.ready?(config),
          sleep_disabled: sleep_disabled?()
        }}
     end
@@ -209,8 +214,14 @@ defmodule CrewAgent.Driver.VZ do
   defp cache_addr(config), do: CrewAgent.CacheVM.address(config) || ""
 
   defp write_config(config, spec) do
-    body = Jason.encode!(vz_json(config, spec))
-    CrewAgent.SafeFS.write_atomic(Path.join(spec.vm_dir, "vz.json"), body, 0o640)
+    cfg = vz_json(config, spec)
+    ip = Site.egress()
+
+    if Site.echo_configured?() and (is_nil(ip) or "#{ip}/32" not in cfg["site4"]) do
+      {:error, "site egress address unknown"}
+    else
+      CrewAgent.SafeFS.write_atomic(Path.join(spec.vm_dir, "vz.json"), Jason.encode!(cfg), 0o640)
+    end
   end
 
   @impl true

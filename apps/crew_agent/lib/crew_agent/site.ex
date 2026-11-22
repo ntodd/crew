@@ -106,13 +106,16 @@ defmodule CrewAgent.Site do
   """
   def record_egress(config, ip) do
     changed = egress() != ip
-    :persistent_term.put({__MODULE__, :egress}, ip)
 
-    if config.driver == "firecracker" and changed do
+    if config.driver in ["vz", "firecracker"] and changed do
       dir = Config.agent_dir(config)
       File.mkdir_p!(dir)
       :ok = CrewAgent.SafeFS.write_atomic(egress_file(config), ip <> "\n", 0o644)
+    end
 
+    :persistent_term.put({__MODULE__, :egress}, ip)
+
+    if config.driver == "firecracker" and changed do
       with {:error, why} <- Firecracker.refresh_site4() do
         Logger.warning("site4 wasn't refilled with the new egress address: #{why}")
       end
@@ -122,11 +125,11 @@ defmodule CrewAgent.Site do
   end
 
   @doc """
-  The egress address the agent wrote before it restarted (Firecracker),
+  The egress address the agent wrote before it restarted (Firecracker or vz),
   so site4 can be held to it before the echo service answers again.
   """
   def load_egress(config) do
-    with "firecracker" <- config.driver,
+    with true <- config.driver in ["firecracker", "vz"],
          {:ok, body} <- File.read(egress_file(config)),
          ip when is_binary(ip) <- parse_egress(body) do
       :persistent_term.put({__MODULE__, :egress}, ip)
@@ -148,23 +151,33 @@ defmodule CrewAgent.Site do
 
   @impl true
   def handle_info(:check, state) do
-    Process.send_after(self(), :check, @every_ms)
+    delay =
+      case Application.get_env(:crew_agent, :egress_echo_url) do
+        url when is_binary(url) and url != "" -> refresh_echo(url)
+        _ -> @every_ms
+      end
 
-    with url when is_binary(url) <- Application.get_env(:crew_agent, :egress_echo_url),
-         {:ok, %{status: 200, body: body}} <-
-           Req.get(url, retry: false, receive_timeout: 10_000, redirect: false),
-         ip when is_binary(ip) <- parse_egress(to_string(body)) do
-      record_egress(Config.get(), ip)
-    else
-      nil ->
-        :ok
-
-      other ->
-        Logger.warning(
-          "couldn't learn the site's egress address: #{inspect(other) |> String.slice(0, 200)}"
-        )
-    end
-
+    Process.send_after(self(), :check, delay)
     {:noreply, state}
   end
+
+  defp refresh_echo(url) do
+    with {:ok, %{status: 200, body: body}} when is_binary(body) <-
+           Req.get(url,
+             retry: false,
+             receive_timeout: 10_000,
+             redirect: false,
+             decode_body: false
+           ),
+         ip when is_binary(ip) <- parse_egress(body) do
+      record_egress(Config.get(), ip)
+      @every_ms
+    else
+      _ ->
+        Logger.warning("couldn't learn the site's egress address; retrying in 15 seconds")
+        15_000
+    end
+  end
+
+  def echo_configured?, do: Application.get_env(:crew_agent, :egress_echo_url) not in [nil, ""]
 end
