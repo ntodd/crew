@@ -26,6 +26,27 @@ defmodule CrewWeb.PagesTest do
       assert session["access"] == :all
     end
 
+    test "the Oban route rechecks administrator access on mount", %{conn: conn, user: user} do
+      route = Phoenix.Router.route_info(CrewWeb.Router, "GET", "/admin/oban", "localhost")
+      {view, _, _, %{extra: extra}} = route.phoenix_live_view
+      {module, function, args} = extra.session
+      conn = get(conn, "/admin")
+      session = Map.merge(get_session(conn), apply(module, function, [conn | args]))
+
+      socket = %Phoenix.LiveView.Socket{
+        view: view,
+        router: CrewWeb.Router,
+        private: %{lifecycle: %Phoenix.LiveView.Lifecycle{mount: extra.on_mount}}
+      }
+
+      assert {:cont, _} = Phoenix.LiveView.Lifecycle.mount(%{}, session, socket)
+      other = user_fixture(role: "admin")
+      {:ok, _} = Crew.Accounts.set_role(Crew.Scope.for_user(other), user, "member")
+
+      assert {:halt, %{redirected: {:redirect, %{to: "/"}}}} =
+               Phoenix.LiveView.Lifecycle.mount(%{}, session, socket)
+    end
+
     test "every page renders", %{conn: conn} do
       for path <- ["/", "/admin", "/admin/users", "/admin/audit"] do
         {:ok, _view, html} = live(conn, path)

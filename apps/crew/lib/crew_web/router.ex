@@ -138,7 +138,10 @@ defmodule CrewWeb.Router do
   scope "/admin" do
     pipe_through [:browser, :admin]
 
-    oban_dashboard("/oban", resolver: CrewWeb.ObanResolver)
+    oban_dashboard("/oban",
+      resolver: CrewWeb.ObanResolver,
+      on_mount: [{CrewWeb.UserAuth, :require_user}, {CrewWeb.UserAuth, :require_admin}]
+    )
   end
 
   if Application.compile_env(:crew, :dev_routes) do
