@@ -39,7 +39,7 @@ defmodule Crew.Jobs.Classify do
       unsatisfiable_reason: nil
     }
 
-    if context.repo.enabled do
+    if context.repo.enabled and is_nil(Map.get(context.repo, :archived_at)) do
       parsed(Labels.parse(labels, context.sizes, context.aliases), base, context)
     else
       Map.put(base, :classification, "not_ours")

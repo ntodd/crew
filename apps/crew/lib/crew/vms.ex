@@ -187,23 +187,46 @@ defmodule Crew.VMs do
 
   defp vm_event(vm, "vm.state", %{state: state} = p) do
     case state do
-      "booted" -> Server.event(vm.id, :booted)
-      "runner_listening" -> Server.event(vm.id, :runner_listening)
-      "job_started" -> Server.event(vm.id, :guest_job_started)
-      "job_refused" -> refused(vm, p[:detail])
-      _ -> :ok
-    end
+      "booted" ->
+        deliver_event(vm, :booted)
 
-    :ok
+      "runner_listening" ->
+        deliver_event(vm, :runner_listening)
+
+      "job_started" ->
+        deliver_event(vm, :guest_job_started)
+
+      "job_refused" ->
+        refused(vm, p[:detail])
+        :ok
+
+      _ ->
+        :ok
+    end
   end
 
   defp vm_event(vm, "vm.exited", p) do
-    Server.event(vm.id, {:exited, p.reason, if(p.cleanup == "ok", do: :ok, else: :error)})
-    :ok
+    deliver_event(vm, {:exited, p.reason, if(p.cleanup == "ok", do: :ok, else: :error)})
   end
 
   # Logs, steps and metrics (§16).
   defp vm_event(vm, type, payload), do: Crew.Logs.handle_agent_event(vm, type, payload)
+
+  defp deliver_event(%VM{state: "destroyed"}, _event), do: :ok
+
+  defp deliver_event(vm, event) do
+    case Server.event(vm.id, event) do
+      {:error, :no_server} ->
+        case start_server(:boot, vm.id) do
+          {:ok, pid} -> GenServer.cast(pid, {:event, event})
+          :ignore -> :ok
+          error -> error
+        end
+
+      result ->
+        result
+    end
+  end
 
   # The guest's job-started hook refused a fork PR (§19.5).
   defp refused(vm, _detail) do
@@ -228,14 +251,24 @@ defmodule Crew.VMs do
 
     vms = for_box(box_id)
 
-    # A requested VM's vm.start may still be on its way, so its absence
-    # means nothing yet: the ack timeout covers a lost one. A listed VM
-    # that has exited gets its vm.exited from the agent's outbox.
-    for vm <- vms, vm.state != "requested" do
+    for vm <- vms do
       case Map.get(listed_by_id, vm.id) do
-        nil -> Server.event(vm.id, :inventory_missing)
-        %{alive: true} -> Server.event(vm.id, :inventory_alive)
-        %{alive: false} -> :ok
+        %{alive: false, exited: %{cleanup: cleanup, reason: reason}} ->
+          deliver_event(vm, {:exited, reason, if(cleanup == "ok", do: :ok, else: :error)})
+
+        # A requested VM's start may still be on its way.
+        _ when vm.state == "requested" ->
+          :ok
+
+        nil ->
+          deliver_event(vm, :inventory_missing)
+
+        %{alive: true} ->
+          deliver_event(vm, :inventory_alive)
+
+        # Older agents omit cleanup. Wait for their exit event or a later absence.
+        %{alive: false} ->
+          :ok
       end
     end
 
@@ -259,14 +292,14 @@ defmodule Crew.VMs do
 
   @doc "A box's agent left (§8.6 \"box disconnects\")."
   def agent_left(box_id) do
-    for vm <- for_box(box_id), do: Server.event(vm.id, :box_disconnected)
+    for vm <- for_box(box_id), do: deliver_event(vm, :box_disconnected)
     Crew.Scheduler.poke()
     :ok
   end
 
   @doc "A box was revoked: all its VMs are destroyed."
   def box_revoked(box_id) do
-    for vm <- for_box(box_id), do: Server.event(vm.id, :box_revoked)
+    for vm <- for_box(box_id), do: deliver_event(vm, :box_revoked)
     :ok
   end
 

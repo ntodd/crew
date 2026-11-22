@@ -235,6 +235,8 @@ defmodule Crew.Scheduler do
   defp queued_jobs do
     Repo.all(
       from j in Job,
+        join: r in assoc(j, :repo),
+        where: is_nil(r.archived_at),
         where: j.classification == "ours" and j.gh_state == "queued" and is_nil(j.vm_id),
         select:
           map(j, [

@@ -58,7 +58,7 @@ done
   export MIX_ENV="$env" CREW_VERSION="$version"
   run mix local.hex --force --if-missing >/dev/null
   run mix local.rebar --force --if-missing >/dev/null
-  run mix deps.get --only "$env" >/dev/null
+  run mix deps.get --only "$env" --check-locked >/dev/null
   run mix release --overwrite --quiet
 )
 rel="$work/crew_agent/_build/$env/rel/crew_agent"

@@ -69,6 +69,17 @@ defmodule CrewGuest.StepsTest do
            ] = latest()
   end
 
+  test "later output on a running step waits for a visible change", %{steps: s} do
+    Steps.activity(s, @setup, 1_000, 2_000)
+    assert_receive {:steps, [%{status: "in_progress"}]}, 1_000
+    Steps.activity(s, @setup, 2_500, 3_000)
+    send(s, :tick)
+    :sys.get_state(s)
+    refute_received {:steps, _}
+    Steps.finish(s)
+    assert_receive {:steps, [%{completed_at: 3_000}]}
+  end
+
   test "more activity on a running step moves its last line, not its start", %{steps: s} do
     Steps.activity(s, @setup, 1_000, 2_000)
     Steps.activity(s, @setup, 2_500, 3_000)

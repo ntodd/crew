@@ -22,6 +22,7 @@ defmodule Crew.Application do
         Crew.Cache,
         {Crew.RateLimit, clean_period: :timer.minutes(1)},
         Crew.Agents.NonceCache,
+        Crew.Agents.Connections,
         Crew.GitHub.Budget,
         Crew.GitHub.InstallationTokens,
         {Oban, Application.fetch_env!(:crew, Oban)},

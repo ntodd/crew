@@ -100,6 +100,7 @@ defmodule Crew.Boxes.FlatcarCacheVMTest do
   end
 
   test "crew_cache listens on 10.199.0.1, management included, as crewcache" do
+    assert body(ignition(), "crew-cache.service") =~ "LimitNOFILE=65536\n"
     unit = body(ignition(), "crew-cache.service")
     assert unit =~ "User=crewcache"
     assert unit =~ "CREW_CACHE_MGMT_LISTEN=10.199.0.1:7780"

@@ -50,6 +50,11 @@ defmodule CrewAgent.FirecrackerCleanupTest do
       %{"verb" => "cleanup"} = req ->
         send(test, {:cleanup, req["vm_id"]})
 
+        if :counters.get(cleanup_works, 1) == 3 do
+          dir = Config.vm_dir(config, req["vm_id"])
+          send(test, {:exit_visible_before_cleanup, File.exists?(Path.join(dir, "exited.json"))})
+        end
+
         if :counters.get(cleanup_works, 1) == 1,
           do: %{"ok" => true},
           else: %{"ok" => false, "error" => "failed", "detail" => "rm: device busy"}
@@ -217,6 +222,34 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     assert await("vm.exited", &(&1.vm_id == vm_id), 10_000).payload.cleanup == "ok"
   end
 
+  test "a VM records its exit before freeing the network lease", ctx do
+    vm_id = start(ctx)
+    :counters.put(ctx.works, 1, 1)
+    allocator = Process.whereis(Net)
+    :sys.suspend(allocator)
+
+    try do
+      File.rm_rf!(cgroup(ctx, vm_id))
+      assert_receive {:cleanup, ^vm_id}, 10_000
+
+      assert Enum.reduce_while(1..100, false, fn _, _ ->
+               {:messages, messages} = Process.info(allocator, :messages)
+
+               if Enum.any?(messages, &match?({:"$gen_call", _, {:release, ^vm_id}}, &1)) do
+                 {:halt, true}
+               else
+                 Process.sleep(10)
+                 {:cont, false}
+               end
+             end)
+
+      assert File.exists?(Path.join(Config.vm_dir(ctx.config, vm_id), "exited.json"))
+    after
+      :sys.resume(allocator)
+      await("vm.exited", &(&1.vm_id == vm_id))
+    end
+  end
+
   test "a failed cleanup is reported, keeps the lease and the clone, and is retried", ctx do
     vm_id = start(ctx)
     dir = Config.vm_dir(ctx.config, vm_id)
@@ -289,6 +322,15 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     refute Cleanup.pending?(ctx.config, vm_id)
     assert {:ok, _} = Net.claim(other = CrewProtocol.uuid7(), index)
     Net.release(other)
+  end
+
+  test "an adoption failure publishes its exit only once the cleanup outcome is known", ctx do
+    id = vm_record(ctx, 4330, [])
+    :counters.put(ctx.works, 1, 3)
+    CrewAgent.VMs.adopt_all()
+    assert_received {:exit_visible_before_cleanup, false}
+    assert Enum.find(CrewAgent.VMs.inventory(), &(&1.vm_id == id)).exited.cleanup == "error"
+    Net.release(id)
   end
 
   test "at start a pending cleanup's lease is held before anything else can take it", ctx do

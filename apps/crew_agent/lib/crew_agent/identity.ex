@@ -7,6 +7,7 @@ defmodule CrewAgent.Identity do
 
   alias CrewProtocol.Auth
 
+  @derive {Inspect, only: [:agent_id]}
   @enforce_keys [:agent_id, :private_key]
   defstruct [:agent_id, :private_key]
 

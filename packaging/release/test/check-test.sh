@@ -86,6 +86,13 @@ fails() {
 }
 
 new_repo
+for builder in "$repo"/packaging/release/build-*.sh; do
+  if grep -E '^[[:space:]]*(run )?mix deps\.get .*--check-locked([[:space:]]|$)' "$builder" >/dev/null; then
+    ok "$(basename "$builder") enforces mix.lock"
+  else
+    not_ok "$(basename "$builder") does not enforce mix.lock"
+  fi
+done
 passes "a good release passes" v1.2.3
 if grep -qx version=1.2.3 "$T/github_output" && grep -qx "fingerprint=$fingerprint" "$T/github_output"; then
   ok "and gives the version and the key's fingerprint"

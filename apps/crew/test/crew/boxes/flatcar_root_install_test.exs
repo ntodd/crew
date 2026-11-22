@@ -296,9 +296,17 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
       assert log =~ "systemctl start crew-agent.service"
     end
 
-    test "with nothing to go back to, does nothing", ctx do
+    test "with no previous release the current one gets a delayed restart", ctx do
+      timer = Path.join(ctx.bin, "systemd-run")
+      File.write!(timer, ~s(#!/bin/sh\necho "systemd-run $*" >> "#{ctx.log}"\n))
+      File.chmod!(timer, 0o755)
       File.rm!(Path.join(ctx.agent, "previous"))
       assert {out, 0} = sh(ctx, "agent-rollback.sh")
+      assert File.read!(ctx.log) =~ "systemctl reset-failed crew-agent.service"
+
+      assert File.read!(ctx.log) =~
+               "systemd-run --on-active=60s /usr/bin/systemctl start crew-agent.service"
+
       assert out =~ "no previous release"
       assert File.read_link!(Path.join(ctx.agent, "current")) == "0.4.0"
     end

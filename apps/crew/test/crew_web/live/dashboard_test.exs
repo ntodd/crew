@@ -82,7 +82,7 @@ defmodule CrewWeb.DashboardTest do
     silent = box_fixture()
 
     for box <- [small, large, stale, silent] do
-      {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+      :ok = Crew.Agents.register(box.id)
     end
 
     now = System.os_time(:second)

@@ -50,11 +50,36 @@ defmodule CrewAgent.VMTest do
     # Its server holds the unacknowledged logs, and nothing else.
     assert :sys.get_state(VM.whereis(vm_id)).exited
 
-    assert [%{vm_id: ^vm_id, alive: false, exited: %{reason: "poweroff"}}] =
+    assert [%{vm_id: ^vm_id, alive: false, exited: %{reason: "poweroff", cleanup: "ok"}}] =
              Enum.filter(VMs.inventory(), &(&1.vm_id == vm_id))
 
     # box.metrics' vms_running counts VMs that run, not servers holding logs.
     assert VMs.running_count() == Enum.count(VMs.inventory(), & &1.alive)
+  end
+
+  test "log commands leave the connection responsive while the VM is busy" do
+    vm_id = start_vm()
+    %{epoch: epoch} = VM.call(vm_id, :info)
+    pid = VM.whereis(vm_id)
+    :sys.suspend(pid)
+
+    try do
+      task =
+        Task.async(fn ->
+          for {type, attrs} <- [
+                {"vm.log.ack", %{"seq" => 1}},
+                {"vm.log.resend", %{"from_seq" => 1}}
+              ] do
+            cmd = cmd(type, Map.merge(attrs, %{"vm_id" => vm_id, "epoch" => epoch}))
+            CrewAgent.Ops.submit(cmd)
+          end
+        end)
+
+      assert Task.yield(task, 500) == {:ok, [:accepted, :accepted]}
+    after
+      :sys.resume(pid)
+      VMs.stop(vm_id, true, 0)
+    end
   end
 
   test "vm.start is idempotent by vm_id" do

@@ -753,6 +753,7 @@ defmodule Crew.Boxes.FlatcarTest do
     test "crew_cache runs as crewcache, binding 53 and 443 and kept by the OOM killer" do
       config = ignition()
       assert unit(config, "crew-cache.service")["enabled"]
+      assert body(config, "crew-cache.service") =~ "LimitNOFILE=65536\n"
       cache = body(config, "crew-cache.service")
 
       for line <- [

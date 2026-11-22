@@ -50,7 +50,7 @@ defmodule CrewCache.Supervisor do
     cacerts = config.upstream_cacerts || :public_key.cacerts_get()
 
     [
-      size: 16,
+      size: max(16, config.max_fetches),
       count: 1,
       conn_opts: [transport_opts: [tcp_module: CrewCache.Dial, cacerts: cacerts, timeout: 10_000]]
     ]

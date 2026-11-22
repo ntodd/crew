@@ -335,8 +335,9 @@ personal account, so it's never missing there.
   5. Answer 202. GitHub's 10-second timeout never waits on processing.
 - **Missed deliveries:** GitHub doesn't redeliver on its own.
   - Every 5 minutes, and at boot, `Crew.GitHub.Redeliver` lists
-    `GET /app/hook/deliveries` (JWT auth) back to the newest delivery
-    already processed, at most 3 days back.
+    `GET /app/hook/deliveries` (JWT auth) back to the last completed scan with a
+    ten-minute overlap, at most 3 days back. A scan spanning more than
+    twenty pages resumes from its saved cursor on the next pass.
   - For each failed delivery that isn't in `webhook_deliveries`, it calls
     `POST /app/hook/deliveries/{id}/attempts`.
   - The reconciler (§8.8) covers anything that still slips through.
@@ -1079,7 +1080,7 @@ recorded in `vm_events` and ignored):
 | `workflow_job.completed` names this VM | → finished | → finished | → finished | → finished | → finished | | → finished |
 | `vm.exited` | → failed (`boot_failed`) | → failed (`boot_failed`/`crashed`) | → failed (`crashed`) | → failed (`crashed`), delete runner | → finished | → destroyed (if cleanup ok) | → destroyed (if cleanup ok) |
 | box disconnects | delete runner (none yet: → failed (`lost`) at once): 204/404 → failed (`lost`); 422 → busy | same | same | same | stays busy | stays | stays |
-| box revoked | → destroyed | → destroyed | → destroyed | → destroyed | → destroyed | → destroyed | → destroyed |
+| box revoked | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed | → destroyed | → destroyed |
 | join inventory doesn't list the VM | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → finished | → destroyed | → destroyed |
 | join inventory lists the VM as alive | | | | | | sends `vm.stop force` | sends `vm.stop force` |
 
@@ -1168,13 +1169,15 @@ Its calls are **essential** (§6.6).
   5 minutes until GitHub says it's done: its `workflow_run` `completed`
   may have gone missing too.
 - **Missed jobs:** every 5 minutes, for each enabled repo with Crew jobs in
-  the last 7 days, list the queued and in-progress runs and their jobs, and
-  upsert any job Crew doesn't know.
+  the last 7 days, list the queued and in-progress runs. Check up to two attempts per
+  repository per sweep, finish each round before starting the next, and
+  upsert jobs Crew has missed.
 
 **Poll-only mode:** the missed-job sweep is the only intake. It runs every
 `max(15, ⌈3600 × calls_per_sweep × active_repos ÷ (0.3 × hourly_limit)⌉)`
-seconds, where `calls_per_sweep` is about 3 (two run lists plus their
-jobs). Repos idle for an hour are swept every 5 minutes.
+seconds. Poll-only mode checks every listed attempt. Budget two run lists
+per active repository plus one job list per observed open attempt, with one
+attempt assumed for a newly active repository. Pagination adds calls. Repos idle for an hour are swept every 5 minutes.
 
 ## 9. Control plane
 
@@ -1365,7 +1368,7 @@ both ends. The vocabulary is fixed: there's no generic exec.
 | `vm.metrics` | `vm_id`, `t`, `cpu_pct`, `mem_used_mib`, `mem_total_mib`, `disk_used_mib`, `net_rx_bps`, `net_tx_bps`, `host_cpu_pct`, `host_rss_mib`; from newer guests, `mem_peak_mib`, `oom_kills`, `cpu_pressure_pct`, `mem_pressure_pct`, `mem_full_pressure_pct` | Every 5 s per VM |
 | `box.metrics` | Host CPU, memory, swap, load, disk, `vm_area_free_mib`, `cache_used_mib`, `vms_running`, `t` | Every 5 s (Foreman's pattern) |
 | `box.capabilities` | §11.1 | On join and on change |
-| `box.inventory` | VMs [{vm_id, alive, since, exited: {reason, exit_status, at} or null}], images [{id, state}] | On join and on request |
+| `box.inventory` | VMs [{vm_id, alive, since, exited: {reason, exit_status, at, cleanup?} or null}], images [{id, state}] | On join and on request |
 | `box.reboot` | `required`, `packages` (≤ 50), `boot_id`, `can_restart`, `os_version`, and on `mac-vz` `cache_vm` {required, packages, boot_id} or null | On join and on change (copy Foreman's `box.reboot`) |
 | `image.state` | `image_id`, `state` ∈ {downloading, verifying, converting, ready, failed}, `progress`, `error` | During prepare |
 | `cache.stats` | Per host: hits, misses, bytes served, bytes stored; evictions; digest mismatches | Every 60 s |

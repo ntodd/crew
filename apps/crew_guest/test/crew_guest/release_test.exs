@@ -14,6 +14,10 @@ defmodule CrewGuest.ReleaseTest do
     value
   end
 
+  test "a job process killed for memory leaves the guest service running" do
+    assert unit_setting("OOMPolicy") == "continue"
+  end
+
   test "systemd's SIGTERM goes to crew-guest alone, and its SIGKILL to everything left" do
     assert unit_setting("KillMode") == "mixed"
   end

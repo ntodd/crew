@@ -463,9 +463,9 @@ func (n *Netstack) proxyUDP(guest *gonet.UDPConn, remote net.Conn, idle time.Dur
 	closeBoth := sync.OnceFunc(func() { guest.Close(); remote.Close() })
 	stop := context.AfterFunc(n.ctx, closeBoth)
 	defer stop()
-	// Guest datagrams can't exceed the MTU; replies can be up to 64 KiB.
-	relay := func(dst, src net.Conn, size int) {
-		buf := make([]byte, size)
+	// Both endpoints deliver complete UDP datagrams after IP reassembly.
+	relay := func(dst, src net.Conn) {
+		buf := make([]byte, 65536)
 		for {
 			src.SetReadDeadline(time.Now().Add(idle))
 			k, err := src.Read(buf)
@@ -491,8 +491,8 @@ func (n *Netstack) proxyUDP(guest *gonet.UDPConn, remote net.Conn, idle time.Dur
 	}
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); relay(remote, guest, n.opts.MTU) }()
-	go func() { defer wg.Done(); relay(guest, remote, 65536) }()
+	go func() { defer wg.Done(); relay(remote, guest) }()
+	go func() { defer wg.Done(); relay(guest, remote) }()
 	wg.Wait()
 }
 

@@ -8,7 +8,7 @@ defmodule CrewWeb.FleetTest do
 
   defp at(t), do: DateTime.from_unix!(t * 1_000_000, :microsecond)
 
-  defp online(box), do: {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+  defp online(box), do: :ok = Crew.Agents.register(box.id)
 
   setup do
     a = box_fixture(name: "alpha")

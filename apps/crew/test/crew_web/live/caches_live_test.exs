@@ -8,7 +8,7 @@ defmodule CrewWeb.CachesLiveTest do
 
   setup %{conn: conn} do
     box = box_fixture(name: "m4")
-    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    :ok = Crew.Agents.register(box.id)
     %{conn: log_in(conn, user_fixture(role: "admin")), box: box}
   end
 

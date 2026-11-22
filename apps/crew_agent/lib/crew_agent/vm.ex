@@ -58,6 +58,11 @@ defmodule CrewAgent.VM do
   @doc "The table the guest API resolves tokens in: `sha256(token) => {vm_id, guest_ip}`."
   def sessions_table, do: @sessions
 
+  @impl true
+  def format_status(status) do
+    CrewAgent.Redactor.status(status, &Map.take(&1, [:vm_id, :epoch, :exited, :payload_fetched]))
+  end
+
   def call(vm_id, msg, timeout \\ 5_000) do
     case whereis(vm_id) do
       nil -> {:error, :no_vm}
@@ -196,8 +201,8 @@ defmodule CrewAgent.VM do
   defp abandon_start(driver, vm_id, dir) do
     case driver.cleanup(vm_id) do
       :ok ->
+        File.rm_rf!(dir)
         Net.release(vm_id)
-        File.rm_rf(dir)
 
       {:error, why} ->
         exited = %{
@@ -207,16 +212,13 @@ defmodule CrewAgent.VM do
           "detail" => "start_failed"
         }
 
-        _ = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
-        Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        :ok = Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        :ok = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
     end
   end
 
   # A VM that can't be adopted (a crash between writing vm.json and
-  # guest.json, say) ends as any other does: a terminal exit record, so
-  # it's never taken for live again, then its cleanup, which releases
-  # the lease, the clone and its kernel when it works and is retried
-  # when it doesn't, and vm.exited.
+  # guest.json, say) publishes its exit once the cleanup outcome is known.
   defp abandon_adoption(driver, vm_id, dir) do
     exited = %{
       "code" => 0,
@@ -225,19 +227,20 @@ defmodule CrewAgent.VM do
       "detail" => "adopt_failed"
     }
 
-    if File.dir?(dir),
-      do: _ = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
-
     cleanup =
       case driver.cleanup(vm_id) do
         :ok ->
-          Cleanup.done(vm_id)
           "ok"
 
         {:error, why} ->
-          Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+          :ok = Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
           "error"
       end
+
+    if File.dir?(dir),
+      do: :ok = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
+
+    if cleanup == "ok", do: Cleanup.done(vm_id)
 
     emit(
       Event.new("vm.exited", %{
@@ -572,39 +575,6 @@ defmodule CrewAgent.VM do
     {:reply, :ok, request_stop(%{state | exit_detail: state.exit_detail || detail}, true, 0)}
   end
 
-  def handle_call({:log_ack, epoch, seq}, _from, %{epoch: epoch} = state) do
-    unacked = Enum.reject(state.unacked, fn {s, _lines, _bytes, _at} -> s <= seq end)
-    state = %{state | unacked: unacked, unacked_bytes: sum_bytes(unacked)}
-
-    if state.exited and unacked == [],
-      do: {:stop, :normal, :ok, state},
-      else: {:reply, :ok, state}
-  end
-
-  def handle_call({:log_ack, _epoch, _seq}, _from, state), do: {:reply, :ok, state}
-
-  # Lines from `from_seq` on: those still held are sent again; any before
-  # the oldest held are gone (§16.2), and so is a resend for an old epoch.
-  def handle_call({:log_resend, epoch, from_seq}, _from, state) do
-    if epoch == state.epoch do
-      oldest = oldest_seq(state)
-
-      if from_seq < oldest,
-        do:
-          emit(
-            Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: oldest - 1})
-          )
-
-      state.unacked
-      |> Enum.filter(fn {s, _, _, _} -> s >= from_seq end)
-      |> Enum.each(fn {s, lines, _, _} -> emit_log(state, s, lines) end)
-    else
-      emit(Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: from_seq}))
-    end
-
-    {:reply, :ok, state}
-  end
-
   # An agent stop (CrewAgent.VMs.drain_logs/1): the lines held for the
   # next batch go now, no more are taken (the guest keeps them for the
   # next agent), and the reply says whether every batch is acked.
@@ -624,6 +594,39 @@ defmodule CrewAgent.VM do
   end
 
   @impl true
+  def handle_cast({:log_ack, epoch, seq}, %{epoch: epoch} = state) do
+    unacked = Enum.reject(state.unacked, fn {s, _lines, _bytes, _at} -> s <= seq end)
+    state = %{state | unacked: unacked, unacked_bytes: sum_bytes(unacked)}
+
+    if state.exited and unacked == [],
+      do: {:stop, :normal, state},
+      else: {:noreply, state}
+  end
+
+  def handle_cast({:log_ack, _epoch, _seq}, state), do: {:noreply, state}
+
+  # Lines from `from_seq` on: those still held are sent again; any before
+  # the oldest held are gone (§16.2), and so is a resend for an old epoch.
+  def handle_cast({:log_resend, epoch, from_seq}, state) do
+    if epoch == state.epoch do
+      oldest = oldest_seq(state)
+
+      if from_seq < oldest,
+        do:
+          emit(
+            Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: oldest - 1})
+          )
+
+      state.unacked
+      |> Enum.filter(fn {s, _, _, _} -> s >= from_seq end)
+      |> Enum.each(fn {s, lines, _, _} -> emit_log(state, s, lines) end)
+    else
+      emit(Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: from_seq}))
+    end
+
+    {:noreply, state}
+  end
+
   def handle_cast(:resend_unacked, state) do
     Enum.each(state.unacked, fn {s, lines, _, _} -> emit_log(state, s, lines) end)
     {:noreply, state}
@@ -747,7 +750,8 @@ defmodule CrewAgent.VM do
       "detail" => state.exit_detail
     }
 
-    _ = SafeFS.write_atomic(Path.join(state.dir, "exited.json"), Jason.encode!(exited), 0o640)
+    :ok = SafeFS.write_atomic(Path.join(state.dir, "exited.json"), Jason.encode!(exited), 0o640)
+    if cleanup == :ok, do: Cleanup.done(state.vm_id)
 
     emit(
       Event.new("vm.exited", %{
@@ -815,10 +819,10 @@ defmodule CrewAgent.VM do
 
     case state.driver.cleanup(state.vm_id) do
       :ok ->
-        Cleanup.done(state.vm_id)
+        :ok
 
       {:error, why} ->
-        Cleanup.failed(state.vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        :ok = Cleanup.failed(state.vm_id, if(is_binary(why), do: why, else: inspect(why)))
         {:error, why}
     end
   end

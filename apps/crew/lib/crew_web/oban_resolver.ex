@@ -3,7 +3,10 @@ defmodule CrewWeb.ObanResolver do
   @behaviour Oban.Web.Resolver
 
   @impl true
-  def resolve_user(conn), do: conn.assigns[:current_scope] && conn.assigns.current_scope.user
+  def resolve_user(%{assigns: %{current_scope: %{user: %{} = user}}}),
+    do: Map.take(user, [:id, :login, :role])
+
+  def resolve_user(_conn), do: nil
 
   @impl true
   def resolve_access(%{role: "admin"}), do: :all

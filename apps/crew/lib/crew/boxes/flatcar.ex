@@ -492,6 +492,7 @@ defmodule Crew.Boxes.Flatcar do
     [Service]
     User=crewcache
     Group=crewcache
+    LimitNOFILE=65536
     EnvironmentFile=-/run/crew-box/cache.env
     EnvironmentFile=/srv/crew/cachevm/mgmt.env
     Environment=HOME=/srv/crew/cache CREW_DATA_DIR=/srv/crew RELEASE_TMP=/run/crew-cache RELEASE_DISTRIBUTION=none
@@ -1095,6 +1096,7 @@ defmodule Crew.Boxes.Flatcar do
     [Service]
     User=crewcache
     Group=crewcache
+    LimitNOFILE=65536
     # Its share of the disk (crew-quota), then the agent's and admin's settings.
     EnvironmentFile=-/run/crew-box/cache.env
     EnvironmentFile=-/srv/crew/cache/env

@@ -711,6 +711,27 @@ defmodule Crew.VMs.ServerTest do
       await_state(id, "destroyed")
     end
 
+    @tag timers: %{delete_retry: 300}
+    test "repeated reaps share a delete and a busy runner cancels the retry", %{
+      box: box,
+      repo: repo
+    } do
+      GitHubStub.stub(github_routes(repo, delete_status: fn -> 500 end))
+      id = place(box, repo)
+      to_idle(box, id)
+      for _ <- 1..5, do: VMs.reap(id, :excess)
+      assert_receive {:runner_deleted, _}, 1_000
+
+      agent_event(box, "vm.state", %{
+        "vm_id" => id,
+        "state" => "job_started",
+        "at" => System.system_time(:millisecond)
+      })
+
+      await_state(id, "busy")
+      refute_receive {:runner_deleted, _}, 600
+    end
+
     test "a spare VM is reaped like any other", %{box: box, repo: repo} do
       id = place(box, repo, label_key: ["crew-m-spare"], spare: true)
       to_idle(box, id)
@@ -755,6 +776,37 @@ defmodule Crew.VMs.ServerTest do
       VMs.agent_left(box.id)
 
       assert_receive {:runner_deleted, _}, 1_000
+      assert await_state(id, "failed").fail_reason == "lost"
+    end
+
+    test "a queued boot event cannot discard a successful in-flight runner deletion", %{
+      box: box,
+      repo: repo
+    } do
+      test_pid = self()
+
+      GitHubStub.stub(
+        github_routes(repo,
+          delete_status: fn ->
+            send(test_pid, {:deleting, self()})
+
+            receive do
+              :finish_delete -> 204
+            after
+              2_000 -> 500
+            end
+          end
+        )
+      )
+
+      id = place(box, repo)
+      ack_start(box, assert_command("vm.start"))
+      await_state(id, "starting")
+      VMs.agent_left(box.id)
+      assert_receive {:deleting, worker}, 1_000
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "booted", "at" => 1})
+      await_state(id, "booted")
+      send(worker, :finish_delete)
       assert await_state(id, "failed").fail_reason == "lost"
     end
 
@@ -873,7 +925,47 @@ defmodule Crew.VMs.ServerTest do
       id = place(box, repo)
       to_idle(box, id)
       VMs.box_revoked(box.id)
-      await_state(id, "destroyed")
+      vm = await_state(id, "destroyed")
+
+      eventually(fn ->
+        all_enqueued(worker: Crew.VMs.DeleteRunner)
+        |> Enum.any?(&(&1.args["runner_id"] == vm.runner_id))
+      end)
+    end
+
+    test "an exit arriving before the VM servers boot is applied", %{box: box} do
+      vm = vm_fixture(box, state: "busy", alive: true, busy_at: DateTime.utc_now())
+      refute Server.whereis(vm.id)
+
+      assert :ok =
+               agent_event(box, "vm.exited", %{
+                 "vm_id" => vm.id,
+                 "reason" => "poweroff",
+                 "cleanup" => "ok"
+               })
+
+      await_state(vm.id, "destroyed")
+    end
+
+    test "an exit recorded in inventory recovers a lost exit event", %{box: box, repo: repo} do
+      id = place(box, repo)
+      to_idle(box, id)
+
+      entry = %{
+        "vm_id" => id,
+        "alive" => false,
+        "exited" => %{"reason" => "poweroff", "at" => 1, "cleanup" => "error"}
+      }
+
+      agent_event(box, "box.inventory", %{"vms" => [entry], "images" => []})
+      assert await_state(id, "failed").fail_reason == "crashed"
+
+      agent_event(box, "box.inventory", %{
+        "vms" => [put_in(entry, ["exited", "cleanup"], "ok")],
+        "images" => []
+      })
+
+      assert await_state(id, "destroyed").destroyed_at
     end
 
     test "the join inventory: missing VMs are lost, unknown live ones are stopped", %{
