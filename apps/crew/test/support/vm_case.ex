@@ -186,6 +186,21 @@ defmodule Crew.VMCase do
     :ok
   end
 
+  @doc """
+  Kills a VM's server the way a crash would, but between messages. The
+  servers share the test's sandbox connection, and a client killed
+  mid-query takes that connection down with it, failing the test's next
+  query. A suspended server handles only system messages, so once
+  `:sys.suspend/1` returns it holds no connection and can't start a query.
+  Returns the killed pid.
+  """
+  def kill_server(vm_id) do
+    pid = Crew.VMs.Server.whereis(vm_id)
+    :sys.suspend(pid)
+    Process.exit(pid, :kill)
+    pid
+  end
+
   @doc "A queued Crew job that's past the fork check (its run attempt is known)."
   def queued_job(repo, attrs \\ []) do
     run_id = Keyword.get(attrs, :run_id, System.unique_integer([:positive]))
