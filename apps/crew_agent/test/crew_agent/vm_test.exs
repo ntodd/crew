@@ -82,6 +82,25 @@ defmodule CrewAgent.VMTest do
     end
   end
 
+  test "a pending lease allocation leaves the VM supervisor responsive" do
+    cmd = start_command()
+    id = cmd.payload.vm_id
+    :sys.suspend(CrewAgent.Net)
+
+    try do
+      start = Task.async(fn -> Handler.handle(cmd) end)
+      for _ <- 1..100, is_nil(VM.whereis(id)), do: Process.sleep(5)
+      assert VM.whereis(id)
+      count = Task.async(fn -> DynamicSupervisor.count_children(CrewAgent.VMs.Supervisor) end)
+      assert {:ok, %{active: n}} = Task.yield(count, 500)
+      assert n >= 1
+      refute Task.yield(start, 0)
+    after
+      :sys.resume(CrewAgent.Net)
+      VMs.stop(id, true, 0)
+    end
+  end
+
   test "vm.start is idempotent by vm_id" do
     cmd = start_command()
     vm_id = start_vm(cmd)

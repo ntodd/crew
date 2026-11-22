@@ -48,6 +48,7 @@ defmodule CrewAgent.Application do
         {DynamicSupervisor, name: CrewAgent.GuestAPI.Sockets, strategy: :one_for_one},
         null_supervisor(config),
         if(config.driver == "firecracker", do: CrewAgent.Driver.Firecracker.Monitor),
+        CrewAgent.DiskWatchdog,
         CrewAgent.VMs,
         CrewAgent.Ops,
         # A Mac's cache is its cache VM's, without CREW_CACHE_MGMT_URL.

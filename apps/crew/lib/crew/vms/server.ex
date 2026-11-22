@@ -108,7 +108,7 @@ defmodule Crew.VMs.Server do
   def handle_continue(:new, state) do
     state = record(state, "provision", %{})
     request_jit(state)
-    {:noreply, arm(state, :jit, ms(:jit), {:timeout, "jit_timeout"})}
+    {:noreply, arm_registration_timer(state, :jit, ms(:jit))}
   end
 
   def handle_continue(:boot, %{vm: %VM{state: "requested", runner_id: nil}} = state) do
@@ -164,6 +164,18 @@ defmodule Crew.VMs.Server do
 
   # -- JIT and vm.start (§6.3, §8.6) -------------------------------------------------
 
+  defp arm_registration_timer(state, name, delay) do
+    state = cancel_registration_timer(state, name)
+    ref = :erlang.start_timer(delay, self(), name)
+    put_in(state.timers[name], ref)
+  end
+
+  defp cancel_registration_timer(state, name) do
+    {ref, timers} = Map.pop(state.timers, name)
+    if ref, do: Process.cancel_timer(ref)
+    %{state | timers: timers}
+  end
+
   defp request_jit(%{vm: vm}) do
     server = self()
     repo = vm.repo_id |> Repos.get!() |> Repos.with_installation()
@@ -190,7 +202,7 @@ defmodule Crew.VMs.Server do
         %{vm: %VM{state: "requested"}} = state
       ) do
     vm = state.vm |> Ecto.Changeset.change(runner_id: runner_id) |> Repo.update!()
-    state = %{state | vm: vm, jit_config: jit} |> disarm(:jit)
+    state = %{state | vm: vm, jit_config: jit} |> cancel_registration_timer(:jit)
     {:noreply, send_start(state)}
   end
 
@@ -200,10 +212,40 @@ defmodule Crew.VMs.Server do
     {:noreply, state}
   end
 
+  def handle_info(
+        {:jit, {:error, {:write_limited, until_ms}}},
+        %{vm: %VM{state: "requested", runner_id: nil}} = state
+      ) do
+    delay = max(1, until_ms - System.os_time(:millisecond))
+
+    state =
+      state
+      |> cancel_registration_timer(:jit)
+      |> record("jit_budget_wait", %{"until_ms" => until_ms})
+
+    {:noreply, arm_registration_timer(state, :jit_budget, delay)}
+  end
+
   def handle_info({:jit, {:error, reason}}, %{vm: %VM{state: "requested"}} = state) do
     Logger.warning("JIT config for #{state.vm.name} failed: #{inspect(reason)}; retrying")
     Process.send_after(self(), :retry_jit, ms(:jit_retry))
     {:noreply, record(state, "jit_error", %{"error" => inspect(reason) |> String.slice(0, 300)})}
+  end
+
+  def handle_info({:timeout, ref, :jit_budget}, %{timers: %{jit_budget: ref}} = state) do
+    state = cancel_registration_timer(state, :jit_budget)
+
+    if state.vm.state == "requested" and is_nil(state.vm.runner_id) do
+      request_jit(state)
+      {:noreply, arm_registration_timer(state, :jit, ms(:jit))}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:timeout, ref, :jit}, %{timers: %{jit: ref}} = state) do
+    {:noreply,
+     state |> cancel_registration_timer(:jit) |> apply_transition({:timeout, "jit_timeout"})}
   end
 
   def handle_info({:jit, _}, state), do: {:noreply, state}

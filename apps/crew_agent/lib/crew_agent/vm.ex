@@ -75,20 +75,9 @@ defmodule CrewAgent.VM do
   # -- start (§11.2) ------------------------------------------------------------
 
   @impl true
-  def init({:start, cmd, _from}) do
-    config = Config.get()
-    p = cmd.payload
-    dir = Config.vm_dir(config, p.vm_id)
-    Logger.metadata(vm_id: p.vm_id, op_id: cmd.op_id)
-
-    if File.exists?(dir) do
-      {:stop, :duplicate}
-    else
-      case start_vm(config, cmd, dir) do
-        {:ok, state} -> {:ok, state, {:continue, :running}}
-        {:error, reason} -> {:stop, {:start_failed, reason}}
-      end
-    end
+  def init({:start, cmd, from}) do
+    Logger.metadata(vm_id: cmd.payload.vm_id, op_id: cmd.op_id)
+    {:ok, %{vm_id: cmd.payload.vm_id}, {:continue, {:start, cmd, from}}}
   end
 
   def init({:adopt, vm_id}) do
@@ -104,6 +93,7 @@ defmodule CrewAgent.VM do
     token = 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
     with :ok <- image_ready(config, p.image),
+         :ok <- CrewAgent.DiskWatchdog.reserve(config, p.vm_id, p.size.disk_gib),
          :ok <- File.mkdir_p(dir),
          :ok <- File.chmod(dir, 0o750),
          {:ok, lease} <- Net.allocate(p.vm_id) do
@@ -148,7 +138,7 @@ defmodule CrewAgent.VM do
       }
 
       try do
-        SafeFS.write_atomic(Path.join(dir, "vm.json"), Jason.encode!(meta), 0o640)
+        :ok = SafeFS.write_atomic(Path.join(dir, "vm.json"), Jason.encode!(meta), 0o640)
         clone = clone_rootfs(config, p, dir)
         write_guest_json(state, epoch, 0, 0)
 
@@ -416,6 +406,22 @@ defmodule CrewAgent.VM do
   end
 
   @impl true
+  def handle_continue({:start, cmd, {caller, ref}}, pending) do
+    config = Config.get()
+    dir = Config.vm_dir(config, pending.vm_id)
+    result = if File.exists?(dir), do: {:error, :duplicate}, else: start_vm(config, cmd, dir)
+
+    case result do
+      {:ok, state} ->
+        send(caller, {ref, :ok})
+        handle_continue(:running, state)
+
+      {:error, reason} ->
+        send(caller, {ref, {:error, reason}})
+        {:stop, {:shutdown, {:start_failed, reason}}, pending}
+    end
+  end
+
   def handle_continue(:running, state) do
     schedule_deadline(state)
     Process.send_after(self(), :poll, @poll_ms)
@@ -433,6 +439,9 @@ defmodule CrewAgent.VM do
   # -- the guest API (§13.4) ---------------------------------------------------------
 
   @impl true
+  def handle_call(:started, _from, state),
+    do: {:reply, if(state.exited, do: {:error, :duplicate}, else: :ok), state}
+
   def handle_call(msg, _from, %{exited: true} = state)
       when msg == :control or
              (is_tuple(msg) and
@@ -687,9 +696,15 @@ defmodule CrewAgent.VM do
 
   def handle_info(:control_timeout, state), do: {:noreply, state}
 
-  def handle_info({:kill_disk, _}, state) do
-    state.driver.stop(state.vm_id, true)
-    {:noreply, %{state | forced_reason: "killed_disk"}}
+  def handle_info({:kill_disk, _}, %{exited: false} = state) do
+    case state.driver.stop(state.vm_id, true) do
+      :ok ->
+        {:noreply, %{state | forced_reason: "killed_disk"}}
+
+      {:error, reason} ->
+        Logger.warning("disk-pressure stop failed for #{state.vm_id}: #{inspect(reason)}")
+        {:noreply, state}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

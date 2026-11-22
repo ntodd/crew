@@ -2,8 +2,8 @@
     "nftables": [
         {
             "metainfo": {
-                "version": "1.1.6",
-                "release_name": "Commodore Bullmoose #7",
+                "version": "1.1.7",
+                "release_name": "Commodore Bullmoose #8",
                 "json_schema_version": 1
             }
         },
@@ -663,7 +663,7 @@
                 "family": "inet",
                 "table": "crew",
                 "chain": "forward",
-                "handle": 23,
+                "handle": 24,
                 "expr": [
                     {
                         "match": {
@@ -688,6 +688,23 @@
                         }
                     },
                     {
+                        "match": {
+                            "op": "==",
+                            "left": {
+                                "ct": {
+                                    "key": "state"
+                                }
+                            },
+                            "right": {
+                                "set": [
+                                    "established",
+                                    "related",
+                                    "new"
+                                ]
+                            }
+                        }
+                    },
+                    {
                         "accept": null
                     }
                 ]
@@ -698,7 +715,7 @@
                 "family": "inet",
                 "table": "crew",
                 "chain": "forward",
-                "handle": 24,
+                "handle": 25,
                 "expr": [
                     {
                         "match": {
@@ -736,7 +753,7 @@
                 "family": "inet",
                 "table": "crew",
                 "chain": "post",
-                "handle": 25,
+                "handle": 26,
                 "expr": [
                     {
                         "match": {

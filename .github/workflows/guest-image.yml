@@ -1,27 +1,7 @@
 name: Guest image
 
-# The job VM guest image (spec §13.1, §20.1): built per arch on a runner of
-# that arch and checked, unsigned. A pull request that touches the image
-# runs it; for a release tag, release.yml calls it, and its sign job signs
-# the manifests uploaded here with everything else in the release, its
-# verify job checks them as a box will, and its publish job publishes
-# them. A push to main that touches it builds it too, which keeps the
-# build's caches warm for pull requests and releases.
-#
-# Caches: the builder image (ghcr.io/<owner>/crew-guest-builder, tagged
-# with a hash of its inputs), BuildKit's layers for the rootfs
-# (ghcr.io/<owner>/crew-guest-cache:rootfs-<arch>), and the built kernel
-# (the Actions cache, keyed by build.sh kernel-key). Between them, a
-# build whose packages.lock and kernel haven't changed doesn't touch
-# snapshot.ubuntu.com or kernel.org. Only main, tags and manual runs
-# write them; pull requests only read.
-#
-# Runners: with the repo variable CREW_CI set to `on`, the builds run on
-# this project's own Crew boxes (crew-l-x64, crew-l-arm64), where zstd
-# has more cores than a hosted runner. Unset it to go back to GitHub's
-# runners, say when Crew itself is broken. Pull requests from forks
-# always build on GitHub's runners.
-
+# Reviewed builds on main maintain the registry and kernel caches. Other
+# branches can read the caches. Release tags call the cold build directly.
 on:
   push:
     branches: [main]
@@ -29,187 +9,32 @@ on:
       - images/guest/**
       - apps/crew_guest/**
       - apps/crew_protocol/**
-      - .github/workflows/guest-image.yml
+      - .github/workflows/guest-image*.yml
   pull_request:
     paths:
       - images/guest/**
       - apps/crew_guest/**
       - apps/crew_protocol/**
-      - .github/workflows/guest-image.yml
+      - .github/workflows/guest-image*.yml
   workflow_dispatch:
-  workflow_call:
-    inputs:
-      version:
-        description: The image version (the release tag without its v)
-        type: string
-        required: true
-
 concurrency:
   group: guest-image-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: {}
 
-env:
-  ELIXIR_VERSION: "1.20.4"
-  OTP_VERSION: "29.1.1"
-
 jobs:
-  # The quick checks: the committed kernel config (moby's check-config.sh
-  # and the Crew list), the checks' own tests, and the image tools.
-  check:
-    runs-on: ubuntu-24.04
+  main:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    uses: ./.github/workflows/guest-image-build.yml
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - run: images/guest/build.sh kernel-check
-      - run: images/guest/build.sh kernel-check-test
-      - run: ARCH=x64 images/guest/build.sh kernel-check
-      - run: ARCH=x64 images/guest/build.sh kernel-check-test
-      - run: images/guest/build_test.sh
-      - run: python3 images/guest/rootfs/crew_cache_runc_test.py
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
-        with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            images/guest/tools/deps
-            images/guest/tools/_build
-          key: guest-tools-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-${{ hashFiles('images/guest/tools/mix.lock') }}
-      - name: Image tools
-        working-directory: images/guest/tools
-        env:
-          MIX_ENV: test
-        run: |
-          mix deps.get --check-locked
-          mix format --check-formatted
-          mix compile --warnings-as-errors
-          mix credo --strict
-          mix test
-      # The release notes carry the lock's diff since the last release (§13.1).
-      - name: packages.lock diff
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          prev=$(git describe --tags --abbrev=0 --match 'v*' "${GITHUB_SHA}^" 2>/dev/null || true)
-          mkdir -p lock-diff
-          if [ -n "$prev" ]; then
-            git diff "$prev" "$GITHUB_SHA" -- images/guest/packages.lock > lock-diff/packages.lock.diff
-            # The release uploads it, and GitHub refuses an empty asset.
-            [ -s lock-diff/packages.lock.diff ] ||
-              echo "No package changes since $prev." > lock-diff/packages.lock.diff
-          else
-            echo "No earlier release: every package is new." > lock-diff/packages.lock.diff
-          fi
-          wc -l lock-diff/packages.lock.diff
-      - if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: guest-packages-lock-diff
-          path: lock-diff/packages.lock.diff
-
-  # The build fails if a package resolves to anything but packages.lock, if
-  # the built kernel's config fails the checks, if the rootfs fails e2fsck,
-  # or if the compressed rootfs is 2 GiB or more.
-  build:
-    needs: check
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-l-arm64' || 'ubuntu-24.04-arm' }}
-          - arch: x64
-            runner: ${{ vars.CREW_CI == 'on' && !github.event.pull_request.head.repo.fork && 'crew-l-x64' || 'ubuntu-24.04' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
-    permissions:
-      contents: read
-      # The caches in ghcr (see the top).
       packages: write
-    env:
-      ARCH: ${{ matrix.arch }}
-      MIX: mix
-      KERNEL_CACHE_WRITE: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          case "$GITHUB_REF" in
-            refs/tags/v*) v=${GITHUB_REF_NAME#v} ;;
-            *) v=${INPUT_VERSION:-0.0.0-ci.$GITHUB_RUN_NUMBER} ;;
-          esac
-          echo "VERSION=$v" >> "$GITHUB_ENV"
-          echo "version $v"
-      # The kernel tree, the BuildKit cache and the image need room.
-      - name: Make room
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
-          df -h /
-      - uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
-        with:
-          elixir-version: ${{ env.ELIXIR_VERSION }}
-          otp-version: ${{ env.OTP_VERSION }}
-      # A BuildKit that can export a cache to a registry (the default
-      # docker driver can't), and the caches' settings for build.sh.
-      - name: Caches
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT: ${{ github.event_name }}
-        run: |
-          echo "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          docker buildx create --use --name crew --driver docker-container
-          registry=$(echo "ghcr.io/$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          cache="$registry/crew-guest-cache:rootfs-$ARCH"
-          args="--cache-from type=registry,ref=$cache"
-          if [ "$EVENT" != pull_request ]; then
-            echo "CREW_GUEST_PUSH=1" >> "$GITHUB_ENV"
-            args="$args --cache-to type=registry,ref=$cache,mode=max,image-manifest=true,oci-mediatypes=true,compression=zstd"
-          fi
-          {
-            echo "CREW_GUEST_REGISTRY=$registry"
-            echo "BUILDX_ARGS=$args"
-            echo "KERNEL_KEY=guest-kernel-$ARCH-$(images/guest/build.sh kernel-key)"
-          } >> "$GITHUB_ENV"
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        id: kernel
-        with:
-          path: images/guest/out/${{ matrix.arch }}/kernel
-          key: ${{ env.KERNEL_KEY }}
-      # Each step's limit is about 1.5x its slowest cold run on a hosted
-      # runner. A download that stalls (BuildKit has no timeout of its
-      # own) costs that step's limit, not the job's two hours.
-      - if: steps.kernel.outputs.cache-hit != 'true'
-        timeout-minutes: 45
-        run: make -C images/guest kernel
-      # Saved from main only: tags and pull requests can read main's
-      # caches, but not each other's.
-      - if: steps.kernel.outputs.cache-hit != 'true' && env.KERNEL_CACHE_WRITE == 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: images/guest/out/${{ matrix.arch }}/kernel
-          key: ${{ env.KERNEL_KEY }}
-      - name: The built kernel's config
-        run: images/guest/build.sh kernel-check "images/guest/out/$ARCH/kernel/config"
-      # Hosted runners have little disk: the kernel's trees go once it's
-      # built, the unpacked rootfs tree and BuildKit's cache once the
-      # image is assembled.
-      - run: (docker volume rm crew-guest-kernel || true) && df -h /
-      - timeout-minutes: 50
-        run: make -C images/guest rootfs
-      - run: docker volume rm crew-guest-rootfs && docker buildx prune -af >/dev/null && df -h /
-      - name: Release files (unsigned)
-        timeout-minutes: 20
-        run: make -C images/guest artifacts SIGN=none
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: guest-${{ matrix.arch }}
-          path: images/guest/out/${{ matrix.arch }}/release/
-          compression-level: 0
-          if-no-files-found: error
+    with:
+      write-cache: true
+  branch:
+    if: github.ref != 'refs/heads/main' || github.event_name == 'pull_request'
+    uses: ./.github/workflows/guest-image-build.yml
+    permissions:
+      contents: read
+      packages: read

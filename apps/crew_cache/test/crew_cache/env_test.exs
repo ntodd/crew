@@ -29,6 +29,7 @@ defmodule CrewCache.EnvTest do
         "CREW_CACHE_HTTPS_PORT" => "8443",
         "CREW_CACHE_HTTP_PORT" => "off",
         "CREW_CACHE_DNS_PORT" => "5353",
+        "CREW_DNS_PROXY_IP" => "192.168.64.1",
         "CREW_DNS_UPSTREAMS" => "8.8.8.8, 1.0.0.1:5353",
         "CREW_CACHE_MAX_GIB" => "40",
         "CREW_CACHE_MGMT_LISTEN" => "100.64.0.9:7780",
@@ -40,6 +41,7 @@ defmodule CrewCache.EnvTest do
     assert config[:listen] == {192, 168, 64, 5}
     assert config[:https_port] == 8443
     assert config[:http_port] == nil
+    assert config[:dns_proxy_ip] == {192, 168, 64, 1}
     assert config[:dns_port] == 5353
     assert config[:dns_upstreams] == [{{8, 8, 8, 8}, 53}, {{1, 0, 0, 1}, 5353}]
     assert config[:max_bytes] == 40 * 1024 * 1024 * 1024

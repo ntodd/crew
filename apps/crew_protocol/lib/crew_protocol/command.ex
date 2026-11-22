@@ -89,7 +89,7 @@ defmodule CrewProtocol.Command do
           manifest: {:base64, required: true, max: 65_536},
           signature: {:base64, required: true, max: 128}}, required: true}
     ],
-    "image.remove" => [image_id: {:uuid, required: true}],
+    "image.remove" => [image_id: {:uuid, required: true}, if_pressure: {:boolean, []}],
     "cache.config" => [
       enabled_hosts: {{:list, {:enum, Hosts.names()}}, required: true},
       allowlist: {{:list, :string}, required: true, max: 500, check: &__MODULE__.allowlist/1},

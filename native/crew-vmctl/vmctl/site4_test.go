@@ -25,10 +25,10 @@ type testBox struct {
 func newBox(t *testing.T) *testBox {
 	t.Helper()
 	b := &testBox{fakeSys: newFake(),
-		table: string(mustRead(t, "../ruleset/testdata/nft-1.1.6-busy.json")),
+		table: string(mustRead(t, "../ruleset/testdata/nft-1.1.7-busy.json")),
 		site4: []string{"192.168.64.0/24", "198.51.100.20/32"}}
 	mangle := string(mustRead(t, "../ruleset/testdata/iptables-1.8.13-mangle.save"))
-	b.ref = ruleset.Listing{Nft: mustRead(t, "../ruleset/testdata/nft-1.1.6-clean.json"), Mangle: mangle}
+	b.ref = ruleset.Listing{Nft: mustRead(t, "../ruleset/testdata/nft-1.1.7-clean.json"), Mangle: mangle}
 	b.root["/run/crew/uplink"] = []byte("eth0\n")
 	b.root[paths.Egress()] = []byte("198.51.100.20\n")
 	// The address crew-vmctl has seen, in its own state.

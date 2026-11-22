@@ -131,20 +131,24 @@ func (s *Server) handle(ctx context.Context, r Request, peer Peer) (Response, er
 	case "list":
 		ids, err := s.list(ctx, false)
 		return Response{VMs: ids, Jails: s.jails()}, err
-	case "tap-add":
-		return Response{}, s.tapAdd(ctx, r.Lease)
-	case "tap-del":
+	case "tap-add", "tap-del", "pair-del":
+		unlock, err := s.Sys.Lock("leases")
+		if err != nil {
+			return Response{}, err
+		}
+		defer unlock()
+		if r.Verb == "tap-add" {
+			return Response{}, s.tapAdd(ctx, r.Lease)
+		}
 		if err := s.ownLease(r.Lease, r.VMID); err != nil {
 			return Response{}, err
+		}
+		if r.Verb == "pair-del" {
+			return Response{}, s.pairDel(ctx, r.Lease)
 		}
 		return Response{}, s.tapDel(ctx, r.Lease)
 	case "pair-add":
 		return Response{}, s.pair(ctx, "add", r.Lease)
-	case "pair-del":
-		if err := s.ownLease(r.Lease, r.VMID); err != nil {
-			return Response{}, err
-		}
-		return Response{}, s.pairDel(ctx, r.Lease)
 	case "nft-verify":
 		st, err := s.nftVerify(ctx)
 		return Response{Site4: st}, err
@@ -198,7 +202,7 @@ func (s *Server) start(ctx context.Context, vmID string, peer Peer) (Response, e
 	if err := s.ensureFilter(ctx); err != nil {
 		return Response{}, err
 	}
-	if err := s.Sys.PrepareJail(Jail{VM: vm, Config: cfg, Owner: peer}); err != nil {
+	if err := s.prepareJail(Jail{VM: vm, Config: cfg, Owner: peer}); err != nil {
 		return Response{}, err
 	}
 	if _, err := s.Sys.Run(ctx, nil, SystemdRunArgv(vm, s.Paths, now)...); err != nil {
@@ -206,6 +210,20 @@ func (s *Server) start(ctx context.Context, vmID string, peer Peer) (Response, e
 	}
 	st, err = s.status(ctx, vmID)
 	return Response{VM: st}, err
+}
+
+// Socket-activated helpers share this lock from the ownership check until
+// the new jail records the lease.
+func (s *Server) prepareJail(j Jail) error {
+	unlock, err := s.Sys.Lock("leases")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := s.ownLease(j.VM.Lease, j.VM.ID); err != nil {
+		return err
+	}
+	return s.Sys.PrepareJail(j)
 }
 
 func (s *Server) stop(ctx context.Context, vmID string, force bool) error {
@@ -302,6 +320,11 @@ func (s *Server) cleanup(ctx context.Context, vmID string, peer Peer) error {
 	if st.State == "failed" {
 		_, _ = s.Sys.Run(ctx, nil, "systemctl", "reset-failed", Unit(vmID))
 	}
+	unlock, err := s.Sys.Lock("leases")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	// The lease crew-vmctl recorded when it started the VM, not the
 	// agent's word for it, and only if no other jail records it too.
 	if n := s.jailLease(vmID); n > 0 {

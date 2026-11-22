@@ -36,6 +36,28 @@ defmodule Crew.BoxesTest do
       assert {:error, :invalid_token} = Boxes.enroll(raw, enroll_attrs(public))
     end
 
+    test "network settings survive enrollment and reprovision", %{admin: admin} do
+      attrs = %{
+        "box_name" => "nettest",
+        "box_type" => "linux-vm",
+        "uplink" => "eno2",
+        "extra_blocked" => "198.51.100.9"
+      }
+
+      assert {:error, _} =
+               Boxes.create_join_token(admin, Map.put(attrs, "extra_blocked", "invalid"))
+
+      assert {:ok, raw} = Boxes.create_join_token(admin, attrs)
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, box} = Boxes.enroll(raw, enroll_attrs(key))
+      assert {:ok, config} = Boxes.reprovision_ignition(admin, box, %{"arch" => "amd64"})
+
+      for {path, content} <- [{"uplink", "eno2"}, {"extra-blocked", "198.51.100.9"}] do
+        file = Enum.find(config["storage"]["files"], &(&1["path"] == "/etc/crew-box/" <> path))
+        assert file["contents"]["source"] == "data:;base64," <> Base.encode64(content <> "\n")
+      end
+    end
+
     test "tokens expire after an hour", %{admin: admin} do
       {:ok, raw} =
         Boxes.create_join_token(admin, %{

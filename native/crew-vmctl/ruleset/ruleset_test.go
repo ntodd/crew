@@ -13,7 +13,7 @@ import (
 
 // testdata holds `nft -j list table inet crew` and `iptables-nft-save -t
 // mangle` as nftables 1.0.6 / iptables 1.8.9 (Debian bookworm) and
-// nftables 1.1.6 / iptables 1.8.13 (Flatcar 4757.2.3) print them, after
+// nftables 1.1.7 / iptables 1.8.13 (Debian sid) print them, after
 // loading etc/ with UPLINK=eth0. "busy" adds a vm_pairs and a site4
 // element, as a box with a VM has. iptables-1.8.13-mangle-tailscale.save
 // is the mangle table after Tailscale 1.104.5 added its two connmark
@@ -45,7 +45,7 @@ func TestTestdataIsOfTheShippedRules(t *testing.T) {
 // From a VM, nothing on the host but the service address answers (§14.4):
 // every rule in the input chain that accepts from crewt* names it.
 func TestGuestsReachOnlyTheServiceAddress(t *testing.T) {
-	for _, name := range []string{"nft-1.0.6-clean.json", "nft-1.1.6-clean.json"} {
+	for _, name := range []string{"nft-1.0.6-clean.json", "nft-1.1.7-clean.json"} {
 		var doc struct {
 			Nftables []map[string]json.RawMessage `json:"nftables"`
 		}
@@ -98,7 +98,7 @@ func TestGuestsReachOnlyTheServiceAddress(t *testing.T) {
 }
 
 func TestTheLoadedRulesetMatchesItself(t *testing.T) {
-	for _, v := range [][2]string{{"1.0.6", "1.8.9"}, {"1.1.6", "1.8.13"}} {
+	for _, v := range [][2]string{{"1.0.6", "1.8.9"}, {"1.1.7", "1.8.13"}} {
 		// The reference is a fresh load; the box's table has elements in
 		// the sets crew-vmctl and crew-net fill, which don't count.
 		if err := Compare(listing(t, v[0], v[1], "clean"), listing(t, v[0], v[1], "busy")); err != nil {
@@ -108,8 +108,8 @@ func TestTheLoadedRulesetMatchesItself(t *testing.T) {
 }
 
 func TestVersionsDifferInOrderOnly(t *testing.T) {
-	// 1.1.6 lists chains before sets; the comparison doesn't care.
-	if err := Compare(listing(t, "1.0.6", "1.8.9", "clean"), listing(t, "1.1.6", "1.8.13", "busy")); err != nil {
+	// 1.1.7 lists chains before sets; the comparison doesn't care.
+	if err := Compare(listing(t, "1.0.6", "1.8.9", "clean"), listing(t, "1.1.7", "1.8.13", "busy")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -151,7 +151,7 @@ func rules(objs []map[string]any, chain string) []int {
 }
 
 func TestAnyChangeIsAMismatch(t *testing.T) {
-	ref := listing(t, "1.1.6", "1.8.13", "clean")
+	ref := listing(t, "1.1.7", "1.8.13", "clean")
 	cases := map[string]func(objs []map[string]any) []map[string]any{
 		"a rule gone": func(objs []map[string]any) []map[string]any {
 			i := rules(objs, "pre")[2] // anti-spoofing
@@ -215,7 +215,7 @@ func TestAnyChangeIsAMismatch(t *testing.T) {
 		},
 	}
 	for name, f := range cases {
-		got := Listing{Nft: mutate(t, read(t, "nft-1.1.6-busy.json"), f), Mangle: ref.Mangle}
+		got := Listing{Nft: mutate(t, read(t, "nft-1.1.7-busy.json"), f), Mangle: ref.Mangle}
 		if err := Compare(ref, got); err == nil {
 			t.Errorf("%s: no mismatch", name)
 		}
@@ -223,7 +223,7 @@ func TestAnyChangeIsAMismatch(t *testing.T) {
 }
 
 func TestTheTableMustBeThere(t *testing.T) {
-	ref := listing(t, "1.1.6", "1.8.13", "clean")
+	ref := listing(t, "1.1.7", "1.8.13", "clean")
 	if err := Compare(ref, Listing{Nft: []byte(`{"nftables":[{"metainfo":{}}]}`), Mangle: ref.Mangle}); err == nil {
 		t.Fatal("an empty listing matched")
 	}
@@ -233,7 +233,7 @@ func TestTheTableMustBeThere(t *testing.T) {
 }
 
 func TestTheConnectionCapMustMatch(t *testing.T) {
-	ref := listing(t, "1.1.6", "1.8.13", "clean")
+	ref := listing(t, "1.1.7", "1.8.13", "clean")
 	base := string(read(t, "iptables-1.8.13-mangle.save"))
 	for name, m := range map[string]string{
 		"a higher cap":       strings.Replace(base, "--connlimit-above 2048", "--connlimit-above 65536", 1),
@@ -265,7 +265,7 @@ func TestTheConnectionCapMustMatch(t *testing.T) {
 // Crew owns its chain and the first rules of mangle's INPUT and FORWARD,
 // not the table: Tailscale 1.104 keeps its connmarks there.
 func TestTheMangleTableIsShared(t *testing.T) {
-	ref := listing(t, "1.1.6", "1.8.13", "clean")
+	ref := listing(t, "1.1.7", "1.8.13", "clean")
 	base := string(read(t, "iptables-1.8.13-mangle.save"))
 	for name, m := range map[string]string{
 		"Tailscale's connmarks": string(read(t, "iptables-1.8.13-mangle-tailscale.save")),

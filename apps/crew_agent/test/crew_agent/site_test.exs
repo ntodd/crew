@@ -56,10 +56,12 @@ defmodule CrewAgent.SiteTest do
     assert Site.egress() == "198.51.100.20"
     assert File.read!(Path.join([dir, "agent", "egress4"])) == "198.51.100.20\n"
 
-    # vz keeps it in memory: each VM's helper is given site4 at start.
+    # vz restores the last address before its first guest starts.
     other = Path.join(dir, "vz")
     Site.record_egress(%{config | driver: "vz", data_dir: other}, "198.51.100.21")
-    refute File.exists?(Path.join([other, "agent", "egress4"]))
+    :persistent_term.erase({Site, :egress})
+    Site.load_egress(%{config | driver: "vz", data_dir: other})
+    assert Site.egress() == "198.51.100.21"
   after
     :persistent_term.erase({Site, :egress})
   end

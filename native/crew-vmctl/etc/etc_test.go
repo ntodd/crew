@@ -58,3 +58,19 @@ func TestNoServiceIsOrderedBeforeASocket(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardUplinkRequiresTrackedConnection(t *testing.T) {
+	body, err := os.ReadFile("nft.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.Contains(line, "oifname $UPLINK") && strings.Contains(line, " accept") {
+			if !strings.Contains(line, "ct state { new, established, related }") {
+				t.Fatal("uplink accept lacks connection state")
+			}
+			return
+		}
+	}
+	t.Fatal("missing uplink accept")
+}

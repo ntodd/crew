@@ -39,6 +39,14 @@ defmodule CrewGuest.HookTest do
     )
   end
 
+  test "workflow_run requires a known origin under the refuse policy", %{run_dir: run_dir} do
+    policy(run_dir, "refuse")
+    assert {_out, 1} = hook(run_dir, "workflow_run", nil)
+    assert {"", 0} = hook(run_dir, "workflow_run", "workflow_run_same_repo")
+    policy(run_dir, "allow")
+    assert {"", 0} = hook(run_dir, "workflow_run", nil)
+  end
+
   test "refuses a fork PR, says why and reports job_refused", %{api: api, run_dir: run_dir} do
     policy(run_dir, "refuse")
 
