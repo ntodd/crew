@@ -24,6 +24,8 @@ data=${CREW_BOX_DATA:-/srv/crew}
 agent="$data/agent"
 if [ ! -L "$agent/previous" ]; then
   echo "no previous release to roll back to"
+  systemctl reset-failed crew-agent.service
+  systemd-run --on-active=60s /usr/bin/systemctl start crew-agent.service
   exit 0
 fi
 
