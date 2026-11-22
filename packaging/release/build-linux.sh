@@ -50,7 +50,7 @@ for app in crew_agent crew_cache; do
       mkdir -p /w && cp -r /src/crew_protocol "/src/$APP" /w/ && rm -rf /w/*/_build /w/*/deps
       cd "/w/$APP"
       mix local.hex --force >/dev/null && mix local.rebar --force >/dev/null
-      mix deps.get --only prod >/dev/null
+      mix deps.get --only prod --check-locked >/dev/null
       mix release --overwrite --quiet
       cp -a "_build/prod/rel/$APP" "/out/$APP"
       chown -R "$(stat -c %u /out):$(stat -c %g /out)" "/out/$APP"'
