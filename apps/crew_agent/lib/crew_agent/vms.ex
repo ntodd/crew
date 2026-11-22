@@ -47,29 +47,58 @@ defmodule CrewAgent.VMs do
   # registered: it holds unacked logs, or hasn't stopped yet after
   # writing exited.json and emitting vm.exited.
   defp existing(vm_id) do
-    if not exited?(vm_id) and (VM.whereis(vm_id) || Driver.impl().alive?(vm_id)),
-      do: :ok,
-      else: {:error, "duplicate", "VM #{vm_id} was started before"}
+    cond do
+      exited?(vm_id) -> start_result({:error, :duplicate}, vm_id)
+      pid = VM.whereis(vm_id) -> await_existing(pid, vm_id)
+      Driver.impl().alive?(vm_id) -> :ok
+      true -> start_result({:error, :duplicate}, vm_id)
+    end
   end
 
   defp start_new(cmd, vm_id) do
-    case DynamicSupervisor.start_child(@sup, {VM, {:start, cmd, nil}}) do
-      {:ok, _pid} ->
-        :ok
+    ref = make_ref()
 
-      {:error, {:start_failed, :image_not_ready}} ->
-        {:error, "image_not_ready", "the image isn't ready on this box"}
+    case DynamicSupervisor.start_child(@sup, {VM, {:start, cmd, {self(), ref}}}) do
+      {:ok, pid} ->
+        monitor = Process.monitor(pid)
 
-      {:error, {:start_failed, reason}} ->
-        {:error, "start_failed", to_string(reason)}
+        result =
+          receive do
+            {^ref, result} -> result
+            {:DOWN, ^monitor, :process, ^pid, reason} -> {:error, reason}
+          end
 
-      {:error, :duplicate} ->
-        {:error, "duplicate", "VM #{vm_id} was started before"}
+        Process.demonitor(monitor, [:flush])
+        start_result(result, vm_id)
+
+      {:error, {:already_started, pid}} ->
+        await_existing(pid, vm_id)
 
       {:error, reason} ->
-        {:error, "start_failed", inspect(reason)}
+        start_result({:error, reason}, vm_id)
     end
   end
+
+  # A second caller arriving during the start waits behind handle_continue.
+  defp await_existing(pid, vm_id) do
+    start_result(GenServer.call(pid, :started, :infinity), vm_id)
+  catch
+    :exit, {{:shutdown, {:start_failed, reason}}, _} -> start_result({:error, reason}, vm_id)
+    :exit, _ -> start_result({:error, :duplicate}, vm_id)
+  end
+
+  defp start_result(:ok, _id), do: :ok
+
+  defp start_result({:error, :duplicate}, id),
+    do: {:error, "duplicate", "VM #{id} was started before"}
+
+  defp start_result({:error, :image_not_ready}, _id),
+    do: {:error, "image_not_ready", "the image isn't ready on this box"}
+
+  defp start_result({:error, reason}, _id) when is_binary(reason),
+    do: {:error, "start_failed", reason}
+
+  defp start_result({:error, reason}, _id), do: {:error, "start_failed", inspect(reason)}
 
   @doc "`vm.stop`: graceful through the guest, or force."
   def stop(vm_id, force, grace_s) do

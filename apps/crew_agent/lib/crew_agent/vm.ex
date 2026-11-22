@@ -75,20 +75,9 @@ defmodule CrewAgent.VM do
   # -- start (§11.2) ------------------------------------------------------------
 
   @impl true
-  def init({:start, cmd, _from}) do
-    config = Config.get()
-    p = cmd.payload
-    dir = Config.vm_dir(config, p.vm_id)
-    Logger.metadata(vm_id: p.vm_id, op_id: cmd.op_id)
-
-    if File.exists?(dir) do
-      {:stop, :duplicate}
-    else
-      case start_vm(config, cmd, dir) do
-        {:ok, state} -> {:ok, state, {:continue, :running}}
-        {:error, reason} -> {:stop, {:start_failed, reason}}
-      end
-    end
+  def init({:start, cmd, from}) do
+    Logger.metadata(vm_id: cmd.payload.vm_id, op_id: cmd.op_id)
+    {:ok, %{vm_id: cmd.payload.vm_id}, {:continue, {:start, cmd, from}}}
   end
 
   def init({:adopt, vm_id}) do
@@ -416,6 +405,22 @@ defmodule CrewAgent.VM do
   end
 
   @impl true
+  def handle_continue({:start, cmd, {caller, ref}}, pending) do
+    config = Config.get()
+    dir = Config.vm_dir(config, pending.vm_id)
+    result = if File.exists?(dir), do: {:error, :duplicate}, else: start_vm(config, cmd, dir)
+
+    case result do
+      {:ok, state} ->
+        send(caller, {ref, :ok})
+        handle_continue(:running, state)
+
+      {:error, reason} ->
+        send(caller, {ref, {:error, reason}})
+        {:stop, {:shutdown, {:start_failed, reason}}, pending}
+    end
+  end
+
   def handle_continue(:running, state) do
     schedule_deadline(state)
     Process.send_after(self(), :poll, @poll_ms)
@@ -433,6 +438,9 @@ defmodule CrewAgent.VM do
   # -- the guest API (§13.4) ---------------------------------------------------------
 
   @impl true
+  def handle_call(:started, _from, state),
+    do: {:reply, if(state.exited, do: {:error, :duplicate}, else: :ok), state}
+
   def handle_call(msg, _from, %{exited: true} = state)
       when msg == :control or
              (is_tuple(msg) and
