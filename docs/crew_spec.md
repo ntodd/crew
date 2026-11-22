@@ -1169,13 +1169,15 @@ Its calls are **essential** (§6.6).
   5 minutes until GitHub says it's done: its `workflow_run` `completed`
   may have gone missing too.
 - **Missed jobs:** every 5 minutes, for each enabled repo with Crew jobs in
-  the last 7 days, list the queued and in-progress runs and their jobs, and
-  upsert any job Crew doesn't know.
+  the last 7 days, list the queued and in-progress runs. Check up to two attempts per
+  repository per sweep, finish each round before starting the next, and
+  upsert jobs Crew has missed.
 
 **Poll-only mode:** the missed-job sweep is the only intake. It runs every
 `max(15, ⌈3600 × calls_per_sweep × active_repos ÷ (0.3 × hourly_limit)⌉)`
-seconds, where `calls_per_sweep` is about 3 (two run lists plus their
-jobs). Repos idle for an hour are swept every 5 minutes.
+seconds. Poll-only mode checks every listed attempt. Budget two run lists
+per active repository plus one job list per observed open attempt, with one
+attempt assumed for a newly active repository. Pagination adds calls. Repos idle for an hour are swept every 5 minutes.
 
 ## 9. Control plane
 

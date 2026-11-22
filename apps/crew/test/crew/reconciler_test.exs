@@ -492,6 +492,42 @@ defmodule Crew.ReconcilerTest do
       assert job.blocked_reason == nil
     end
 
+    test "a webhook backstop spreads open attempts across passes and revisits them", %{
+      repo: repo,
+      inst: inst
+    } do
+      {:ok, _} = Jobs.handle_workflow_job(workflow_job_payload(repo, id: 10, run_id: 60))
+      ids = Enum.to_list(61..65)
+      runs = Enum.map(ids, &workflow_run_payload(repo, id: &1)["workflow_run"])
+      pid = self()
+
+      routes =
+        Map.new(ids, fn id ->
+          {{"GET", "/repos/#{repo.full_name}/actions/runs/#{id}/attempts/1/jobs"},
+           fn conn ->
+             send(pid, {:listed_jobs, id})
+             GitHubStub.json(conn, 200, %{"jobs" => []})
+           end}
+        end)
+
+      GitHubStub.stub(
+        Map.merge(
+          token(inst),
+          Map.put(
+            routes,
+            {"GET", "/repos/#{repo.full_name}/actions/runs"},
+            {200, %{"workflow_runs" => runs}}
+          )
+        )
+      )
+
+      for expected <- [[61, 62], [63, 64], [65], [61, 62]] do
+        assert {:ok, _} = Reconciler.sweep_missed()
+        for id <- expected, do: assert_received({:listed_jobs, ^id})
+        refute_received {:listed_jobs, _}
+      end
+    end
+
     test "only repos with Crew jobs in the last 7 days are swept", %{repo: _repo} do
       quiet = repo_fixture(name: "quiet")
       GitHubStub.stub(%{})
@@ -523,6 +559,7 @@ defmodule Crew.ReconcilerTest do
       assert Reconciler.poll_interval(1, 5000) == 15
       # 3600 × 3 × 40 ÷ (0.3 × 5000) = 288
       assert Reconciler.poll_interval(40, 5000) == 288
+      assert Reconciler.poll_interval(20, 5000, 200) == 576
       assert Reconciler.poll_interval(0, 5000) == 15
     end
   end
