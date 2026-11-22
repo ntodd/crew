@@ -881,6 +881,20 @@ defmodule Crew.VMs.ServerTest do
       end)
     end
 
+    test "an exit arriving before the VM servers boot is applied", %{box: box} do
+      vm = vm_fixture(box, state: "busy", alive: true, busy_at: DateTime.utc_now())
+      refute Server.whereis(vm.id)
+
+      assert :ok =
+               agent_event(box, "vm.exited", %{
+                 "vm_id" => vm.id,
+                 "reason" => "poweroff",
+                 "cleanup" => "ok"
+               })
+
+      await_state(vm.id, "destroyed")
+    end
+
     test "the join inventory: missing VMs are lost, unknown live ones are stopped", %{
       box: box,
       repo: repo
