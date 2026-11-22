@@ -55,6 +55,13 @@ defmodule CrewCache.CATest do
       assert DateTime.diff(not_after, not_before, :day) == 30
     end
 
+    test "a leaf starts an hour back, for clock skew", %{chain: chain} do
+      now = ~U[2026-03-01 12:00:00Z]
+      {leaf, _key} = Certs.leaf(chain, @ip, now)
+      {not_before, _} = leaf |> Certs.decode() |> Certs.validity()
+      assert not_before == ~U[2026-03-01 11:00:00Z]
+    end
+
     # OTP 29 can't validate the path itself: pubkey_cert's iPAddress
     # constraint clause is spelt `ipAdress` and crashes. Go and OpenSSL
     # (below) check the whole chain.
@@ -77,6 +84,17 @@ defmodule CrewCache.CATest do
     @tag :openssl
     test "accepts the leaf", %{chain: chain, tmp_dir: dir} do
       {leaf, _} = Certs.leaf(chain, @ip)
+      assert {out, 0} = openssl_verify(dir, leaf, ["-verify_ip", "10.199.0.1"])
+      assert out =~ "OK"
+    end
+
+    # The OS clock can step back (NTP) between minting a leaf and
+    # verifying it, and a guest's clock can lag the host's, so a leaf has
+    # to be valid for a verifier that's a little behind.
+    @tag :openssl
+    test "accepts a leaf minted by a clock a minute ahead", %{chain: chain, tmp_dir: dir} do
+      ahead = DateTime.add(DateTime.utc_now(), 60, :second)
+      {leaf, _} = Certs.leaf(chain, @ip, ahead)
       assert {out, 0} = openssl_verify(dir, leaf, ["-verify_ip", "10.199.0.1"])
       assert out =~ "OK"
     end
@@ -195,6 +213,21 @@ defmodule CrewCache.CATest do
       [{_, new_leaf, _} | _] = certfile |> File.read!() |> :public_key.pem_decode()
       {not_before, _} = new_leaf |> Certs.decode() |> Certs.validity()
       assert DateTime.diff(DateTime.utc_now(), not_before, :hour) < 2
+    end
+
+    test "replaces a leaf minted just over a day ago", %{tmp_dir: dir} do
+      start_supervised!({CA, dir: dir, ip: @ip})
+      stop_supervised!(CA)
+
+      chain = CA.load_chain(dir)
+      minted = DateTime.add(DateTime.utc_now(), -(24 * 60 + 10), :minute)
+      {leaf, key} = Certs.leaf(chain, @ip, minted)
+      CA.write_leaf(dir, chain, leaf, key)
+
+      start_supervised!({CA, dir: dir, ip: @ip})
+      %{certfile: certfile} = CA.tls_files()
+      [{_, current, _} | _] = certfile |> File.read!() |> :public_key.pem_decode()
+      refute current == leaf
     end
 
     test "rotate/0 regenerates the whole chain", %{tmp_dir: dir} do

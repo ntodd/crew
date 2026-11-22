@@ -138,7 +138,7 @@ defmodule CrewCache.CA.Certs do
         subject(inter),
         name("Crew registry cache"),
         key,
-        period(now, @leaf_days, 0),
+        period(now, @leaf_days, 1),
         [
           ext(@basic_constraints, true, r_basic_constraints(cA: false)),
           ext(@key_usage, true, [:digitalSignature]),
