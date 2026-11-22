@@ -217,6 +217,34 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     assert await("vm.exited", &(&1.vm_id == vm_id), 10_000).payload.cleanup == "ok"
   end
 
+  test "a VM records its exit before freeing the network lease", ctx do
+    vm_id = start(ctx)
+    :counters.put(ctx.works, 1, 1)
+    allocator = Process.whereis(Net)
+    :sys.suspend(allocator)
+
+    try do
+      File.rm_rf!(cgroup(ctx, vm_id))
+      assert_receive {:cleanup, ^vm_id}, 10_000
+
+      assert Enum.reduce_while(1..100, false, fn _, _ ->
+               {:messages, messages} = Process.info(allocator, :messages)
+
+               if Enum.any?(messages, &match?({:"$gen_call", _, {:release, ^vm_id}}, &1)) do
+                 {:halt, true}
+               else
+                 Process.sleep(10)
+                 {:cont, false}
+               end
+             end)
+
+      assert File.exists?(Path.join(Config.vm_dir(ctx.config, vm_id), "exited.json"))
+    after
+      :sys.resume(allocator)
+      await("vm.exited", &(&1.vm_id == vm_id))
+    end
+  end
+
   test "a failed cleanup is reported, keeps the lease and the clone, and is retried", ctx do
     vm_id = start(ctx)
     dir = Config.vm_dir(ctx.config, vm_id)

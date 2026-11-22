@@ -36,11 +36,10 @@ defmodule CrewAgent.VMs.Cleanup do
   @doc "A cleanup that worked: the lease, the clone and its kernel go, and the record."
   def done(config \\ Config.get(), vm_id) do
     dir = Config.vm_dir(config, vm_id)
-    Net.release(vm_id)
     File.rm(Path.join(dir, "rootfs.ext4"))
     File.rm(Path.join(dir, "kernel"))
     File.rm(Path.join(dir, @marker))
-    :ok
+    Net.release(vm_id)
   end
 
   @doc "A cleanup that didn't: recorded, with why, for `retry_all/0`."
@@ -76,7 +75,7 @@ defmodule CrewAgent.VMs.Cleanup do
           held?(config, vm_id),
           index = lease_index(config, vm_id),
           is_integer(index),
-          not claim(vm_id, index),
+          not claim_record(config, vm_id, index),
           do: {vm_id, index}
 
     put_conflicts(found)
@@ -92,6 +91,19 @@ defmodule CrewAgent.VMs.Cleanup do
     end
 
     :persistent_term.put(@conflicts, found)
+  end
+
+  # The VM may have exited since this scan read vm.json. A claim that
+  # arrived after release must give the lease back, even on a conflict.
+  defp claim_record(config, vm_id, index) do
+    claimed = claim(vm_id, index)
+
+    if held?(config, vm_id) do
+      claimed
+    else
+      Net.release(vm_id)
+      true
+    end
   end
 
   defp claim(vm_id, index), do: match?({:ok, _}, Net.claim(vm_id, index))

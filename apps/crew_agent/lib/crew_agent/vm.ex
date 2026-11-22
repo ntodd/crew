@@ -201,8 +201,8 @@ defmodule CrewAgent.VM do
   defp abandon_start(driver, vm_id, dir) do
     case driver.cleanup(vm_id) do
       :ok ->
+        File.rm_rf!(dir)
         Net.release(vm_id)
-        File.rm_rf(dir)
 
       {:error, why} ->
         exited = %{
@@ -752,7 +752,8 @@ defmodule CrewAgent.VM do
       "detail" => state.exit_detail
     }
 
-    _ = SafeFS.write_atomic(Path.join(state.dir, "exited.json"), Jason.encode!(exited), 0o640)
+    :ok = SafeFS.write_atomic(Path.join(state.dir, "exited.json"), Jason.encode!(exited), 0o640)
+    if cleanup == :ok, do: Cleanup.done(state.vm_id)
 
     emit(
       Event.new("vm.exited", %{
@@ -820,7 +821,7 @@ defmodule CrewAgent.VM do
 
     case state.driver.cleanup(state.vm_id) do
       :ok ->
-        Cleanup.done(state.vm_id)
+        :ok
 
       {:error, why} ->
         Cleanup.failed(state.vm_id, if(is_binary(why), do: why, else: inspect(why)))
