@@ -38,6 +38,14 @@ defmodule Crew.Logs.IndexTest do
     assert Index.groups(index) == [[1, 1, "A"], [2, 3, "B"]]
   end
 
+  test "a single colon in annotation properties is part of the value" do
+    [annotation] =
+      Index.add(Index.new(), [line(1, "::warning  file=C:/src/a,line=7::check::again")]).annotations
+
+    assert annotation.file == "C:/src/a"
+    assert annotation.text == "check::again"
+  end
+
   test "annotations, with ANSI and the runner's prefix stripped, capped" do
     index =
       Index.add(Index.new(), [
