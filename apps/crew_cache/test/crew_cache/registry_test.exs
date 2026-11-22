@@ -289,6 +289,14 @@ defmodule CrewCache.RegistryTest do
       assert %{reserved: 0} = Store.usage()
     end
 
+    @tag cache: [max_fetches: 32]
+    test "a single upstream origin has room for every admitted fetch" do
+      {:ok, %{start: {Finch, :start_link, [opts]}}} =
+        :supervisor.get_childspec(CrewCache.Supervisor, :upstream_pool)
+
+      assert opts[:pools][:default][:size] >= 32
+    end
+
     @tag cache: [max_fetches: 1]
     test "past max_fetches, a miss is refused rather than queued", %{ctx: ctx} do
       [a, b] = [:crypto.strong_rand_bytes(600_000), :crypto.strong_rand_bytes(1000)]
