@@ -48,6 +48,7 @@ defmodule CrewGuest.Steps do
       planned: %{},
       jobs: MapSet.new(),
       seq: 0,
+      last_sent: nil,
       dirty: false,
       finished: false
     }
@@ -86,8 +87,7 @@ defmodule CrewGuest.Steps do
     s = s |> read_logs(:infinity) |> flush_logs()
     records = Map.new(s.records, fn {k, r} -> {k, %{r | page_done: true}} end)
     s = %{s | records: records, finished: true}
-    s.on_steps.(steps(s))
-    {:reply, :ok, %{s | dirty: false}}
+    {:reply, :ok, report_changes(s)}
   end
 
   @impl true
@@ -96,16 +96,16 @@ defmodule CrewGuest.Steps do
   def handle_info(:tick, s) do
     s = read_logs(s, @tick_budget)
 
-    s =
-      if s.dirty do
-        s.on_steps.(steps(s))
-        %{s | dirty: false}
-      else
-        s
-      end
+    s = if s.dirty, do: report_changes(s), else: s
 
     Process.send_after(self(), :tick, s.tick_ms)
     {:noreply, s}
+  end
+
+  defp report_changes(s) do
+    snapshot = steps(s)
+    if snapshot != s.last_sent, do: s.on_steps.(snapshot)
+    %{s | dirty: false, last_sent: snapshot}
   end
 
   # Records

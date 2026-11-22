@@ -49,6 +49,15 @@ defmodule CrewGuest.OutboxTest do
       assert length(FakeAPI.requests(api, "/v1/state")) == 3
     end
 
+    test "a 429 waits for the agent's one-second rate window", %{api: api} do
+      FakeAPI.respond(api, "/v1/state", [{429, nil}, {204, nil}])
+      o = start_outbox(api, backoff_min_ms: 1, backoff_max_ms: 2)
+      Outbox.state(o, "runner_listening")
+      assert :ok = Outbox.flush(o, 3_000)
+      [first, retry] = FakeAPI.requests(api, "/v1/state")
+      assert retry.at - first.at >= 1_000
+    end
+
     test "a state the agent refuses is dropped, and the next still goes", %{api: api} do
       FakeAPI.respond(api, "/v1/state", [{409, nil}, {204, nil}])
       o = start_outbox(api)
@@ -98,7 +107,7 @@ defmodule CrewGuest.OutboxTest do
       assert Enum.all?(reqs, &(&1.bytes <= 1_048_576))
       assert FakeAPI.log_texts(api) == Enum.map(sent, & &1.text)
 
-      # The Outbox starts requests 125 ms apart. The client sees each start
+      # The Outbox starts requests 140 ms apart. The client sees each start
       # a moment later, but connecting and uploading come after, so they
       # can't eat into the gap the way they did at the server.
       starts = request_starts("/v1/log")

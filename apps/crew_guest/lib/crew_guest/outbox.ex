@@ -45,8 +45,8 @@ defmodule CrewGuest.Outbox do
     batch_bytes: 65_536,
     max_request_bytes: 1_048_576,
     buffer_bytes: 16 * 1_048_576,
-    log_interval_ms: 125,
-    steps_interval_ms: 500,
+    log_interval_ms: 140,
+    steps_interval_ms: 550,
     max_steps_bytes: 262_144,
     backoff_min_ms: 500,
     backoff_max_ms: 5_000,
@@ -267,7 +267,8 @@ defmodule CrewGuest.Outbox do
 
   defp classify({:ok, _status}), do: :ok
   defp classify({:error, {:status, 413}}), do: :too_large
-  defp classify({:error, {:status, status}}) when status in [408, 429], do: :retry
+  defp classify({:error, {:status, 429}}), do: :rate_limited
+  defp classify({:error, {:status, 408}}), do: :retry
   defp classify({:error, {:status, status}}) when status >= 500, do: :retry
   defp classify({:error, {:status, _status}}), do: :refused
   defp classify({:error, _reason}), do: :retry
@@ -281,8 +282,8 @@ defmodule CrewGuest.Outbox do
       :ok ->
         settle(s, lane_name)
 
-      :retry ->
-        retry(s, lane_name, item)
+      outcome when outcome in [:retry, :rate_limited] ->
+        retry(s, lane_name, item, outcome)
 
       :too_large when lane_name == :log ->
         Logger.info("crew-guest: the VM's log limit is reached; no more log lines are sent")
@@ -299,7 +300,7 @@ defmodule CrewGuest.Outbox do
     Map.put(s, lane_name, %{lane | item: nil, attempt: 0, retry_at: nil, failing_since: nil})
   end
 
-  defp retry(s, lane_name, item) do
+  defp retry(s, lane_name, item, outcome) do
     now = now()
     lane = Map.fetch!(s, lane_name)
     attempt = lane.attempt + 1
@@ -309,7 +310,7 @@ defmodule CrewGuest.Outbox do
       lane
       | attempt: attempt,
         failing_since: failing_since,
-        retry_at: now + backoff(s, attempt)
+        retry_at: now + if(outcome == :rate_limited, do: 1_000, else: backoff(s, attempt))
     }
 
     s = Map.put(s, lane_name, lane)
