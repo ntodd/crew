@@ -87,6 +87,27 @@ defmodule Crew.GitHub.APITest do
     assert :counters.get(calls, 1) == 2
   end
 
+  test "a secondary-limit response with primary budget left holds the next request locally" do
+    pid = self()
+
+    stub(pid, %{
+      {"GET", "/repos/acme/app/actions/jobs/9"} => fn conn ->
+        send(pid, :hit)
+
+        conn
+        |> Plug.Conn.put_resp_header("x-ratelimit-remaining", "4000")
+        |> GitHubStub.json(403, %{"message" => "You have exceeded a secondary rate limit."})
+      end
+    })
+
+    before = System.os_time(:millisecond)
+    assert {:error, {:http, 403, _}} = Client.get_job(77, "acme/app", 9)
+    assert_received :hit
+    assert {:error, {:backoff, until}} = Client.get_job(77, "acme/app", 9)
+    assert until >= before + 60_000
+    refute_received :hit
+  end
+
   test "rate-limit headers feed the budget" do
     pid = self()
 

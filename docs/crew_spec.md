@@ -423,7 +423,7 @@ All calls go through `Crew.GitHub.Client` (Req). The client:
   450 an hour per installation, under GitHub's secondary limit on
   content-creating requests. JIT generation is served first. Runner DELETEs
   for reaping wait when the bucket is empty.
-- **Backs off** on 403/429 with `retry-after`, or until the reset.
+- **Backs off** on 403/429 with `retry-after` or an exhausted primary budget until reset. A secondary-limit 403 or a 429 without a retry delay starts at one minute and doubles on repeated attempts, up to an hour.
 
 Calls are classed by importance:
 

@@ -267,7 +267,7 @@ defmodule Crew.GitHub.Client do
           _ -> {0, %{}}
         end
 
-      Crew.GitHub.Budget.release(installation_id, ref, status, headers)
+      Crew.GitHub.Budget.release(installation_id, ref, budget_status(status, result), headers)
 
       :telemetry.execute(
         [:crew, :github, :request],
@@ -283,6 +283,14 @@ defmodule Crew.GitHub.Client do
       result
     end
   end
+
+  defp budget_status(403, {:ok, %{body: %{"message" => message}}}) when is_binary(message) do
+    if String.contains?(String.downcase(message), "secondary rate limit"),
+      do: :secondary_limit,
+      else: 403
+  end
+
+  defp budget_status(status, _result), do: status
 
   # A 401 means the cached token went bad (revoked, or the App's key
   # rotated): drop it and try once more with a fresh one.
