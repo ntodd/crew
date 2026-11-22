@@ -101,24 +101,24 @@ defmodule CrewAgent.VMs do
   def running_ids, do: Enum.filter(vm_ids(), &(VM.whereis(&1) != nil and not exited?(&1)))
 
   def log_ack(vm_id, epoch, seq) do
-    case VM.call(vm_id, {:log_ack, epoch, seq}) do
-      {:error, :no_vm} -> :ok
-      other -> other
+    case VM.whereis(vm_id) do
+      nil -> :ok
+      pid -> GenServer.cast(pid, {:log_ack, epoch, seq})
     end
   end
 
   @doc "A resend for a VM the agent no longer holds: those lines are gone (§16.2)."
   def log_resend(vm_id, epoch, from_seq) do
-    case VM.call(vm_id, {:log_resend, epoch, from_seq}) do
-      {:error, :no_vm} ->
+    case VM.whereis(vm_id) do
+      nil ->
         {:ok, event} =
           CrewProtocol.Event.new("vm.log.gone", %{vm_id: vm_id, epoch: epoch, up_to_seq: from_seq})
 
         CrewAgent.Outbox.push(event)
         :ok
 
-      other ->
-        other
+      pid ->
+        GenServer.cast(pid, {:log_resend, epoch, from_seq})
     end
   end
 

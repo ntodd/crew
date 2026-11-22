@@ -572,39 +572,6 @@ defmodule CrewAgent.VM do
     {:reply, :ok, request_stop(%{state | exit_detail: state.exit_detail || detail}, true, 0)}
   end
 
-  def handle_call({:log_ack, epoch, seq}, _from, %{epoch: epoch} = state) do
-    unacked = Enum.reject(state.unacked, fn {s, _lines, _bytes, _at} -> s <= seq end)
-    state = %{state | unacked: unacked, unacked_bytes: sum_bytes(unacked)}
-
-    if state.exited and unacked == [],
-      do: {:stop, :normal, :ok, state},
-      else: {:reply, :ok, state}
-  end
-
-  def handle_call({:log_ack, _epoch, _seq}, _from, state), do: {:reply, :ok, state}
-
-  # Lines from `from_seq` on: those still held are sent again; any before
-  # the oldest held are gone (§16.2), and so is a resend for an old epoch.
-  def handle_call({:log_resend, epoch, from_seq}, _from, state) do
-    if epoch == state.epoch do
-      oldest = oldest_seq(state)
-
-      if from_seq < oldest,
-        do:
-          emit(
-            Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: oldest - 1})
-          )
-
-      state.unacked
-      |> Enum.filter(fn {s, _, _, _} -> s >= from_seq end)
-      |> Enum.each(fn {s, lines, _, _} -> emit_log(state, s, lines) end)
-    else
-      emit(Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: from_seq}))
-    end
-
-    {:reply, :ok, state}
-  end
-
   # An agent stop (CrewAgent.VMs.drain_logs/1): the lines held for the
   # next batch go now, no more are taken (the guest keeps them for the
   # next agent), and the reply says whether every batch is acked.
@@ -624,6 +591,39 @@ defmodule CrewAgent.VM do
   end
 
   @impl true
+  def handle_cast({:log_ack, epoch, seq}, %{epoch: epoch} = state) do
+    unacked = Enum.reject(state.unacked, fn {s, _lines, _bytes, _at} -> s <= seq end)
+    state = %{state | unacked: unacked, unacked_bytes: sum_bytes(unacked)}
+
+    if state.exited and unacked == [],
+      do: {:stop, :normal, state},
+      else: {:noreply, state}
+  end
+
+  def handle_cast({:log_ack, _epoch, _seq}, state), do: {:noreply, state}
+
+  # Lines from `from_seq` on: those still held are sent again; any before
+  # the oldest held are gone (§16.2), and so is a resend for an old epoch.
+  def handle_cast({:log_resend, epoch, from_seq}, state) do
+    if epoch == state.epoch do
+      oldest = oldest_seq(state)
+
+      if from_seq < oldest,
+        do:
+          emit(
+            Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: oldest - 1})
+          )
+
+      state.unacked
+      |> Enum.filter(fn {s, _, _, _} -> s >= from_seq end)
+      |> Enum.each(fn {s, lines, _, _} -> emit_log(state, s, lines) end)
+    else
+      emit(Event.new("vm.log.gone", %{vm_id: state.vm_id, epoch: epoch, up_to_seq: from_seq}))
+    end
+
+    {:noreply, state}
+  end
+
   def handle_cast(:resend_unacked, state) do
     Enum.each(state.unacked, fn {s, lines, _, _} -> emit_log(state, s, lines) end)
     {:noreply, state}
