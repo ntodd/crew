@@ -1079,7 +1079,7 @@ recorded in `vm_events` and ignored):
 | `workflow_job.completed` names this VM | → finished | → finished | → finished | → finished | → finished | | → finished |
 | `vm.exited` | → failed (`boot_failed`) | → failed (`boot_failed`/`crashed`) | → failed (`crashed`) | → failed (`crashed`), delete runner | → finished | → destroyed (if cleanup ok) | → destroyed (if cleanup ok) |
 | box disconnects | delete runner (none yet: → failed (`lost`) at once): 204/404 → failed (`lost`); 422 → busy | same | same | same | stays busy | stays | stays |
-| box revoked | → destroyed | → destroyed | → destroyed | → destroyed | → destroyed | → destroyed | → destroyed |
+| box revoked | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed | → destroyed | → destroyed |
 | join inventory doesn't list the VM | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → finished | → destroyed | → destroyed |
 | join inventory lists the VM as alive | | | | | | sends `vm.stop force` | sends `vm.stop force` |
 

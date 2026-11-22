@@ -873,7 +873,12 @@ defmodule Crew.VMs.ServerTest do
       id = place(box, repo)
       to_idle(box, id)
       VMs.box_revoked(box.id)
-      await_state(id, "destroyed")
+      vm = await_state(id, "destroyed")
+
+      eventually(fn ->
+        all_enqueued(worker: Crew.VMs.DeleteRunner)
+        |> Enum.any?(&(&1.args["runner_id"] == vm.runner_id))
+      end)
     end
 
     test "the join inventory: missing VMs are lost, unknown live ones are stopped", %{
