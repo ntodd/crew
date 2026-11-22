@@ -42,8 +42,10 @@ if [ -f "$agent/update-pending" ]; then
 fi
 say "rolled the agent back to $target"
 
-if root_release "$data/root" "$target"; then
+exact_link "$data/root/previous" || true
+if [ "$link" = "$target" ] && root_release "$data/root" "$target"; then
   relink "$data/root" current "$target"
+  rm -f "$data/root/previous"
   CREW_BOX_DATA="$data" sh "$etc/root-units.sh"
   # The ruleset that release's crew-vmctl verifies against.
   systemctl try-restart crew-net.service || true

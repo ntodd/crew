@@ -104,12 +104,13 @@ for d in "$new" "$priv"; do
   chmod -R go-w "$d"
   chmod 0755 "$d"
 done
+record_version_floor "$root_dir" "$CREW_VERSION" "$etc" || fail "release is below the root version floor"
 rm -rf "$dest" "${root_dir:?}/${CREW_VERSION:?}"
 mv "$priv" "$root_dir/$CREW_VERSION"
 mv "$new" "$dest"
 relink "$root_dir" current "$CREW_VERSION"
 relink "$agent" current "$CREW_VERSION"
-rm -f "$agent/previous" "$agent/update-pending"
+rm -f "$root_dir/previous" "$agent/previous" "$agent/update-pending"
 
 # The agent's settings (§21.2). systemd reads them as root; the agent
 # never needs to. Written in root's directory and renamed into agent/,

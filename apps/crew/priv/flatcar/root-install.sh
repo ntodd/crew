@@ -144,6 +144,7 @@ if [ -n "$root" ]; then chown -R root:root "$priv"; fi
 chmod -R go-w "$priv"
 chmod 0755 "$priv"
 
+record_version_floor "$root_dir" "$version" "$etc" || refuse "release is below the root version floor"
 rm -rf "${root_dir:?}/$version"
 mv "$priv" "$root_dir/$version"
 relink "$root_dir" current "$version"
@@ -175,14 +176,16 @@ if ruleset_changed; then
   "$root_dir/current/bin/crew-vmctl" net-up || back "crew-vmctl net-up failed with $version's ruleset"
 fi
 
-# Kept: this release, the one before it, and the one the agent would roll
-# back to; the rest go.
-exact_link "$data/agent/previous" || true
-previous=$link
-release_version "$previous" || previous=""
+# Only the release this installation replaced can be selected for a root
+# rollback. Agent bookkeeping can neither select nor retain older versions.
+if root_release "$root_dir" "$old"; then
+  relink "$root_dir" previous "$old"
+else
+  rm -f "$root_dir/previous"
+fi
 for d in "$root_dir"/*; do
   name=$(basename "$d")
-  case "$name" in "$version" | "$old" | "$previous" | current | update.result) continue ;; esac
+  case "$name" in "$version" | "$old" | current | previous | update.result) continue ;; esac
   if release_version "$name"; then rm -rf "${root_dir:?}/$name"; fi
 done
 

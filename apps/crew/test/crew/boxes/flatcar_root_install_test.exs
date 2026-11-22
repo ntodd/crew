@@ -151,7 +151,8 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
     end
 
     assert File.read!(ctx.log) =~ "systemctl daemon-reload"
-    # The release before stays for a rollback.
+    # Root records its own single rollback target.
+    assert File.read_link!(Path.join(ctx.data, "root/previous")) == "0.3.0"
     assert File.dir?(Path.join(ctx.data, "root/0.3.0"))
   end
 
@@ -240,6 +241,20 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
     end
   end
 
+  test "an older signed version requires an exact authorization from the box administrator",
+       ctx do
+    stage(ctx, "0.2.9")
+    assert {_, 1} = sh(ctx, "root-install.sh")
+    assert root_current(ctx) == "0.3.0"
+    File.write!(Path.join(ctx.etc, "allow-downgrade"), "0.2.9\n")
+    stage(ctx, "0.2.9")
+    assert {_, 0} = sh(ctx, "root-install.sh")
+    assert root_current(ctx) == "0.2.9"
+    refute File.exists?(Path.join(ctx.etc, "allow-downgrade"))
+    stage(ctx, "0.2.10")
+    assert {_, 1} = sh(ctx, "root-install.sh")
+  end
+
   test "without a nonce there's no one to answer, and nothing is done", ctx do
     stage(ctx, "0.4.0", fields: [NONCE: "nope"])
     assert {_, 1} = sh(ctx, "root-install.sh")
@@ -290,6 +305,7 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
       refute File.exists?(Path.join(ctx.agent, "update-pending"))
       assert File.read!(Path.join(ctx.agent, "rolled-back")) =~ ~s("version":"0.4.0")
       assert root_current(ctx) == "0.3.0"
+      assert {:error, :enoent} = File.read_link(Path.join(ctx.data, "root/previous"))
 
       log = File.read!(ctx.log)
       assert log =~ "systemctl restart crew-cache.service"
@@ -373,6 +389,21 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
       assert out =~ "rolled the agent back to 0.3.0"
       assert out =~ "root has no 0.3.0 of its own"
       assert root_current(ctx) == "0.4.0"
+    end
+  end
+
+  test "the version floor orders stable and numeric prerelease versions", ctx do
+    for {left, right} <- [
+          {"1.0.0-rc.2", "1.0.0-rc.10"},
+          {"1.0.0-rc.10", "1.0.0"},
+          {"2.0.9", "2.0.10"}
+        ] do
+      check = fn a, b ->
+        System.cmd("sh", ["-c", ~s(. "$1/lib.sh"; version_before "$2" "$3"), "sh", ctx.etc, a, b])
+      end
+
+      assert {_, 0} = check.(left, right)
+      assert {_, 1} = check.(right, left)
     end
   end
 

@@ -3670,6 +3670,11 @@ A tag `vX.Y.Z` builds everything.
 - `agent.update` is signed and checked before download;
 - `current`/`previous` are swapped atomically, with an `update-pending`
   marker;
+- Flatcar root records its highest verified version in `root/version-floor`.
+  To authorize a pinned downgrade, a box administrator writes the exact
+  target version to `/etc/crew-box/allow-downgrade`. Root consumes that
+  authorization once. Its own recovery to the previous installed release
+  preserves the floor.
 - rollback on a crash loop, or no join within 5 minutes;
 - two failures of a version on a box stop it being sent again.
 
