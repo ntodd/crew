@@ -6,7 +6,7 @@ defmodule CrewWeb.AgentChannel do
   """
   use Phoenix.Channel
 
-  alias Crew.{Agents, Boxes}
+  alias Crew.Agents
   alias CrewProtocol.{Command, Event}
 
   require Logger
@@ -15,9 +15,7 @@ defmodule CrewWeb.AgentChannel do
   def join("agent:" <> box_id, payload, %{assigns: %{box_id: box_id}} = socket) do
     with {:ok, join} <- CrewProtocol.cast_join(payload),
          true <- CrewProtocol.compatible?(join.protocol_version) || {:error, :protocol},
-         %Boxes.Box{revoked_at: nil} = box <- Boxes.get(box_id) do
-      :ok = Agents.register(box_id)
-      box = Boxes.agent_joined(box, join)
+         {:ok, box, directory} <- Agents.register_channel(box_id, join) do
       Logger.metadata(box_id: box_id)
 
       Logger.info(
@@ -25,8 +23,11 @@ defmodule CrewWeb.AgentChannel do
       )
 
       send(self(), :after_join)
-      {:ok, %{inventory_cleanup: true}, socket |> assign(:box, box) |> assign(:join, join)}
+
+      {:ok, %{inventory_cleanup: true},
+       socket |> assign(:box, box) |> assign(:join, join) |> assign(:directory, directory)}
     else
+      {:error, :unauthorized} -> {:error, %{reason: "unauthorized"}}
       {:error, :protocol} -> {:error, %{reason: "unsupported protocol version"}}
       {:error, _errors} -> {:error, %{reason: "invalid join payload"}}
       _ -> {:error, %{reason: "unauthorized"}}
@@ -46,8 +47,11 @@ defmodule CrewWeb.AgentChannel do
     {:noreply, socket}
   end
 
+  def handle_info({:DOWN, ref, :process, _, _}, %{assigns: %{directory: ref}} = socket),
+    do: {:stop, :shutdown, assign(socket, :replaced, true)}
+
   # Another connection took over this box.
-  def handle_info(:replaced, socket), do: {:stop, :normal, socket}
+  def handle_info(:replaced, socket), do: {:stop, :normal, assign(socket, :replaced, true)}
 
   @impl true
   def handle_in("event", wire, socket) do
@@ -75,6 +79,8 @@ defmodule CrewWeb.AgentChannel do
 
   # Phoenix calls this for a refused join too, which never had a box.
   @impl true
+  def terminate(_reason, %{assigns: %{replaced: true}}), do: :ok
+
   def terminate(_reason, %{assigns: %{box: box}}) do
     Agents.left(box.id, self())
     :ok

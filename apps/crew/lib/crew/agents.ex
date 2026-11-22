@@ -8,54 +8,43 @@ defmodule Crew.Agents do
   require Logger
 
   alias Crew.{Boxes, Metrics, Operations, VMs}
+  alias Crew.Agents.Connections
   alias CrewProtocol.{Command, Event}
 
-  @registry Crew.Registry
-
-  @doc "Registers the calling channel as `box_id`'s agent, replacing any older connection."
+  @doc "Registers the calling channel as the current connection for a box."
   def register(box_id) do
-    case Registry.lookup(@registry, {:agent, box_id}) do
-      [{pid, _}] when pid != self() ->
-        send(pid, :replaced)
-        Registry.unregister_match(@registry, {:agent, box_id}, :_)
-        wait_unregistered(box_id, pid, 50)
-
-      _ ->
-        :ok
-    end
-
-    case Registry.register(@registry, {:agent, box_id}, nil) do
-      {:ok, _} -> :ok
-      {:error, {:already_registered, _}} -> :ok
-    end
+    with_box_lock(box_id, fn -> Connections.register(box_id) end)
+    :ok
   end
 
-  # The old channel unregisters itself as it stops.
-  defp wait_unregistered(_box_id, _pid, 0), do: :ok
+  @doc "Record the join and replace the channel under the same lock as a disconnect."
+  def register_channel(box_id, join) do
+    with_box_lock(box_id, fn ->
+      case Boxes.get(box_id) do
+        %Boxes.Box{revoked_at: nil} = box ->
+          monitor = box_id |> Connections.register() |> Process.monitor()
+          {:ok, Boxes.agent_joined(box, join), monitor}
 
-  defp wait_unregistered(box_id, pid, n) do
-    if Process.alive?(pid) do
-      Process.sleep(10)
-      wait_unregistered(box_id, pid, n - 1)
-    else
-      :ok
-    end
+        _ ->
+          {:error, :unauthorized}
+      end
+    end)
   end
 
-  def online?(box_id), do: Registry.lookup(@registry, {:agent, box_id}) != []
+  def online?(box_id), do: Connections.lookup(box_id) != nil
+  def online_ids, do: Connections.ids()
 
-  def online_ids do
-    Registry.select(@registry, [{{{:agent, :"$1"}, :_, :_}, [], [:"$1"]}])
-  end
+  defp with_box_lock(box_id, fun),
+    do: :global.trans({{__MODULE__, box_id}, self()}, fun, [node()])
 
   @doc "Sends a command to the box's agent. `{:error, :offline}` if it isn't connected."
   def send_command(box_id, %Command{} = cmd) do
-    case Registry.lookup(@registry, {:agent, box_id}) do
-      [{pid, _} | _] ->
+    case Connections.lookup(box_id) do
+      pid when is_pid(pid) ->
         send(pid, {:dispatch, cmd})
         :ok
 
-      [] ->
+      nil ->
         {:error, :offline}
     end
   end
@@ -74,19 +63,14 @@ defmodule Crew.Agents do
 
   @doc "The channel closed. Only the current connection's leaving takes the box offline."
   def left(box_id, pid) do
-    case Registry.lookup(@registry, {:agent, box_id}) do
-      [{^pid, _}] -> :ok
-      [] -> :ok
-      _other -> :replaced
-    end
-    |> case do
-      :replaced ->
-        :ok
-
-      :ok ->
+    with_box_lock(box_id, fn ->
+      if Connections.remove(box_id, pid) do
         Boxes.agent_left(box_id)
         VMs.agent_left(box_id)
-    end
+      end
+
+      :ok
+    end)
   end
 
   # -- events (§10.4) ---------------------------------------------------------------

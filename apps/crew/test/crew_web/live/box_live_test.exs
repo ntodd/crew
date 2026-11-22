@@ -18,7 +18,7 @@ defmodule CrewWeb.BoxLiveTest do
   end
 
   describe "the list's fleet overview" do
-    defp online(box), do: {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    defp online(box), do: :ok = Crew.Agents.register(box.id)
 
     setup do
       a = box_fixture(name: "alpha")
@@ -105,7 +105,7 @@ defmodule CrewWeb.BoxLiveTest do
 
   test "the box page warns when the firewall isn't verified", %{conn: conn} do
     box = box_fixture(name: "truenas", firewall_ok: false)
-    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    :ok = Crew.Agents.register(box.id)
     {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
 
     assert has_element?(view, "#firewall-unverified", "Crew places no jobs on this box")
@@ -755,7 +755,7 @@ defmodule CrewWeb.BoxLiveTest do
     end
 
     defp as_agent(box) do
-      {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+      :ok = Crew.Agents.register(box.id)
       box
     end
 

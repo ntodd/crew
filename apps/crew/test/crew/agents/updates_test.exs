@@ -49,7 +49,7 @@ defmodule Crew.Agents.UpdatesTest do
   end
 
   defp online(box) do
-    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    :ok = Crew.Agents.register(box.id)
     box
   end
 
