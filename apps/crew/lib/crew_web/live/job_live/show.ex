@@ -23,6 +23,7 @@ defmodule CrewWeb.JobLive.Show do
   @flush_ms 250
   @steps_poll_ms 10_000
   @max_push 2000
+  @chart_points 120
 
   @impl true
   def mount(%{"run_id" => run_id, "n" => n, "job_id" => job_id}, _session, socket) do
@@ -75,7 +76,8 @@ defmodule CrewWeb.JobLive.Show do
       steps: steps,
       usual: usual_durations(history),
       cache_misses: cache_misses(steps, history),
-      metrics: if(vm, do: Metrics.vm_series(vm.id), else: []),
+      metrics: if(vm, do: Metrics.vm_chart(vm.id, 0, @chart_points), else: []),
+      metrics_from: nil,
       sizing: sizing,
       sizing_issue: sizing_issue(socket.assigns.attempt, job, sizing),
       sizing_dismissal: Sizing.dismissal(job, sizing),
@@ -283,8 +285,16 @@ defmodule CrewWeb.JobLive.Show do
     {:noreply, socket |> assign(index_due: true) |> schedule()}
   end
 
+  def handle_info({:vm_metrics, id, t}, %{assigns: %{vm: %{id: id}}} = socket) do
+    from = min(socket.assigns.metrics_from || t, t)
+    {:noreply, socket |> assign(:metrics_from, from) |> schedule()}
+  end
+
+  # A notification from a box topic published before the rolling upgrade.
+  def handle_info({:vm_metrics, id}, socket), do: handle_info({:vm_metrics, id, 0}, socket)
+
   def handle_info({event, _id}, socket)
-      when event in [:job_changed, :vm_changed, :vm_steps, :vm_metrics] do
+      when event in [:job_changed, :vm_changed, :vm_steps] do
     {:noreply, socket |> assign(reload: true) |> schedule()}
   end
 
@@ -295,7 +305,7 @@ defmodule CrewWeb.JobLive.Show do
     # goes out is checked first (§18.3).
     case allowed(socket) do
       :ok ->
-        socket = if socket.assigns.reload, do: reload(socket), else: socket
+        socket = if socket.assigns.reload, do: reload(socket), else: refresh_metrics(socket)
         {:noreply, socket |> push_pending() |> push_index()}
 
       {:error, _} ->
@@ -333,6 +343,22 @@ defmodule CrewWeb.JobLive.Show do
     do: assign(socket, flush: Process.send_after(self(), :flush, @flush_ms))
 
   defp schedule(socket), do: socket
+
+  defp refresh_metrics(%{assigns: %{metrics_from: nil}} = socket), do: socket
+
+  defp refresh_metrics(%{assigns: %{metrics: points, metrics_from: from, vm: vm}} = socket) do
+    # Re-read the boundary second as two readings can share a timestamp.
+    # An older notification can also arrive after a newer one.
+    since =
+      case List.last(points) do
+        nil -> 0
+        last -> min(last.t, from)
+      end
+
+    prefix = Enum.take_while(points, &(&1.t < since))
+    suffix = Metrics.vm_chart(vm.id, since, @chart_points)
+    assign(socket, metrics: Enum.take(prefix ++ suffix, -@chart_points), metrics_from: nil)
+  end
 
   defp reload(socket) do
     before =

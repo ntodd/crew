@@ -337,7 +337,7 @@ defmodule Crew.LogsTest do
       "mem_total_mib" => 8192
     })
 
-    assert_receive {:vm_metrics, ^id}
+    assert_receive {:vm_metrics, ^id, 1_800_000_000}
 
     assert [%{t: 1_800_000_000, cpu_pct: 42.5, mem_used_mib: 900, box_id: box_id}] =
              Crew.Metrics.vm_series(id)

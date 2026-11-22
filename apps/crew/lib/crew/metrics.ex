@@ -90,7 +90,12 @@ defmodule Crew.Metrics do
       }
     ])
 
-    Phoenix.PubSub.broadcast(Crew.PubSub, Crew.Logs.topic(vm.id), {:vm_metrics, vm.id})
+    Phoenix.PubSub.broadcast(
+      Crew.PubSub,
+      Crew.Logs.topic(vm.id),
+      {:vm_metrics, vm.id, div(m.t, 1000)}
+    )
+
     :ok
   end
 
@@ -99,6 +104,18 @@ defmodule Crew.Metrics do
 
   @doc "A VM's samples, oldest first."
   def vm_series(vm_id), do: Repo.all(from m in VMMetric, where: m.vm_id == ^vm_id, order_by: m.t)
+
+  @doc "The latest chart points at or after a Unix second, in display order."
+  def vm_chart(vm_id, since, limit) do
+    from(m in VMMetric,
+      where: m.vm_id == ^vm_id and m.t >= ^since,
+      order_by: [desc: m.t],
+      limit: ^limit,
+      select: map(m, [:t, :cpu_pct, :mem_used_mib])
+    )
+    |> Repo.all()
+    |> Enum.reverse()
+  end
 
   # A sample's `t` is when the agent sent the guest's latest reading, up
   # to one interval after the guest took it, and the reading covers the
