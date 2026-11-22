@@ -37,11 +37,15 @@ target=$link
 release_version "$target" || fail "agent/previous isn't a release; not rolling back"
 relink "$agent" current "$target"
 rm -f "$agent/previous" "$agent/crashes"
-if [ -f "$agent/update-pending" ]; then mv -f "$agent/update-pending" "$agent/rolled-back"; fi
+if [ -f "$agent/update-pending" ]; then
+  mv -fT "$agent/update-pending" "$agent/rolled-back" || say "could not replace rollback marker"
+fi
 say "rolled the agent back to $target"
 
-if root_release "$data/root" "$target"; then
+exact_link "$data/root/previous" || true
+if [ "$link" = "$target" ] && root_release "$data/root" "$target"; then
   relink "$data/root" current "$target"
+  rm -f "$data/root/previous"
   CREW_BOX_DATA="$data" sh "$etc/root-units.sh"
   # The ruleset that release's crew-vmctl verifies against.
   systemctl try-restart crew-net.service || true

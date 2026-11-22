@@ -22,6 +22,7 @@ defmodule CrewAgent.Reporter do
 
   @doc "Called on every join."
   def report_now, do: GenServer.cast(__MODULE__, :report_now)
+  def report_pressure(lru), do: GenServer.cast(__MODULE__, {:image_pressure, lru})
   def report_inventory, do: GenServer.cast(__MODULE__, :inventory)
 
   @doc """
@@ -45,6 +46,16 @@ defmodule CrewAgent.Reporter do
     state = send_capabilities(%{state | capabilities: nil})
     send_inventory()
     {:noreply, send_reboot(state)}
+  end
+
+  def handle_cast({:image_pressure, lru}, state) do
+    push("box.inventory", %{
+      vms: VMs.inventory(),
+      images: Images.inventory(Config.get()),
+      image_pressure_lru: lru
+    })
+
+    {:noreply, state}
   end
 
   def handle_cast(:inventory, state) do

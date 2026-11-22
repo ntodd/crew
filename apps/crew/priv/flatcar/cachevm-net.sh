@@ -57,4 +57,5 @@ EOF
 mkdir -p /run/crew-box
 total=$(df -Pk "$data" | awk 'NR == 2 { print $2 }')
 echo "CREW_CACHE_MAX_GIB=$((total * 8 / 10 / 1048576))" > /run/crew-box/cache.env
+echo "CREW_DNS_PROXY_IP=$gw" >> /run/crew-box/cache.env
 say "serving the cache on $addr to $gw"

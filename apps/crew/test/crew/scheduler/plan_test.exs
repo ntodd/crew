@@ -213,6 +213,13 @@ defmodule Crew.Scheduler.PlanTest do
 
     defp removed(actions), do: for({:remove_image, b, i} <- actions, do: {b, i})
 
+    test "under image pressure evict one unused image in local access order" do
+      bi = for i <- ~w(img-1 img-2 img-3 img-4), into: %{}, do: {{"box-a", i}, "ready"}
+      snap = snapshot(images: @images, box_images: bi, vms: [vm(1, "box-a", image_id: "img-1")])
+      assert Plan.pressure_eviction(snap, "box-a", ~w(img-4 img-1 img-2 img-3)) == "img-2"
+      assert Plan.pressure_eviction(snap, "box-a", ~w(img-4 img-1)) == nil
+    end
+
     test "a box keeps the default, the usable one and the newest other; the rest go (§13.1)" do
       bi = %{
         {"box-a", "img-4"} => "downloading",

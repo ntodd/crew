@@ -56,6 +56,11 @@ test("the index learns from appended lines like the server's", () => {
   assert.deepEqual(index.annotations, [{n: 3, level: "error", text: "boom", file: "a b.ex", line: 3}])
 })
 
+test("annotation headers end at a double colon", () => {
+  assert.deepEqual(annotationOf("::warning  file=C:/src/a,line=7::check::again"),
+    {level: "warning", file: "C:/src/a", line: 7, text: "check::again"})
+})
+
 test("annotations and their links: only the github.com blob form", () => {
   assert.deepEqual(annotationOf("::warning::careful"), {level: "warning", text: "careful", file: null, line: null})
   assert.equal(annotationOf("not ::error:: here"), null)

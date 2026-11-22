@@ -4,7 +4,7 @@ defmodule CrewGuest.Runner do
 
   The Port runs `priv/start-runner`, which reads the JIT config from its
   file, deletes the file and execs the system's runner command with
-  `--jitconfig <config>`. The runner keeps the wrapper's pid, so `stop/1`'s
+  `ACTIONS_RUNNER_INPUT_JITCONFIG` in the environment. The runner keeps the wrapper's pid, so `stop/1`'s
   SIGTERM reaches it.
 
   **Stopping it** (`RUNNER_MANUALLY_TRAP_SIG`): run.sh runs the listener in
@@ -87,7 +87,10 @@ defmodule CrewGuest.Runner do
     cfg = Keyword.fetch!(opts, :config)
     system = Keyword.fetch!(opts, :system)
     wrapper = Application.app_dir(:crew_guest, "priv/start-runner")
-    args = [wrapper, Keyword.fetch!(opts, :jit_file) | system.runner_command(cfg)]
+    # Linux resets the environment as it drops privileges. Read the unlinked
+    # file only after that reset, then close its descriptor before the runner.
+    listener = %{cfg | runner_cmd: ["/bin/sh", wrapper, "--listener" | cfg.runner_cmd]}
+    args = [wrapper, Keyword.fetch!(opts, :jit_file) | system.runner_command(listener)]
 
     env =
       [{"RUNNER_MANUALLY_TRAP_SIG", "1"} | cfg.runner_env]

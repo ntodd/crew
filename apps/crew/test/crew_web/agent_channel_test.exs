@@ -16,6 +16,14 @@ defmodule CrewWeb.AgentChannelTest do
       assert AgentSocket.id(socket) == "agent_socket:#{box.id}"
     end
 
+    test "an enrolled agent behind a shared proxy can connect after the failure budget is spent",
+         %{box: box} do
+      info = %{signed_connect_info(box) | peer_data: %{address: {192, 0, 2, 73}, port: 1}}
+      ip = CrewWeb.ClientIP.from_connect_info(info)
+      Crew.RateLimit.inc("agent-connect-failed:#{ip}", 60_000, 600)
+      assert {:ok, _socket} = connect(AgentSocket, %{}, connect_info: info)
+    end
+
     test "refuses a replayed connect", %{box: box} do
       info = signed_connect_info(box)
       assert {:ok, _} = connect(AgentSocket, %{}, connect_info: info)

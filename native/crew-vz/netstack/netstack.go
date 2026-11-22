@@ -16,6 +16,7 @@ package netstack
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -96,6 +97,9 @@ type Netstack struct {
 	limiter *netpolicy.ConnLimiter
 	policy  *netpolicy.Policy
 
+	dnsQueries tokenBucket
+	dnsTCP     *netpolicy.ConnLimiter
+
 	dialDirect  DialFunc
 	dialService DialFunc
 
@@ -123,10 +127,12 @@ func New(o Options) (*Netstack, error) {
 	}
 	p := o.Policy
 	n := &Netstack{
-		opts:    o,
-		log:     o.Logger,
-		limiter: o.Limiter,
-		policy:  p,
+		opts:       o,
+		log:        o.Logger,
+		limiter:    o.Limiter,
+		policy:     p,
+		dnsQueries: tokenBucket{rate: 100, burst: 100, tokens: 100, now: time.Now},
+		dnsTCP:     netpolicy.NewConnLimiter(16),
 		l2: NewL2(L2Config{
 			GatewayMAC: GatewayMAC,
 			GuestMAC:   o.GuestMAC,
@@ -299,11 +305,21 @@ func (n *Netstack) handleTCP(r *tcp.ForwarderRequest) {
 		r.Complete(true)
 		return
 	}
+	dns := dst.Addr() == n.policy.ServiceIP && dst.Port() == 53
+	release := n.limiter.Release
+	if dns {
+		if !n.dnsTCP.Acquire() {
+			release()
+			r.Complete(true)
+			return
+		}
+		release = func() { n.dnsTCP.Release(); n.limiter.Release() }
+	}
 	ctx, cancel := context.WithTimeout(n.ctx, dialTimeout)
 	remote, err := n.dial(ctx, d, "tcp4")
 	cancel()
 	if err != nil {
-		n.limiter.Release()
+		release()
 		n.dialFailed.Add(1)
 		n.log.Debug("tcp dial failed", "dst", dst, "err", err)
 		r.Complete(true)
@@ -312,7 +328,7 @@ func (n *Netstack) handleTCP(r *tcp.ForwarderRequest) {
 	var wq waiter.Queue
 	ep, terr := r.CreateEndpoint(&wq)
 	if terr != nil {
-		n.limiter.Release()
+		release()
 		remote.Close()
 		r.Complete(true)
 		return
@@ -323,8 +339,8 @@ func (n *Netstack) handleTCP(r *tcp.ForwarderRequest) {
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
-		defer n.limiter.Release()
-		n.proxyTCP(guest, remote, ep)
+		defer release()
+		n.proxyTCP(guest, remote, ep, dns)
 	}()
 }
 
@@ -332,14 +348,19 @@ type closeWriter interface{ CloseWrite() error }
 
 // proxyTCP copies both ways with half-close. An error on either side
 // aborts both with a reset.
-func (n *Netstack) proxyTCP(guest *gonet.TCPConn, remote net.Conn, ep tcpip.Endpoint) {
+func (n *Netstack) proxyTCP(guest *gonet.TCPConn, remote net.Conn, ep tcpip.Endpoint, dns bool) {
 	stop := context.AfterFunc(n.ctx, func() { abort(guest, remote, ep) })
 	defer stop()
 	var wg sync.WaitGroup
 	var aborted atomic.Bool
 	half := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, err := copyBuf(dst, src)
+		var err error
+		if dns && src == guest {
+			err = copyDNSQueries(dst, src, n.dnsQueries.take)
+		} else {
+			_, err = copyBuf(dst, src)
+		}
 		if err != nil {
 			if aborted.CompareAndSwap(false, true) {
 				abort(guest, remote, ep)
@@ -356,6 +377,26 @@ func (n *Netstack) proxyTCP(guest *gonet.TCPConn, remote net.Conn, ep tcpip.Endp
 	wg.Wait()
 	guest.Close()
 	remote.Close()
+}
+
+// TCP carries a two-byte length before every DNS message. Charge each
+// request, even when one read contains several pipelined messages.
+func copyDNSQueries(dst io.Writer, src io.Reader, allow func() bool) error {
+	var prefix [2]byte
+	for {
+		if _, err := io.ReadFull(src, prefix[:]); err != nil {
+			return eofIsNil(err)
+		}
+		if !allow() {
+			return errors.New("guest DNS rate limit")
+		}
+		if _, err := dst.Write(prefix[:]); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(dst, src, int64(binary.BigEndian.Uint16(prefix[:]))); err != nil {
+			return err
+		}
+	}
 }
 
 func abort(guest *gonet.TCPConn, remote net.Conn, ep tcpip.Endpoint) {
@@ -450,14 +491,14 @@ func (n *Netstack) handleUDP(r *udp.ForwarderRequest) bool {
 	go func() {
 		defer n.wg.Done()
 		defer n.limiter.Release()
-		n.proxyUDP(guest, remote, idle)
+		n.proxyUDP(guest, remote, idle, dst.Addr() == n.policy.ServiceIP && dst.Port() == 53)
 	}()
 	return true
 }
 
 // proxyUDP relays datagrams both ways until the flow has been idle for
 // idle, or either side fails.
-func (n *Netstack) proxyUDP(guest *gonet.UDPConn, remote net.Conn, idle time.Duration) {
+func (n *Netstack) proxyUDP(guest *gonet.UDPConn, remote net.Conn, idle time.Duration, dns bool) {
 	var last atomic.Int64
 	last.Store(time.Now().UnixNano())
 	closeBoth := sync.OnceFunc(func() { guest.Close(); remote.Close() })
@@ -477,6 +518,9 @@ func (n *Netstack) proxyUDP(guest *gonet.UDPConn, remote net.Conn, idle time.Dur
 				}
 				closeBoth()
 				return
+			}
+			if dns && src == guest && !n.dnsQueries.take() {
+				continue
 			}
 			last.Store(time.Now().UnixNano())
 			if _, err := dst.Write(buf[:k]); err != nil {

@@ -77,10 +77,12 @@ defmodule CrewWeb.HookEndpointTest do
     assert deliver(@payload, signature: bad, ip: client_ip()).status == 401
   end
 
-  test "correctly signed requests are never rate-limited", %{ip: ip} do
-    bad = "sha256=" <> String.duplicate("0", 64)
-    for _ <- 1..61, do: deliver(@payload, signature: bad, ip: ip)
-    assert deliver(@payload, ip: ip).status == 202
+  test "an exhausted client is rejected before reading its next delivery", %{ip: ip} do
+    Crew.RateLimit.inc("hooks:" <> ip, 60_000, 60)
+    conn = deliver(@payload, ip: ip)
+    assert conn.status == 429
+    assert {:ok, @payload, _} = Plug.Conn.read_body(conn)
+    assert deliver(@payload).status == 202
   end
 
   test "a body over 5 MiB is refused before it's read" do

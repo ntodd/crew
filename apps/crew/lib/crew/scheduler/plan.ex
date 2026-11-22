@@ -348,8 +348,17 @@ defmodule Crew.Scheduler.Plan do
 
   defp supply_vm?(snap, vm) do
     box = Enum.find(snap.boxes, &(&1.id == vm.box_id))
-    vm.state in @supply and is_nil(vm.job_id) and box != nil and box.online and not box.draining
+
+    vm.state in @supply and is_nil(vm.job_id) and box != nil and box.online and not box.draining and
+      not awaiting_registration?(snap, vm)
   end
+
+  defp awaiting_registration?(snap, %{state: "requested", runner_id: nil, repo_id: repo_id}) do
+    until_ms = get_in(snap.repos, [repo_id, :jit_wait_until])
+    is_integer(until_ms) and until_ms > snap.now
+  end
+
+  defp awaiting_registration?(_snap, _vm), do: false
 
   defp supply(snap, class),
     do: Enum.count(snap.vms, &(&1.class == class and supply_vm?(snap, &1)))
@@ -389,6 +398,11 @@ defmodule Crew.Scheduler.Plan do
     cond do
       repo[:max_concurrent] && counted(pass.active, unit) >= repo[:max_concurrent] ->
         do_place(snap, rest, pass, [{:reasons, unit.id, "repo at max_concurrent", nil} | acc])
+
+      is_integer(repo[:jit_wait_until]) and repo.jit_wait_until > snap.now ->
+        until = DateTime.from_unix!(repo.jit_wait_until, :millisecond)
+        wait = "GitHub write budget until #{DateTime.to_iso8601(until)}"
+        do_place(snap, rest, pass, [{:reasons, unit.id, nil, wait} | acc])
 
       backoff = in_backoff(snap, unit.class) ->
         msg =
@@ -603,18 +617,31 @@ defmodule Crew.Scheduler.Plan do
         do: {:remove_image, box.id, image_id}
   end
 
-  defp removable(snap, box, default, order) do
+  def pressure_eviction(snap, box_id, lru) do
+    with %{online: true} = box <- Enum.find(snap.boxes, &(&1.id == box_id)),
+         %{default: default} <- snap.images[box.guest_arch] do
+      candidates = MapSet.new(unused_images(snap, box, default))
+      Enum.find(lru, &MapSet.member?(candidates, &1))
+    else
+      _ -> nil
+    end
+  end
+
+  defp unused_images(snap, box, default) do
     ready = for {{b, id}, "ready"} <- snap.box_images, b == box.id, do: id
     {usable, _} = usable_image(snap, box)
     in_use = for vm <- snap.vms, vm.box_id == box.id, do: Map.get(vm, :image_id)
     keep = MapSet.new([default, usable | in_use])
 
+    Enum.reject(ready, &MapSet.member?(keep, &1))
+  end
+
+  defp removable(snap, box, default, order) do
     # Newest first; an image the control plane doesn't list is oldest.
     rank = order |> Enum.with_index() |> Map.new()
 
     others =
-      ready
-      |> Enum.reject(&MapSet.member?(keep, &1))
+      unused_images(snap, box, default)
       |> Enum.sort_by(&Map.get(rank, &1, :infinity))
 
     case others do

@@ -201,8 +201,8 @@ code.
    use Crew, and the control plane tailnet-only.
 2. **Public repos.** Fork-PR refusal is enforced in the VM before any
    job code runs (below), but repos should still require approval for
-   outside contributors. Workflows triggered by `issue_comment` or
-   `pull_request_target` run the base repo's workflow on Crew: treat
+   outside contributors. Workflows triggered by `issue_comment`,
+   `workflow_run` or `pull_request_target` run the base repo's workflow on Crew: treat
    those triggers as running untrusted input.
 3. **Egress is open** to the public internet, as on GitHub's own
    runners: abuse, mining, exfiltration of whatever the job has.
@@ -246,7 +246,10 @@ policy from `/run/crew/policy.json`. For `pull_request`,
 `pull_request_review_comment`, with the policy `refuse`, it exits 1 when
 `pull_request.head.repo` is null or its `full_name` differs from
 `repository.full_name`, prints "Crew: fork PRs are refused on this
-repo" and reports `job_refused`.
+repo" and reports `job_refused`. For a `workflow_run` trigger it checks
+`workflow_run.head_repository.full_name` in the triggering event. The control
+plane can only see the current run's head in its own webhook. The guest
+checks the upstream run before handing control to the job.
 
 **The control plane also checks, as an optimisation:** a job whose run
 isn't known yet is blocked ("checking fork status") and isn't demand; a

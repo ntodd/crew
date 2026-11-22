@@ -16,7 +16,7 @@ defmodule Crew.Logs.Index do
   @ansi ~r/\e(?:\[[0-?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\)|[@-Z\\-_])/
   @group ~r/\A(?:::group::|##\[group\])(.*)\z/s
   @endgroup ~r/\A(?:::endgroup::|##\[endgroup\])/
-  @annotation ~r/\A(?:::(error|warning|notice)(?:\s+([^:]*))?::|##\[(error|warning|notice)\])(.*)\z/s
+  @annotation ~r/\A(?:::(error|warning|notice)(?:\s(.*?))?::|##\[(error|warning|notice)\])(.*)\z/s
 
   defstruct steps: %{}, groups_rev: [], group_count: 0, annotations: [], open: nil
 

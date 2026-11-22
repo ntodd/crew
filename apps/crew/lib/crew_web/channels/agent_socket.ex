@@ -27,21 +27,23 @@ defmodule CrewWeb.AgentSocket do
     ip = ClientIP.from_connect_info(connect_info)
     key = "agent-connect-failed:#{ip}"
 
-    with false <- RateLimit.exhausted?(key, @window, @max_failures),
-         {:ok, %{agent_id: agent_id, nonce: nonce}} <-
+    with {:ok, %{agent_id: agent_id, nonce: nonce}} <-
            Auth.verify_connect_headers(headers, &Crew.Boxes.public_key/1),
          :ok <- NonceCache.check(nonce) do
       {:ok, socket |> assign(:box_id, agent_id) |> assign(:remote_ip, ip)}
     else
-      true ->
-        if RateLimit.failed(key, @window, @max_failures) == :first_over,
-          do: Logger.warning("agent connects from #{ip} are rate limited")
-
-        :error
-
       reason ->
-        RateLimit.failed(key, @window, @max_failures)
-        Logger.warning("refused an agent connect from #{ip}: #{inspect(reason)}")
+        case RateLimit.inc(key, @window) do
+          n when n <= @max_failures ->
+            Logger.warning("refused an agent connect from #{ip}: #{inspect(reason)}")
+
+          n when n == @max_failures + 1 ->
+            Logger.warning("further agent connect failures from #{ip} are suppressed")
+
+          _ ->
+            :ok
+        end
+
         :error
     end
   end

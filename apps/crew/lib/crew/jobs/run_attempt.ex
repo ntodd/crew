@@ -42,7 +42,7 @@ defmodule Crew.Jobs.RunAttempt do
 
   def rank(status), do: Map.get(@ranks, status, 1)
 
-  @pr_events ~w(pull_request pull_request_target pull_request_review pull_request_review_comment)
+  @pr_events ~w(pull_request pull_request_target pull_request_review pull_request_review_comment workflow_run)
 
   @doc """
   Whether a run is a fork PR (§19.5): a pull-request event whose head

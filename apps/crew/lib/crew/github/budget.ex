@@ -62,6 +62,9 @@ defmodule Crew.GitHub.Budget do
     :ok
   end
 
+  @doc "Earliest available JIT write for each installation currently at its cap."
+  def jit_waits, do: GenServer.call(__MODULE__, :jit_waits)
+
   @doc false
   # Tests share the app's budget; this forgets everything.
   def reset(server \\ __MODULE__), do: GenServer.call(server, :reset)
@@ -95,6 +98,18 @@ defmodule Crew.GitHub.Budget do
   defp put_inst(state, id, inst), do: put_in(state, [:installations, id], inst)
 
   @impl true
+  def handle_call(:jit_waits, _from, state) do
+    now = state.now.()
+
+    waits =
+      for {id, inst} <- state.installations,
+          {:error, {:write_limited, until_ms}} <- [check_writes(inst, :jit, now)],
+          into: %{},
+          do: {id, until_ms}
+
+    {:reply, waits, state}
+  end
+
   def handle_call(:reset, _from, state) do
     for {monitor, _} <- state.monitors, do: Process.demonitor(monitor, [:flush])
     {:reply, :ok, %{state | installations: %{}, monitors: %{}}}
@@ -167,16 +182,12 @@ defmodule Crew.GitHub.Budget do
         do: {@minute_writes, @hour_writes},
         else: {@minute_writes - @minute_reserve, @hour_writes - @hour_reserve}
 
-    cond do
-      in_minute >= minute_cap ->
-        {:error, {:write_limited, nth_from_end(writes, in_minute) + @minute}}
+    minute_wait =
+      if in_minute >= minute_cap, do: nth_from_end(writes, minute_cap) + @minute, else: 0
 
-      in_hour >= hour_cap ->
-        {:error, {:write_limited, oldest(writes) + @hour}}
-
-      true ->
-        :ok
-    end
+    hour_wait = if in_hour >= hour_cap, do: nth_from_end(writes, hour_cap) + @hour, else: 0
+    until_ms = max(minute_wait, hour_wait)
+    if until_ms > now, do: {:error, {:write_limited, until_ms}}, else: :ok
   end
 
   defp drop_old(queue, cutoff) do
@@ -193,8 +204,6 @@ defmodule Crew.GitHub.Budget do
     list = :queue.to_list(queue)
     Enum.at(list, length(list) - n)
   end
-
-  defp oldest(queue), do: elem(:queue.peek(queue), 1)
 
   defp grant(state, id, inst, pid, kind, now) do
     ref = make_ref()

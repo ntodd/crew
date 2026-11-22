@@ -215,7 +215,7 @@ export class Rows {
 
 const GROUP = /^(?:::group::|##\[group\])(.*)$/s
 const ENDGROUP = /^(?:::endgroup::|##\[endgroup\])/
-const ANNOTATION = /^(?:::(error|warning|notice)(?:\s+([^:]*))?::|##\[(error|warning|notice)\])(.*)$/s
+const ANNOTATION = /^(?:::(error|warning|notice)(?:\s(.*?))?::|##\[(error|warning|notice)\])(.*)$/s
 const MAX_GROUPS = 1000
 const MAX_ANNOTATIONS = 1000
 

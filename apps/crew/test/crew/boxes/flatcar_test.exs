@@ -96,6 +96,13 @@ defmodule Crew.Boxes.FlatcarTest do
     )
   end
 
+  test "Ignition passes the administrator's network settings to root and the services" do
+    config = ignition(uplink: "eno2", extra_blocked: "198.51.100.9,203.0.113.0/24")
+    assert contents(config, "/etc/crew-box/uplink") == "eno2\n"
+    assert contents(config, "/etc/crew-box/extra-blocked") == "198.51.100.9,203.0.113.0/24\n"
+    assert contents(config, "/etc/crew-box/network.env") =~ "CREW_EXTRA_BLOCKED="
+  end
+
   defp files(config), do: config["storage"]["files"]
   defp file?(config, path), do: Enum.any?(files(config), &(&1["path"] == path))
 

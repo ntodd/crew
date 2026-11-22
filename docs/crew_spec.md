@@ -326,7 +326,7 @@ personal account, so it's never missing there.
      - Failures are rate-limited per client, using Foreman's
        `ForemanWeb.ClientIP` (the last `X-Forwarded-For` entry, trusted
        only from loopback), at 60 a minute.
-     - **Correctly signed requests are never rate-limited.**
+     - After 60 signature failures from one client, return 429 before reading further bodies until the minute expires. GitHub redelivery can recover a signed delivery refused during that window.
   3. Insert `webhook_deliveries(github_delivery_id)`. If the id already
      exists, answer 200 and stop.
   4. Enqueue `Crew.GitHub.HookWorker` with the event name, the action and
@@ -2385,7 +2385,7 @@ header timeout.
    it, §6.3). The runner must never self-update in a VM.
 8. **Start the runner:**
    - write the JIT config to `/run/crew/jit` (0600, `runner`);
-   - start `run.sh --jitconfig "$(cat /run/crew/jit)"` as `runner`, from a
+   - start `run.sh` with `ACTIONS_RUNNER_INPUT_JITCONFIG` as `runner`, from a
      tiny wrapper that deletes the file once the runner has read it;
    - supervise the runner process through a Port.
 9. **Report** (§16.2): `runner_listening` when the runner prints
@@ -3670,6 +3670,11 @@ A tag `vX.Y.Z` builds everything.
 - `agent.update` is signed and checked before download;
 - `current`/`previous` are swapped atomically, with an `update-pending`
   marker;
+- Flatcar root records its highest verified version in `root/version-floor`.
+  To authorize a pinned downgrade, a box administrator writes the exact
+  target version to `/etc/crew-box/allow-downgrade`. Root consumes that
+  authorization once. Its own recovery to the previous installed release
+  preserves the floor.
 - rollback on a crash loop, or no join within 5 minutes;
 - two failures of a version on a box stop it being sent again.
 

@@ -93,7 +93,7 @@ func (h *LinuxSys) beneath(rel string, flags int, mode uint32) (int, error) {
 
 func beneathAt(dfd int, rel string, flags int, mode uint32) (int, error) {
 	how := &unix.OpenHow{
-		Flags:   uint64(flags | unix.O_CLOEXEC | unix.O_NOFOLLOW),
+		Flags:   uint64(flags | unix.O_CLOEXEC | unix.O_NOFOLLOW | unix.O_NONBLOCK),
 		Mode:    uint64(mode),
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_MAGICLINKS,
 	}
@@ -145,7 +145,7 @@ func (h *LinuxSys) ReadFile(path string, max int64) ([]byte, error) {
 		}
 		return readFD(fd, max)
 	}
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}

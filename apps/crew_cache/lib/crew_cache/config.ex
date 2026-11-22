@@ -35,6 +35,7 @@ defmodule CrewCache.Config do
             https_port: 443,
             http_port: 80,
             dns_port: 53,
+            dns_proxy_ip: nil,
             registry: true,
             dns: true,
             mgmt: {{127, 0, 0, 1}, 7780},

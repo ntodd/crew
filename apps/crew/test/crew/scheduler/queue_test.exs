@@ -31,6 +31,17 @@ defmodule Crew.Scheduler.QueueTest do
     assert wait =~ "VM limit"
   end
 
+  test "the registration budget holds only new placements on the affected installation" do
+    repos = [repo("repo-a", jit_wait_until: now() + 60_000), repo("repo-b")]
+    jobs = [job(1), job(2, label_key: ["crew-l"]), job(3, repo_id: "repo-b")]
+    pending = vm(1, "box-a", state: "requested") |> Map.put(:runner_id, nil)
+    queue = Plan.queue(snapshot(repos: repos, jobs: jobs, vms: [pending]))
+    assert [a, b, other] = Enum.sort_by(queue.units, & &1.job_id)
+    assert a.wait_reason =~ "write budget until"
+    assert b.wait_reason == a.wait_reason
+    assert other.placed
+  end
+
   test "covered and blocked jobs, apart from the units" do
     vms = [vm(1, "box-a", state: "idle")]
     jobs = [job(1), job(2), job(3, arch: :x64, label_key: ["crew-m-x64"])]

@@ -13,8 +13,6 @@ defmodule CrewAgent.Images.Download do
     whole file, so a bad part fails the check like a bad download.
   """
 
-  alias CrewProtocol.Auth
-
   require Logger
 
   @read_chunk 1_048_576
@@ -27,8 +25,6 @@ defmodule CrewAgent.Images.Download do
     most 30 s);
   - `:on_bytes`, called with the bytes in the part as they grow, and
     `:on_retry`, called before each retry;
-  - `:sign`, given each request's URL (redirects included), returns the
-    headers that authenticate it, or `[]`;
   - `:req_options`, merged into Req's.
   """
   @spec fetch(String.t(), Path.t(), non_neg_integer(), keyword()) ::
@@ -97,7 +93,6 @@ defmodule CrewAgent.Images.Download do
             retry: false,
             receive_timeout: 30_000
           )
-          |> Req.Request.append_request_steps(crew_sign: sign_step(Keyword.get(opts, :sign)))
           |> Req.merge(Keyword.get(opts, :req_options, []))
           |> Req.request()
           |> outcome(start)
@@ -107,18 +102,6 @@ defmodule CrewAgent.Images.Download do
 
       {:error, reason} ->
         {:error, "can't write #{Path.basename(path)}: #{:file.format_error(reason)}"}
-    end
-  end
-
-  # Every request, redirects included, gets fresh headers for its own URL,
-  # so a redirect elsewhere never carries the agent's.
-  defp sign_step(nil), do: & &1
-
-  defp sign_step(sign) do
-    fn request ->
-      request = Enum.reduce(Auth.header_names(), request, &Req.Request.delete_header(&2, &1))
-
-      Enum.reduce(sign.(request.url), request, fn {k, v}, r -> Req.Request.put_header(r, k, v) end)
     end
   end
 

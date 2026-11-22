@@ -28,7 +28,7 @@ defmodule CrewAgent.Images.Prepare do
 
   import Bitwise
 
-  alias CrewAgent.{Config, HostMetrics, Identity, Images, SafeFS}
+  alias CrewAgent.{Config, HostMetrics, Images, SafeFS}
   alias CrewAgent.Images.Download
   alias CrewProtocol.Auth
 
@@ -72,8 +72,8 @@ defmodule CrewAgent.Images.Prepare do
          :ok <- agree(manifest, image),
          :ok <- check_space(config, image, manifest, opts),
          :ok <- clear(tmp),
-         {:ok, kernel_sha} <- download(config, image, :kernel, tmp, opts),
-         {:ok, rootfs_sha} <- download(config, image, :rootfs, tmp, opts),
+         {:ok, kernel_sha} <- download(image, :kernel, tmp, opts),
+         {:ok, rootfs_sha} <- download(image, :rootfs, tmp, opts),
          :ok <- check_downloads(image, kernel_sha, rootfs_sha),
          :ok <- convert(image, manifest, tmp) do
       lay_out(config, image, bytes, tmp)
@@ -194,7 +194,7 @@ defmodule CrewAgent.Images.Prepare do
     :ok
   end
 
-  defp download(config, image, which, tmp, opts) do
+  defp download(image, which, tmp, opts) do
     ref = Map.fetch!(image, which)
     before = if which == :rootfs, do: image.kernel.size, else: 0
     total = image.kernel.size + image.rootfs.size
@@ -203,8 +203,7 @@ defmodule CrewAgent.Images.Prepare do
     download_opts =
       [
         on_bytes: &tick("downloading", pct(before + &1, total)),
-        on_retry: fn -> tick("downloading", pct(before, total)) end,
-        sign: signer(config)
+        on_retry: fn -> tick("downloading", pct(before, total)) end
       ] ++ Keyword.take(opts, [:attempts, :retry_delay_ms, :req_options])
 
     case Download.fetch(ref.url, part(tmp, which), ref.size, download_opts) do
@@ -221,30 +220,6 @@ defmodule CrewAgent.Images.Prepare do
 
   defp name(:kernel), do: "kernel"
   defp name(:rootfs), do: "root filesystem"
-
-  # Downloads from the control plane carry the agent's signed headers, as
-  # its socket does; other hosts get none.
-  defp signer(%Config{url: url} = config) when is_binary(url) and url != "" do
-    case Identity.load(Config.agent_dir(config)) do
-      {:ok, identity} ->
-        home = origin(URI.parse(url))
-
-        fn uri ->
-          if origin(uri) == home,
-            do: Enum.to_list(Auth.connect_headers(identity.agent_id, identity.private_key)),
-            else: []
-        end
-
-      _ ->
-        nil
-    end
-  end
-
-  defp signer(_config), do: nil
-
-  defp origin(%URI{scheme: scheme, host: host, port: port}) do
-    {if(scheme in ["wss", "https"], do: "https", else: "http"), host, port}
-  end
 
   # -- 4. verify and convert ---------------------------------------------------
 

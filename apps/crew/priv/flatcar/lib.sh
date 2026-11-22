@@ -35,6 +35,48 @@ release_version() {
   one_line "$1" '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z.]{1,32})?'
 }
 
+# Order release versions by their numeric core and SemVer prerelease identifiers.
+version_before() {
+  LC_ALL=C awk -v a="$1" -v b="$2" 'BEGIN {
+    split(a, x, "-"); split(b, y, "-")
+    split(x[1], m, /[.]/); split(y[1], n, /[.]/)
+    for (i=1; i<=3; i++) if (m[i]+0 != n[i]+0) exit !(m[i]+0 < n[i]+0)
+    if (x[2] == "" || y[2] == "") exit !(x[2] != "" && y[2] == "")
+    mx=split(x[2], m, /[.]/); nx=split(y[2], n, /[.]/)
+    for (i=1; i<=mx && i<=nx; i++) {
+      u=m[i]; v=n[i]; un=(u ~ /^[0-9]+$/); vn=(v ~ /^[0-9]+$/)
+      if (un != vn) exit !un
+      if (un) {
+        sub(/^0+/, "", u); sub(/^0+/, "", v)
+        if (length(u) != length(v)) exit !(length(u) < length(v))
+      }
+      if ("v" u != "v" v) exit !("v" u < "v" v)
+    }
+    exit !(mx < nx)
+  }'
+}
+
+# Called only after verifying both release archives, before changing root/current.
+# Existing boxes start at the version their root-owned current link names.
+record_version_floor() {
+  _floor_file="$1/version-floor"
+  if [ -f "$_floor_file" ]; then
+    _floor=$(cat "$_floor_file")
+  elif [ -L "$1/current" ]; then
+    _floor=$(readlink "$1/current")
+  else
+    _floor=$2
+  fi
+  release_version "$_floor" || return 1
+  if version_before "$2" "$_floor"; then
+    [ "$(cat "$3/allow-downgrade" 2>/dev/null)" = "$2" ] || return 1
+    rm -f "$3/allow-downgrade" || return 1
+  else
+    _floor=$2
+  fi
+  printf '%s\n' "$_floor" > "$_floor_file.new" && mv -f "$_floor_file.new" "$_floor_file"
+}
+
 # exact_link <path>: sets $link to the link's target exactly. $(readlink)
 # would drop trailing newlines, and a target of "1.2.3\n" isn't 1.2.3.
 # shellcheck disable=SC2034 # $link is for the scripts that source this

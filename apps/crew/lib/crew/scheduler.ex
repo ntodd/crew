@@ -78,6 +78,7 @@ defmodule Crew.Scheduler do
   def snapshot(now \\ DateTime.utc_now()) do
     sizes = Sizes.list()
     boxes = Enum.flat_map(Boxes.list(), &snapshot_box/1)
+    waits = Crew.GitHub.Budget.jit_waits()
 
     %{
       now: ms(now),
@@ -87,10 +88,10 @@ defmodule Crew.Scheduler do
       },
       sizes: Map.new(sizes, &{&1.id, Map.take(&1, [:id, :name, :vcpus, :memory_mib, :disk_gib])}),
       repos:
-        Map.new(
-          Repos.list(),
-          &{&1.id, Map.take(&1, [:id, :priority, :max_concurrent, :allowed_boxes])}
-        ),
+        Map.new(Repo.preload(Repos.list(), :installation), fn repo ->
+          settings = Map.take(repo, [:id, :priority, :max_concurrent, :allowed_boxes])
+          {repo.id, Map.put(settings, :jit_wait_until, waits[repo.installation.github_id])}
+        end),
       boxes: boxes,
       images: Images.defaults(),
       box_images: Images.box_states(now),
@@ -280,6 +281,7 @@ defmodule Crew.Scheduler do
       box_id: vm.box_id,
       repo_id: vm.repo_id,
       class: {vm.repo_id, vm.class_key},
+      runner_id: vm.runner_id,
       spare: vm.spare,
       vcpus: vm.vcpus,
       memory_mib: vm.memory_mib,
@@ -399,9 +401,14 @@ defmodule Crew.Scheduler do
 
   # Marked removing so it isn't sent again each pass; the agent's next
   # inventory drops the row once the image is gone (or puts it back).
-  defp remove_image(box_id, image_id) do
+  def evict_under_pressure(box_id, lru) do
+    if image_id = Plan.pressure_eviction(snapshot(), box_id, lru),
+      do: remove_image(box_id, image_id, %{if_pressure: true})
+  end
+
+  defp remove_image(box_id, image_id, opts \\ %{}) do
     with {:ok, %{status: "dispatched"}} <-
-           Operations.dispatch(box_id, "image.remove", %{image_id: image_id}) do
+           Operations.dispatch(box_id, "image.remove", Map.put(opts, :image_id, image_id)) do
       Images.put_box_state(box_id, image_id, "removing")
     end
   end

@@ -148,9 +148,15 @@ func (f *fakeSys) CreateFile(path string, data []byte) error {
 	return nil
 }
 
-func (f *fakeSys) Exists(path string) bool            { return f.exists[path] }
-func (f *fakeSys) Glob(pattern string) []string       { return f.globs[pattern] }
-func (f *fakeSys) PrepareJail(j Jail) error           { f.jails = append(f.jails, j); return nil }
+func (f *fakeSys) Exists(path string) bool      { return f.exists[path] }
+func (f *fakeSys) Glob(pattern string) []string { return f.globs[pattern] }
+func (f *fakeSys) PrepareJail(j Jail) error {
+	if f.locked != "leases" {
+		return fmt.Errorf("preparing jail without lease lock")
+	}
+	f.jails = append(f.jails, j)
+	return nil
+}
 func (f *fakeSys) RemoveJail(id string, _ Peer) error { f.removed = append(f.removed, id); return nil }
 func (f *fakeSys) Reference(uplink string) (ruleset.Listing, error) {
 	if uplink != "eth0" {

@@ -118,6 +118,17 @@ defmodule CrewAgent.Driver.VZTest do
     assert File.stat!(spec.clone).mode |> Bitwise.band(0o777) == 0o660
   end
 
+  test "an echo-enabled box waits for an address before starting a guest", ctx do
+    key = :egress_echo_url
+    old = Application.get_env(:crew_agent, key)
+    Application.put_env(:crew_agent, key, "https://echo.example.test")
+    on_exit(fn -> Application.put_env(:crew_agent, key, old) end)
+    :persistent_term.erase({CrewAgent.Site, :egress})
+    vzd(ctx)
+    assert {:error, "site egress address unknown"} = VZ.start(spec(ctx.config))
+    refute_received {:vzd, %{"op" => "start"}}
+  end
+
   test "socket paths too long for macOS are refused before crew-vzd sees them", ctx do
     vzd(ctx)
     long = %{ctx.config | data_dir: Path.join(Path.dirname(ctx.dir), String.duplicate("d", 60))}

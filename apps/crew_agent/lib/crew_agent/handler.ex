@@ -21,7 +21,15 @@ defmodule CrewAgent.Handler do
     do: VMs.log_resend(p.vm_id, p.epoch, p.from_seq)
 
   def handle(%Command{type: "image.prepare", payload: %{image: image}}), do: Images.prepare(image)
-  def handle(%Command{type: "image.remove", payload: %{image_id: id}}), do: Images.remove(id)
+
+  def handle(%Command{type: "image.remove", payload: p}) do
+    if p[:if_pressure] && not CrewAgent.DiskWatchdog.image_pressure?(Config.get()) do
+      Reporter.report_inventory()
+      :ok
+    else
+      Images.remove(p.image_id)
+    end
+  end
 
   def handle(%Command{type: "box.inventory"}) do
     Reporter.report_inventory()

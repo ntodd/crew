@@ -12,7 +12,7 @@ defmodule CrewGuest.Config do
   | `CREW_GUEST_MODE` | `vm`, or `local` (no root-only steps; poweroff exits) |
   | `CREW_GUEST_VM`, `CREW_GUEST_TOKEN`, `CREW_GUEST_API` | `crew.vm`, `crew.token`, `crew.api` |
   | `CREW_GUEST_RUNNER_DIR` | `/home/runner/actions-runner` |
-  | `CREW_GUEST_RUNNER_CMD` | `<runner_dir>/run.sh` (split like a shell would; `--jitconfig` is appended) |
+  | `CREW_GUEST_RUNNER_CMD` | `<runner_dir>/run.sh` (split like a shell would) |
   | `CREW_GUEST_RUN_DIR` | `/run/crew` in `vm` mode, `<runner_dir>/.crew` in `local` mode |
 
   In `vm` mode the runner runs as the user `runner`; in `local` mode, as

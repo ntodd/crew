@@ -11,6 +11,7 @@ defmodule CrewCache.Env do
   | `CREW_CACHE_HTTPS_PORT` | 443 | `off` leaves the registry out |
   | `CREW_CACHE_HTTP_PORT` | 80 | `/healthz` only; `off` leaves it out |
   | `CREW_CACHE_DNS_PORT` | 53 | `off` leaves the resolver out |
+  | `CREW_DNS_PROXY_IP` | unset | mac-vz cache VM gateway whose helper already limits each guest |
   | `CREW_DNS_UPSTREAMS` | `1.1.1.1,9.9.9.9` | Addresses, optionally `:port` |
   | `CREW_CACHE_MAX_GIB` | 25% of the disk | The store's quota |
   | `CREW_CACHE_MGMT_LISTEN` | `127.0.0.1:7780` | `off` leaves management out |
@@ -36,6 +37,7 @@ defmodule CrewCache.Env do
       registry: https != nil,
       http_port: port(env, "CREW_CACHE_HTTP_PORT", 80),
       dns_port: dns || 53,
+      dns_proxy_ip: ip(env, "CREW_DNS_PROXY_IP", nil),
       dns: dns != nil,
       dns_upstreams: upstreams(env["CREW_DNS_UPSTREAMS"]),
       max_bytes: max_bytes(env["CREW_CACHE_MAX_GIB"]),

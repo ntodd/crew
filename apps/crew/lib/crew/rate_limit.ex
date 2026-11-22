@@ -2,9 +2,8 @@ defmodule Crew.RateLimit do
   @moduledoc """
   In-memory rate limits for sign-in, enrollment and agent connects.
 
-  Agent connects and enrollment count failures only (`exhausted?/3`
-  before the attempt, `failed/3` after a failed one), so a client sending
-  junk uses up its own allowance and never a correctly signed agent's.
+  Agent connects count failed verifications to bound refusal logging.
+  Enrollment checks its failure budget before accepting a request.
   Keys use the real client address (`CrewWeb.ClientIP`).
 
   Each key's window starts at its first hit, not on a wall-clock
