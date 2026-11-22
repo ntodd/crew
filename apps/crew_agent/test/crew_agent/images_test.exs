@@ -176,7 +176,7 @@ defmodule CrewAgent.ImagesTest do
       refute File.exists?(tmp)
     end
 
-    test "downloads from the control plane carry the agent's signed headers, a redirect elsewhere doesn't",
+    test "image requests to both the control plane and redirect destination omit socket credentials",
          ctx do
       agent_id = CrewProtocol.uuid7()
       write_identity(ctx.config, agent_id)
@@ -186,9 +186,9 @@ defmodule CrewAgent.ImagesTest do
       script(ctx, "kernel", [{:redirect, elsewhere}])
 
       assert :ok = Images.prepare(f.image, config, @fast)
-      assert_received {:request, "kernel", _, ^agent_id}
       assert_received {:request, "kernel", _, nil}
-      assert_received {:request, "rootfs", _, ^agent_id}
+      assert_received {:request, "kernel", _, nil}
+      assert_received {:request, "rootfs", _, nil}
     end
   end
 
