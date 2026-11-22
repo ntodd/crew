@@ -103,6 +103,14 @@ defmodule CrewAgent.Driver.FirecrackerTest do
     dir
   end
 
+  test "configured extra ranges must be covered by verified kernel prefixes", ctx do
+    vmctl(ctx, fn _ -> %{"ok" => true, "site4" => %{"prefixes" => ["198.51.100.0/24"]}} end)
+    Config.put(%{ctx.config | extra_blocked: ["198.51.100.12"]})
+    assert Monitor.verify()
+    Config.put(%{ctx.config | extra_blocked: ["198.51.100.0/23"]})
+    refute Monitor.verify()
+  end
+
   describe "start" do
     test "verifies the filter, adds the tap and the pair, writes fc.json and starts the unit, in that order",
          ctx do

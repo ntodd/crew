@@ -274,7 +274,12 @@ The other spikes are recorded here as they run.
   list in `/srv/crew/vmctl/egress4` (root's, at most 64, never trimmed
   by anything the agent writes; full means no more are added), and every
   address in the list goes into site4. `CREW_EXTRA_BLOCKED` and
-  `CREW_UPLINK` come from `/etc/crew-box/extra-blocked` and
+  `CREW_UPLINK` are set in Add box and retained for reprovisioning. For a
+  previously installed box, an administrator can set the comma-separated
+  IPv4 ranges and interface directly in the two root-owned files and restart
+  crew-net during maintenance. Agent updates preserve those files. The
+  agent checks its configured extra ranges against the verified prefixes.
+  The kernel settings come from `/etc/crew-box/extra-blocked` and
   `/etc/crew-box/uplink`, which the Ignition writes, not from the
   agent's env; crew-vmctl doesn't read `agent/env` at all. `nft-verify`
   checks site4 against the same inputs. The agent asks for a refill the

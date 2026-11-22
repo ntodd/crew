@@ -196,8 +196,17 @@ defmodule CrewAgent.Driver.Firecracker.Monitor do
   # {:ok, the egress addresses site4 holds} or {{:error, why}, []}.
   defp nft_verify do
     case Firecracker.vmctl(%{"verb" => "nft-verify"}) do
-      {:ok, resp} -> {:ok, List.wrap(get_in(resp, ["site4", "egress"]))}
+      {:ok, resp} -> verified_ranges(resp)
       {:error, code, detail} -> {{:error, "#{code}: #{detail}"}, []}
+    end
+  end
+
+  defp verified_ranges(resp) do
+    prefixes = List.wrap(get_in(resp, ["site4", "prefixes"]))
+
+    case Enum.find(Config.get().extra_blocked, &(not CrewProtocol.IPv4.covered?(&1, prefixes))) do
+      nil -> {:ok, List.wrap(get_in(resp, ["site4", "egress"]))}
+      missing -> {{:error, "site4_not_ready: missing configured range #{missing}"}, []}
     end
   end
 

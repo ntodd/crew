@@ -163,6 +163,8 @@ defmodule Crew.Boxes.Flatcar do
         bad_name: CrewProtocol.Names.box_name?(opts.name),
         bad_type: opts.type in @types,
         bad_arch: Map.has_key?(@bakery_arch, opts.arch),
+        bad_uplink: uplink?(opts[:uplink]),
+        bad_blocked_ranges: blocked_ranges?(opts[:extra_blocked]),
         bad_ssh_key: Enum.all?(opts.ssh_keys, &ssh_key?/1)
       ] ++ if(opts.mode == :provision, do: provision_checks(opts), else: [])
 
@@ -181,6 +183,20 @@ defmodule Crew.Boxes.Flatcar do
       no_release: release?(opts[:release]),
       no_release_key: match?(<<_::binary-size(32)>>, opts[:release_key])
     ]
+  end
+
+  def uplink?(nil), do: true
+
+  def uplink?(name),
+    do:
+      Regex.match?(~r/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,14}\z/, name) and name != "lo" and
+        not String.starts_with?(name, ["crew", "tailscale", "docker"])
+
+  def blocked_ranges?(nil), do: true
+
+  def blocked_ranges?(value) do
+    byte_size(value) <= 4096 and not String.contains?(value, ["\n", "\r"]) and
+      Enum.all?(String.split(value, ","), &match?({:ok, _}, CrewProtocol.IPv4.parse(&1)))
   end
 
   defp disk_layout(opts), do: opts[:disk_layout] || "separate"
@@ -557,6 +573,12 @@ defmodule Crew.Boxes.Flatcar do
         text("/etc/modules-load.d/crew.conf", "nf_conntrack\nnft_compat\nxt_connlimit\ndummy\n"),
         text("/etc/sysupdate.tailscale.d/tailscale.conf", sysupdate()),
         sysext,
+        text("/etc/crew-box/uplink", "#{opts[:uplink]}\n"),
+        text("/etc/crew-box/extra-blocked", "#{opts[:extra_blocked]}\n"),
+        text(
+          "/etc/crew-box/network.env",
+          env(CREW_UPLINK: opts[:uplink] || "", CREW_EXTRA_BLOCKED: opts[:extra_blocked] || "")
+        ),
         text("/etc/crew-box/box.env", env(CREW_BOX_NAME: opts.name, CREW_BOX_TYPE: opts.type))
       ] ++
         for({name, script} <- @scripts, do: text("/etc/crew-box/#{name}", script)) ++
@@ -1044,6 +1066,7 @@ defmodule Crew.Boxes.Flatcar do
     User=_crewagent
     Group=_crewagent
     SupplementaryGroups=crewvm
+    EnvironmentFile=-/etc/crew-box/network.env
     EnvironmentFile=/srv/crew/agent/env
     Environment=HOME=/srv/crew/agent RELEASE_TMP=/run/crew-agent RELEASE_DISTRIBUTION=none
     RuntimeDirectory=crew-agent
@@ -1099,6 +1122,7 @@ defmodule Crew.Boxes.Flatcar do
     LimitNOFILE=65536
     # Its share of the disk (crew-quota), then the agent's and admin's settings.
     EnvironmentFile=-/run/crew-box/cache.env
+    EnvironmentFile=-/etc/crew-box/network.env
     EnvironmentFile=-/srv/crew/cache/env
     Environment=HOME=/srv/crew/cache CREW_DATA_DIR=/srv/crew RELEASE_TMP=/run/crew-cache RELEASE_DISTRIBUTION=none
     RuntimeDirectory=crew-cache

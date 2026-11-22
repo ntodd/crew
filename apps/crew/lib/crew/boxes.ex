@@ -90,6 +90,8 @@ defmodule Crew.Boxes do
       box_name: :string,
       box_type: :string,
       disk_layout: :string,
+      uplink: :string,
+      extra_blocked: :string,
       os_disk: :string,
       data_disk: :string,
       ssh_keys: :string,
@@ -106,6 +108,7 @@ defmodule Crew.Boxes do
           else: [box_name: "must be a lowercase DNS label of at most 40 characters"]
       end)
       |> Ecto.Changeset.validate_inclusion(:box_type, Box.types())
+      |> validate_network()
       |> validate_disks()
       |> Ecto.Changeset.validate_change(:ssh_keys, fn :ssh_keys, keys ->
         if Enum.all?(split_keys(keys), &Flatcar.ssh_key?/1),
@@ -130,12 +133,15 @@ defmodule Crew.Boxes do
         flatcar? = data.box_type in Flatcar.types()
         metal? = data.box_type == "linux-metal"
         layout = if metal?, do: disk_layout(data)
+        network = if flatcar?, do: data, else: %{}
 
         Repo.insert!(%JoinToken{
           token_hash: hash(raw),
           box_name: data.box_name,
           box_type: data.box_type,
           disk_layout: layout,
+          uplink: network[:uplink],
+          extra_blocked: network[:extra_blocked],
           os_disk: if(metal?, do: data[:os_disk]),
           data_disk: if(layout == "separate", do: data[:data_disk]),
           ssh_keys: if(flatcar?, do: split_keys(data[:ssh_keys]), else: []),
@@ -147,6 +153,18 @@ defmodule Crew.Boxes do
         Audit.log(scope, "box.join_token", {"Box", data.box_name}, %{"type" => data.box_type})
         {:ok, raw}
     end
+  end
+
+  defp validate_network(changeset) do
+    changeset
+    |> Ecto.Changeset.validate_change(:uplink, fn key, value ->
+      if Flatcar.uplink?(value), do: [], else: [{key, "must be a usable uplink interface"}]
+    end)
+    |> Ecto.Changeset.validate_change(:extra_blocked, fn key, value ->
+      if Flatcar.blocked_ranges?(value),
+        do: [],
+        else: [{key, "must be comma-separated IPv4 addresses or CIDRs"}]
+    end)
   end
 
   defp disk_layout(data), do: data[:disk_layout] || "one"
@@ -277,6 +295,8 @@ defmodule Crew.Boxes do
              type: token.box_type,
              arch: arch,
              disk_layout: token.disk_layout,
+             uplink: token.uplink,
+             extra_blocked: token.extra_blocked,
              os_disk: token.os_disk,
              data_disk: token.data_disk,
              ssh_keys: token.ssh_keys ++ split_keys(params["ssh_keys"]),
@@ -361,6 +381,15 @@ defmodule Crew.Boxes do
     end
   end
 
+  defp enrollment(id) do
+    Repo.one(
+      from t in JoinToken,
+        where: t.box_id == ^id,
+        order_by: [desc: t.used_at, desc: t.inserted_at],
+        limit: 1
+    )
+  end
+
   @doc """
   The disks a `linux-metal` box was added with, from the join token that
   enrolled it last: `%{disk_layout: "one" | "separate", os_disk: _,
@@ -368,13 +397,7 @@ defmodule Crew.Boxes do
   its own.
   """
   def disks(%Box{id: id}) do
-    token =
-      Repo.one(
-        from t in JoinToken,
-          where: t.box_id == ^id and t.box_type == "linux-metal",
-          order_by: [desc: t.used_at, desc: t.inserted_at],
-          limit: 1
-      )
+    token = enrollment(id)
 
     %{
       disk_layout: (token && token.disk_layout) || "separate",
@@ -408,6 +431,7 @@ defmodule Crew.Boxes do
         {:error, :not_flatcar}
 
       true ->
+        token = enrollment(box.id)
         disks = if box.type == "linux-metal", do: reprovision_disks(disks(box), params), else: %{}
 
         with {:ok, config} <-
@@ -417,6 +441,8 @@ defmodule Crew.Boxes do
                  type: box.type,
                  arch: params["arch"],
                  disk_layout: disks[:disk_layout],
+                 uplink: token && token.uplink,
+                 extra_blocked: token && token.extra_blocked,
                  os_disk: disks[:os_disk],
                  data_disk: disks[:data_disk],
                  ssh_keys: split_keys(params["ssh_keys"]),

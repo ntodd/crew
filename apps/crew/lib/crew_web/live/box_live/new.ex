@@ -180,6 +180,12 @@ defmodule CrewWeb.BoxLive.New do
           </fieldset>
 
           <div :if={@type in Flatcar.types()} id="flatcar-fields" class="space-y-2">
+            <.input field={@form[:uplink]} label="Uplink interface (optional)" placeholder="eno2" />
+            <.input
+              field={@form[:extra_blocked]}
+              label="Additional blocked IPv4 addresses or CIDRs (comma-separated)"
+              placeholder="203.0.113.7, 198.51.100.0/24"
+            />
             <div :if={@type == "linux-metal"}>
               <fieldset id="disk-layout" class="mb-3">
                 <legend class="label">Disks</legend>

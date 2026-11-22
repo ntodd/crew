@@ -137,8 +137,16 @@ func (s *Server) extraBlocked() []netip.Prefix {
 	for _, line := range strings.Split(string(body), "\n") {
 		line, _, _ = strings.Cut(line, "#")
 		for _, c := range strings.Split(line, ",") {
-			if p, err := netip.ParsePrefix(strings.TrimSpace(c)); err == nil && p.Addr().Is4() {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			if a, err := netip.ParseAddr(c); err == nil && a.Is4() {
+				out = append(out, netip.PrefixFrom(a, 32))
+			} else if p, err := netip.ParsePrefix(c); err == nil && p.Addr().Is4() {
 				out = append(out, p.Masked())
+			} else {
+				fmt.Fprintf(os.Stderr, "crew-vmctl: ignoring invalid IPv4 prefix %q in %s\n", c, ExtraBlockedFile)
 			}
 		}
 	}
