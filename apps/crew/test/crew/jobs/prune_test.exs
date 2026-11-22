@@ -58,6 +58,33 @@ defmodule Crew.Jobs.PruneTest do
     assert Repo.all(from d in Crew.GitHub.Delivery, select: d.github_delivery_id) == ["recent"]
   end
 
+  test "operation retention uses finish time and keeps unfinished commands", %{box: box} do
+    Application.put_env(:crew, :job_retention_days, 30)
+    Application.put_env(:crew, :job_prune_batch, 2)
+
+    for {command, status, finished} <- [
+          {"old1", "succeeded", ago(32)},
+          {"old2", "failed", ago(31)},
+          {"old3", "failed", ago(32)},
+          {"recent", "succeeded", ago(29)},
+          {"pending", "running", nil}
+        ] do
+      Repo.insert!(%Crew.Operations.Operation{
+        box_id: box.id,
+        command: command,
+        status: status,
+        args: %{},
+        finished_at: finished,
+        inserted_at: ago(100)
+      })
+    end
+
+    assert :ok = perform_job(Prune, %{})
+
+    assert Repo.all(from o in Crew.Operations.Operation, order_by: o.command, select: o.command) ==
+             ["pending", "recent"]
+  end
+
   defp count(query), do: Repo.aggregate(query, :count)
 
   describe "with every day rolled up" do

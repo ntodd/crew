@@ -24,6 +24,7 @@ defmodule Crew.Jobs.Prune do
   alias Crew.{Repo, Usage}
   alias Crew.GitHub.Delivery
   alias Crew.Jobs.{Job, RunAttempt}
+  alias Crew.Operations.Operation
   alias Crew.VMs.VM
 
   @impl true
@@ -34,7 +35,10 @@ defmodule Crew.Jobs.Prune do
     needed =
       now |> DateTime.to_date() |> Usage.rows_needed_from() |> DateTime.new!(~T[00:00:00.000000])
 
-    cutoff = Enum.min([DateTime.add(now, -days * 86_400), needed], DateTime)
+    retention = DateTime.add(now, -days * 86_400)
+    cutoff = Enum.min([retention, needed], DateTime)
+
+    delete_batched(from(o in Operation, where: o.finished_at < ^retention))
 
     delete_batched(
       from(d in Delivery, where: d.received_at < ^DateTime.add(now, -7, :day)),
