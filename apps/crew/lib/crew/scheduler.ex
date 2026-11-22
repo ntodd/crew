@@ -401,9 +401,14 @@ defmodule Crew.Scheduler do
 
   # Marked removing so it isn't sent again each pass; the agent's next
   # inventory drops the row once the image is gone (or puts it back).
-  defp remove_image(box_id, image_id) do
+  def evict_under_pressure(box_id, lru) do
+    if image_id = Plan.pressure_eviction(snapshot(), box_id, lru),
+      do: remove_image(box_id, image_id, %{if_pressure: true})
+  end
+
+  defp remove_image(box_id, image_id, opts \\ %{}) do
     with {:ok, %{status: "dispatched"}} <-
-           Operations.dispatch(box_id, "image.remove", %{image_id: image_id}) do
+           Operations.dispatch(box_id, "image.remove", Map.put(opts, :image_id, image_id)) do
       Images.put_box_state(box_id, image_id, "removing")
     end
   end

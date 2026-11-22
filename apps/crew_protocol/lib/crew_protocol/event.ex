@@ -128,6 +128,7 @@ defmodule CrewProtocol.Event do
       sleep_disabled: {:boolean, []}
     ],
     "box.inventory" => [
+      image_pressure_lru: {{:list, :uuid}, max: 100},
       vms:
         {{:list,
           {:object,

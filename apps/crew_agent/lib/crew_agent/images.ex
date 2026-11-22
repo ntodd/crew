@@ -45,6 +45,7 @@ defmodule CrewAgent.Images do
 
     case System.cmd("cp", args, stderr_to_stdout: true) do
       {_, 0} ->
+        File.touch(Path.join(dir(config, image_id), "last-used"))
         File.chmod!(dest, 0o600)
         {_, 0} = System.cmd("truncate", ["-s", "#{disk_gib}G", dest], stderr_to_stdout: true)
         dest
@@ -138,11 +139,39 @@ defmodule CrewAgent.Images do
     |> Enum.max()
   end
 
+  @doc "Ready images in eviction order, including images prepared before access tracking."
+  def oldest_first(config) do
+    entries =
+      for %{id: id, state: "ready"} <- inventory(config) do
+        base = dir(config, id)
+        {mtime(Path.join(base, "last-used")) || mtime(Path.join(base, "ready")) || 0, id}
+      end
+
+    entries |> Enum.sort() |> Enum.take(100) |> Enum.map(&elem(&1, 1))
+  end
+
+  defp mtime(path) do
+    case File.stat(path, time: :posix) do
+      {:ok, stat} -> stat.mtime
+      _ -> nil
+    end
+  end
+
   def remove(image_id) do
     config = Config.get()
-    File.rm_rf(dir(config, image_id))
-    File.rm_rf(tmp_dir(config, image_id))
-    :ok
+
+    if CrewAgent.VMs.image_in_use?(image_id) do
+      {:error, "image_in_use", "a VM on this box still uses the image"}
+    else
+      with {:ok, _} <- File.rm_rf(dir(config, image_id)),
+           {:ok, _} <- File.rm_rf(tmp_dir(config, image_id)) do
+        CrewAgent.Reporter.report_inventory()
+        :ok
+      else
+        {:error, reason, _} ->
+          {:error, "remove_failed", :file.format_error(reason) |> to_string()}
+      end
+    end
   end
 
   # Development (CREW_DEV_IMAGE_DIR): a local `Image` (or `kernel`) and

@@ -617,18 +617,31 @@ defmodule Crew.Scheduler.Plan do
         do: {:remove_image, box.id, image_id}
   end
 
-  defp removable(snap, box, default, order) do
+  def pressure_eviction(snap, box_id, lru) do
+    with %{online: true} = box <- Enum.find(snap.boxes, &(&1.id == box_id)),
+         %{default: default} <- snap.images[box.guest_arch] do
+      candidates = MapSet.new(unused_images(snap, box, default))
+      Enum.find(lru, &MapSet.member?(candidates, &1))
+    else
+      _ -> nil
+    end
+  end
+
+  defp unused_images(snap, box, default) do
     ready = for {{b, id}, "ready"} <- snap.box_images, b == box.id, do: id
     {usable, _} = usable_image(snap, box)
     in_use = for vm <- snap.vms, vm.box_id == box.id, do: Map.get(vm, :image_id)
     keep = MapSet.new([default, usable | in_use])
 
+    Enum.reject(ready, &MapSet.member?(keep, &1))
+  end
+
+  defp removable(snap, box, default, order) do
     # Newest first; an image the control plane doesn't list is oldest.
     rank = order |> Enum.with_index() |> Map.new()
 
     others =
-      ready
-      |> Enum.reject(&MapSet.member?(keep, &1))
+      unused_images(snap, box, default)
       |> Enum.sort_by(&Map.get(rank, &1, :infinity))
 
     case others do

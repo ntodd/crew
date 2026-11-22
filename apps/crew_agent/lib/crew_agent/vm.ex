@@ -93,6 +93,7 @@ defmodule CrewAgent.VM do
     token = 32 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
     with :ok <- image_ready(config, p.image),
+         :ok <- CrewAgent.DiskWatchdog.reserve(config, p.vm_id, p.size.disk_gib),
          :ok <- File.mkdir_p(dir),
          :ok <- File.chmod(dir, 0o750),
          {:ok, lease} <- Net.allocate(p.vm_id) do
@@ -137,7 +138,7 @@ defmodule CrewAgent.VM do
       }
 
       try do
-        SafeFS.write_atomic(Path.join(dir, "vm.json"), Jason.encode!(meta), 0o640)
+        :ok = SafeFS.write_atomic(Path.join(dir, "vm.json"), Jason.encode!(meta), 0o640)
         clone = clone_rootfs(config, p, dir)
         write_guest_json(state, epoch, 0, 0)
 
@@ -695,9 +696,15 @@ defmodule CrewAgent.VM do
 
   def handle_info(:control_timeout, state), do: {:noreply, state}
 
-  def handle_info({:kill_disk, _}, state) do
-    state.driver.stop(state.vm_id, true)
-    {:noreply, %{state | forced_reason: "killed_disk"}}
+  def handle_info({:kill_disk, _}, %{exited: false} = state) do
+    case state.driver.stop(state.vm_id, true) do
+      :ok ->
+        {:noreply, %{state | forced_reason: "killed_disk"}}
+
+      {:error, reason} ->
+        Logger.warning("disk-pressure stop failed for #{state.vm_id}: #{inspect(reason)}")
+        {:noreply, state}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

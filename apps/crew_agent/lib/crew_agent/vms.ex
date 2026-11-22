@@ -92,6 +92,9 @@ defmodule CrewAgent.VMs do
   defp start_result({:error, :duplicate}, id),
     do: {:error, "duplicate", "VM #{id} was started before"}
 
+  defp start_result({:error, :no_capacity}, _id),
+    do: {:error, "no_capacity", "the Mac's free disk cannot cover the outstanding VM sizes"}
+
   defp start_result({:error, :image_not_ready}, _id),
     do: {:error, "image_not_ready", "the image isn't ready on this box"}
 
@@ -128,6 +131,12 @@ defmodule CrewAgent.VMs do
 
   @doc "The VMs this agent holds that haven't exited."
   def running_ids, do: Enum.filter(vm_ids(), &(VM.whereis(&1) != nil and not exited?(&1)))
+
+  def image_in_use?(image_id) do
+    Enum.any?(vm_ids(), fn id ->
+      not exited?(id) and get_in(read_json(id, "vm.json"), ["image", "id"]) == image_id
+    end)
+  end
 
   def log_ack(vm_id, epoch, seq) do
     case VM.whereis(vm_id) do
