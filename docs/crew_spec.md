@@ -2385,7 +2385,7 @@ header timeout.
    it, §6.3). The runner must never self-update in a VM.
 8. **Start the runner:**
    - write the JIT config to `/run/crew/jit` (0600, `runner`);
-   - start `run.sh --jitconfig "$(cat /run/crew/jit)"` as `runner`, from a
+   - start `run.sh` with `ACTIONS_RUNNER_INPUT_JITCONFIG` as `runner`, from a
      tiny wrapper that deletes the file once the runner has read it;
    - supervise the runner process through a Port.
 9. **Report** (§16.2): `runner_listening` when the runner prints

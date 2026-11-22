@@ -28,7 +28,12 @@ defmodule CrewGuest.StubRunnerTest do
       Port.open({:spawn_executable, "/bin/sh"}, [
         :binary,
         :exit_status,
-        {:args, ["-c", ~s("$0" --jitconfig x >/dev/null 2>&1 & wait), fixture("stub-runner")]},
+        {:args,
+         [
+           "-c",
+           ~s(ACTIONS_RUNNER_INPUT_JITCONFIG=x "$0" >/dev/null 2>&1 & wait),
+           fixture("stub-runner")
+         ]},
         {:cd, dir},
         {:env, [{~c"STUB_HANG", String.to_charlist(hang)}, {~c"STUB_DELAY", ~c"0.05"}]}
       ])

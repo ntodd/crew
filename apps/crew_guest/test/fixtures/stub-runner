@@ -5,7 +5,7 @@
 # way the runner does (pages roll over, and finished ones get deleted),
 # and exits with a chosen code.
 #
-#   stub-runner --jitconfig <config>
+#   ACTIONS_RUNNER_INPUT_JITCONFIG=<config> stub-runner
 #
 # Environment:
 #   STUB_EXIT=<n>           exit code (default 0)
@@ -24,16 +24,11 @@
 #   STUB_DIR=<dir>          the runner dir (default: the current directory)
 set -eu
 
-jit=
-while [ $# -gt 0 ]; do
-  case $1 in
-    --jitconfig) jit=${2:-}; shift 2 ;;
-    *) shift ;;
-  esac
-done
+jit=${ACTIONS_RUNNER_INPUT_JITCONFIG:-}
+unset ACTIONS_RUNNER_INPUT_JITCONFIG
 
 if [ -z "$jit" ]; then
-  echo "stub-runner: no --jitconfig" >&2
+  echo "stub-runner: missing JIT input" >&2
   exit 64
 fi
 

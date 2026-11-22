@@ -45,7 +45,7 @@ defmodule CrewGuest.System do
   @doc "Writes the run dir's files for the conformance check (§11.6), instead of the runner's."
   @callback prepare_conformance(Config.t(), [file()]) :: result()
 
-  @doc "The command that runs the runner (`--jitconfig` is appended to it)."
+  @doc "The command that runs the runner."
   @callback runner_command(Config.t()) :: [String.t()]
 
   @doc "Ends the VM: powers it off, or on x86_64 reboots it (Firecracker x86's way out). In local mode, exits."

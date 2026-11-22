@@ -20,7 +20,11 @@ defmodule CrewGuest.RunnerTest do
     }
   end
 
-  defp start_runner(cfg) do
+  defmodule ResetEnvironment do
+    def runner_command(cfg), do: ["env", "-i" | cfg.runner_cmd]
+  end
+
+  defp start_runner(cfg, system \\ CrewGuest.System.Local) do
     jit = Path.join(cfg.run_dir, "jit")
     File.mkdir_p!(cfg.run_dir)
     File.write!(jit, "the-jit-config")
@@ -30,7 +34,7 @@ defmodule CrewGuest.RunnerTest do
       start_supervised!(
         {Runner,
          config: cfg,
-         system: CrewGuest.System.Local,
+         system: system,
          jit_file: jit,
          on_state: &send(test, {:state, &1}),
          on_exit: &send(test, {:exit, &1})}
@@ -47,6 +51,21 @@ defmodule CrewGuest.RunnerTest do
     assert_receive {:exit, 0}, 5_000
     assert File.read!(out) == "the-jit-config"
     refute File.exists?(jit)
+  end
+
+  test "passes the listener input in its environment and preserves command arguments", %{
+    tmp_dir: dir
+  } do
+    # A stand-in listener checks the input contract before spawning any workers.
+    script =
+      ~S(test "$#" -eq 1 && test "$1" = option && test "$ACTIONS_RUNNER_INPUT_JITCONFIG" = the-jit-config)
+
+    start_runner(
+      config(dir, [], ["/bin/sh", "-c", script, "listener", "option"]),
+      ResetEnvironment
+    )
+
+    assert_receive {:exit, 0}, 2_000
   end
 
   test "reports runner_listening and job_started from what the runner prints",
