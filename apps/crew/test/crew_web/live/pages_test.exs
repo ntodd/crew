@@ -4,6 +4,28 @@ defmodule CrewWeb.PagesTest do
   describe "as an admin" do
     setup :register_and_log_in_admin
 
+    test "Oban's session identity contains only its display and access fields", %{
+      conn: conn,
+      user: user
+    } do
+      conn = get(conn, "/admin")
+
+      session =
+        Oban.Web.Router.__session__(
+          conn,
+          "/admin/oban",
+          Oban,
+          CrewWeb.ObanResolver,
+          "/live",
+          "websocket",
+          nil,
+          nil
+        )
+
+      assert session["user"] == Map.take(user, [:id, :login, :role])
+      assert session["access"] == :all
+    end
+
     test "every page renders", %{conn: conn} do
       for path <- ["/", "/admin", "/admin/users", "/admin/audit"] do
         {:ok, _view, html} = live(conn, path)
