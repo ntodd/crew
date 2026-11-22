@@ -43,6 +43,21 @@ defmodule Crew.Jobs.PruneTest do
     })
   end
 
+  test "delivery retention drains old batches and keeps recent delivery IDs" do
+    Application.put_env(:crew, :job_prune_batch, 2)
+
+    for {id, days} <- [{"old1", 30}, {"old2", 9}, {"old3", 8}, {"recent", 6}] do
+      Repo.insert!(%Crew.GitHub.Delivery{
+        github_delivery_id: id,
+        event: "workflow_job",
+        received_at: ago(days)
+      })
+    end
+
+    assert :ok = perform_job(Prune, %{})
+    assert Repo.all(from d in Crew.GitHub.Delivery, select: d.github_delivery_id) == ["recent"]
+  end
+
   defp count(query), do: Repo.aggregate(query, :count)
 
   describe "with every day rolled up" do
