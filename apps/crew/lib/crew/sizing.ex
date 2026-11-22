@@ -109,7 +109,7 @@ defmodule Crew.Sizing do
       limit: @history,
       select: map(j, [:vcpus, :memory_mib, :started_at, :completed_at])
     )
-    |> same_job(job)
+    |> Job.same_job(job)
     |> Repo.all()
   end
 
@@ -527,7 +527,7 @@ defmodule Crew.Sizing do
           completed_at: j.completed_at
         }
       )
-      |> same_job(job)
+      |> Job.same_job(job)
 
     before_move =
       from j in runs,
@@ -690,7 +690,7 @@ defmodule Crew.Sizing do
         ],
         select: %{id: j.id, rank: over(row_number(), :per_job)}
       )
-      |> then(&if(job, do: same_job(&1, job), else: &1))
+      |> then(&if(job, do: Job.same_job(&1, job), else: &1))
 
     from(j in Job,
       join: r in subquery(ranked),
@@ -739,7 +739,7 @@ defmodule Crew.Sizing do
       limit: @history,
       select: map(j, ^@run_fields)
     )
-    |> same_job(job)
+    |> Job.same_job(job)
     |> Repo.all()
     |> Enum.map(&run/1)
     |> then(&hd(trace([&1])))
@@ -790,14 +790,6 @@ defmodule Crew.Sizing do
     |> Map.take(@run_fields)
     |> Map.put(:duration_s, duration(job.started_at, job.completed_at))
   end
-
-  # The runs of `job`'s (workflow, name), either of which GitHub may
-  # leave out: SQL's `=` never matches a null.
-  defp same_job(query, job),
-    do: query |> same(:workflow_name, job.workflow_name) |> same(:name, job.name)
-
-  defp same(query, field, nil), do: where(query, [j], is_nil(field(j, ^field)))
-  defp same(query, field, value), do: where(query, [j], field(j, ^field) == ^value)
 
   defp duration(%DateTime{} = a, %DateTime{} = b), do: DateTime.diff(b, a)
   defp duration(_a, _b), do: nil

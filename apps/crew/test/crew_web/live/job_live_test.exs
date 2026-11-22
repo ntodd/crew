@@ -75,6 +75,18 @@ defmodule CrewWeb.JobLiveTest do
     }
   end
 
+  test "jobs without workflow or job names have their own history and open normally",
+       %{conn: conn, path: path, repo: repo, job: job} do
+    job = Repo.update!(Ecto.Changeset.change(job, workflow_name: nil, name: nil))
+    steps = [%{"name" => "historical step"}]
+    job_row_fixture(repo, workflow_name: nil, name: nil, steps: steps, conclusion: "success")
+    job_row_fixture(repo, workflow_name: "CI", name: nil, conclusion: "success")
+    job_row_fixture(repo, workflow_name: nil, name: "build", conclusion: "success")
+
+    assert [%{steps: ^steps}] = Jobs.recent_successes(job, 10)
+    assert {:ok, _view, _html} = live(conn, path)
+  end
+
   defp vm_for(job, box, repo) do
     id = CrewProtocol.uuid7()
     size = Repo.get_by!(Crew.Sizes.Size, name: "m")

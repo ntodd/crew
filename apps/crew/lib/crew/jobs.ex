@@ -954,16 +954,14 @@ defmodule Crew.Jobs do
 
   @doc "The last `n` successful completions of the same job (repo, workflow, name), for \"usually X\"."
   def recent_successes(%Job{} = job, n) do
-    Repo.all(
-      from j in Job,
-        where:
-          j.repo_id == ^job.repo_id and j.workflow_name == ^job.workflow_name and
-            j.name == ^job.name and
-            j.conclusion == "success" and j.id != ^job.id,
-        order_by: [desc: j.completed_at],
-        limit: ^n,
-        select: map(j, [:steps])
+    from(j in Job,
+      where: j.repo_id == ^job.repo_id and j.conclusion == "success" and j.id != ^job.id,
+      order_by: [desc: j.completed_at],
+      limit: ^n,
+      select: map(j, [:steps])
     )
+    |> Job.same_job(job)
+    |> Repo.all()
   end
 
   @doc """
