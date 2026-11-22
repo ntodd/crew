@@ -296,6 +296,14 @@ defmodule Crew.Boxes.FlatcarRootInstallTest do
       assert log =~ "systemctl start crew-agent.service"
     end
 
+    test "a directory in the marker slot is left empty and rollback still completes", ctx do
+      dir = Path.join(ctx.agent, "rolled-back")
+      File.mkdir!(dir)
+      assert {_, 0} = sh(ctx, "agent-rollback.sh")
+      assert File.ls!(dir) == []
+      assert root_current(ctx) == "0.3.0"
+    end
+
     test "with no previous release the current one gets a delayed restart", ctx do
       timer = Path.join(ctx.bin, "systemd-run")
       File.write!(timer, ~s(#!/bin/sh\necho "systemd-run $*" >> "#{ctx.log}"\n))

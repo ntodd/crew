@@ -37,7 +37,9 @@ target=$link
 release_version "$target" || fail "agent/previous isn't a release; not rolling back"
 relink "$agent" current "$target"
 rm -f "$agent/previous" "$agent/crashes"
-if [ -f "$agent/update-pending" ]; then mv -f "$agent/update-pending" "$agent/rolled-back"; fi
+if [ -f "$agent/update-pending" ]; then
+  mv -fT "$agent/update-pending" "$agent/rolled-back" || say "could not replace rollback marker"
+fi
 say "rolled the agent back to $target"
 
 if root_release "$data/root" "$target"; then
