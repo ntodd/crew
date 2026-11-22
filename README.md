@@ -47,7 +47,7 @@ The control plane runs in Docker and handles GitHub events, scheduling, and
 the web UI. Boxes supply the compute. A dedicated Linux machine can run
 Flatcar directly, or a Linux host with nested KVM can run a Flatcar VM.
 Apple Silicon Macs can run arm64 Linux guests with Virtualization.framework.
-An M3 or later on macOS 15+ can also host a nested Flatcar VM.
+For an existing nested Mac worker, follow the [mac-vz migration steps](docs/setup/upgrading.md#migrate-a-mac-vm-worker-to-mac-vz).
 
 1. On the control-plane host, create `/etc/crew/crew.env`, owned by root
    and readable only by root. Set `PHX_HOST` to its full tailnet hostname

@@ -81,7 +81,7 @@ defmodule Crew.BoxesEnrollRaceTest do
     defp unboxed(fun), do: Sandbox.unboxed_run(Repo, fun)
 
     defp token(scope, name),
-      do: Boxes.create_join_token(scope, %{"box_name" => name, "box_type" => "mac-vm"})
+      do: Boxes.create_join_token(scope, %{"box_name" => name, "box_type" => "linux-vm"})
 
     defp key do
       {public, _} = CrewProtocol.Auth.generate_keypair()

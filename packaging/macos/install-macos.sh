@@ -27,7 +27,7 @@
 #   --disable-sleep    pmset -a sleep 0 (a sleeping Mac pauses its jobs)
 #   --cache-vm         the box's cache VM (§12.3, §15.6): crew_cache in a
 #                      Flatcar VM on this Mac, made first with the join token
-#                      by the control plane's mac-vm launcher (--role cache),
+#                      by the control plane's cache VM launcher (--role cache),
 #                      and restarted by root's com.crew.hostvm-restart when the
 #                      agent asks. Its job VMs then pull through it.
 #   --reenroll         enroll again with a new --token (after a revoke)
@@ -48,7 +48,7 @@ REENROLL=""
 UNINSTALL=""
 DRY=""
 CACHE_VM=""
-# The launchers' VMs (the cache VM among them), as mac-vm.sh keeps them.
+# The launchers' VMs (the cache VM among them), as the cache launcher keeps them.
 HOSTVM="${CREW_HOSTVM_DIR:-/Library/Application Support/Crew/hostvm}"
 
 while [ $# -gt 0 ]; do
@@ -118,7 +118,7 @@ if [ -n "$UNINSTALL" ]; then
     fail "job VMs are still running (pgrep -U _crewvm -f 'crew-vz run')"
   fi
   say "removed the services and stopped every job VM; $DATA (with the agent's releases) is kept"
-  if [ -f "$HOSTVM/cachevm/box.conf" ]; then
+  if grep -qx "role=cache" "$HOSTVM/cachevm/box.conf" 2>/dev/null; then
     say "the cache VM is still there: sudo crew-box uninstall --yes cachevm removes it"
   fi
   exit 0
@@ -138,6 +138,12 @@ echo "$version" | grep -Eqx '[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}(-[0-9A-Za-z.]{1,
 if [ -n "$KEY" ]; then
   [ "$(printf '%s' "$KEY" | base64 -D 2>/dev/null | wc -c | tr -d ' ')" = 32 ] ||
     fail "--release-key must be the release key in base64 (32 bytes), as Add box shows it"
+fi
+
+cache_conf="$HOSTVM/cachevm/box.conf"
+if [ -f "$cache_conf" ] && ! grep -qx "role=cache" "$cache_conf"; then
+  [ -z "$CACHE_VM" ] || fail "a legacy worker is named cachevm; back it up and migrate it before adding a cache"
+  cache_conf=""
 fi
 
 identity="$DATA/agent/identity.json"
@@ -237,17 +243,16 @@ run rm -f "$DATA/agent/previous" "$DATA/agent/update-pending" "$DATA/agent/rolle
 
 # -- the cache VM (§12.3, §15.6) -------------------------------------------------------
 #
-# Made once, with the join token, by the control plane's own mac-vm
+# Made once, with the join token, by the control plane's cache VM
 # launcher; after that its MAC and management token are read back for
 # the agent's settings. It needs no agent to come up.
 
-cache_conf="$HOSTVM/cachevm/box.conf"
 if [ -n "$CACHE_VM" ] && [ ! -f "$cache_conf" ]; then
   [ -n "$enroll" ] || fail "--cache-vm needs --token (and --reenroll on an enrolled box): the control plane hands out the cache VM's config for a join token"
   base=$(printf '%s' "$URL" | sed 's|^wss://|https://|; s|/agent/websocket$||')
   launcher=$(mktemp)
-  say "making the cache VM (mac-vm.sh --role cache from $base)"
-  run curl -fsSL -o "$launcher" "$base/agent/mac-vm.sh"
+  say "making the cache VM (mac-cache-vm.sh --role cache from $base)"
+  run curl -fsSL -o "$launcher" "$base/agent/mac-cache-vm.sh"
   run sh "$launcher" --role cache --token "$TOKEN"
   run rm -f "$launcher"
 fi

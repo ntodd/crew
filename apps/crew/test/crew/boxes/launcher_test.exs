@@ -1,6 +1,6 @@
 defmodule Crew.Boxes.LauncherTest do
   @moduledoc """
-  The linux-vm and mac-vm launchers (§12.3), as the control plane serves
+  The linux-vm and mac-cache-vm launchers (§12.3), as the control plane serves
   them: the running release's, with its pinned Flatcar and vfkit filled in.
   """
   use ExUnit.Case, async: true
@@ -9,15 +9,14 @@ defmodule Crew.Boxes.LauncherTest do
 
   @url "https://crew.tail1234.ts.net"
 
-  for type <- ["linux-vm", "mac-vm"] do
+  for type <- ["linux-vm", "mac-cache-vm"] do
     test "#{type} has every placeholder filled, and is valid sh" do
       assert {:ok, script} = Launcher.script(unquote(type), @url)
       refute script =~ ~r/__[A-Z0-9_]+__/
       assert script =~ ~s(CREW_URL="#{@url}")
       assert script =~ ~s(FLATCAR_VERSION="#{Flatcar.pins()["FLATCAR_VERSION"]}")
 
-      assert script =~
-               "curl -fsSL #{@url}/agent/#{unquote(type)}.sh | sudo sh -s -- --token cj_..."
+      assert script =~ "curl -fsSL #{@url}/agent/#{unquote(type)}.sh | sudo sh -s --"
 
       path =
         Path.join(
@@ -45,8 +44,8 @@ defmodule Crew.Boxes.LauncherTest do
     assert script =~ "DISK=12"
   end
 
-  test "mac-vm pins Flatcar's arm64 image, kernel and /usr, and vfkit" do
-    {:ok, script} = Launcher.script("mac-vm", @url)
+  test "mac-cache-vm pins Flatcar's arm64 image, kernel and /usr, and vfkit" do
+    {:ok, script} = Launcher.script("mac-cache-vm", @url)
     pins = Flatcar.pins()
 
     for key <-
@@ -54,11 +53,11 @@ defmodule Crew.Boxes.LauncherTest do
       assert script =~ ~s(#{key}="#{pins[key]}"), key
     end
 
-    assert script =~ "--nested"
+    refute script =~ "--nested"
     assert script =~ ~s(LAUNCHD="$ROOT/Library/LaunchDaemons")
     assert script =~ ~s(plist="$LAUNCHD/com.crew.hostvm.$1.plist")
     assert script =~ "/Library/Application Support/Crew/hostvm"
-    assert script =~ "macOS 15 or later on an M3 or later"
+    assert script =~ "/agent/flatcar/cachevm/ignition"
   end
 
   test "refuses a base URL that could break out of the script" do
@@ -72,7 +71,7 @@ defmodule Crew.Boxes.LauncherTest do
   end
 
   test "development URLs are fine" do
-    assert {:ok, script} = Launcher.script("mac-vm", "http://192.168.64.1:4100")
+    assert {:ok, script} = Launcher.script("mac-cache-vm", "http://192.168.64.1:4100")
     assert script =~ ~s(CREW_URL="http://192.168.64.1:4100")
   end
 end

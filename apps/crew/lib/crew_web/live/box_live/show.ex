@@ -71,7 +71,6 @@ defmodule CrewWeb.BoxLive.Show do
     )
   end
 
-  defp default_arch(%{type: "mac-vm"}), do: "arm64"
   defp default_arch(%{guest_arch: "arm64"}), do: "arm64"
   defp default_arch(_), do: "amd64"
 
@@ -371,7 +370,7 @@ defmodule CrewWeb.BoxLive.Show do
               Clear quarantine
             </.button>
             <.button
-              :if={!@box.draining}
+              :if={!@box.draining and !Boxes.Box.retired?(@box)}
               id="drain"
               size="sm"
               phx-click="drain"
@@ -379,10 +378,20 @@ defmodule CrewWeb.BoxLive.Show do
             >
               Drain
             </.button>
-            <.button :if={@box.draining} id="undrain" size="sm" phx-click="undrain">Undrain</.button>
+            <.button
+              :if={@box.draining and !Boxes.Box.retired?(@box)}
+              id="undrain"
+              size="sm"
+              phx-click="undrain"
+            >Undrain</.button>
           <% end %>
         </:actions>
       </.header>
+
+      <.callout :if={Boxes.Box.retired?(@box)} id="retired-mac-worker" kind="warning">
+        This mac-vm worker is draining. Let its jobs finish, then stop it with <code>sudo crew-box stop {@box.name}</code>. Add a mac-vz box with a new name
+        and verify it can run jobs before revoking this worker.
+      </.callout>
 
       <.callout
         :if={@online and @box.pinned_capabilities != nil and not @box.firewall_ok}

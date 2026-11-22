@@ -93,7 +93,7 @@ hosts pull it without a login, and link it to the repository.
    (format below). It becomes the release notes.
 4. **Run what needs hardware**, on the tagged commit:
    - the e2e suite against the test App and test repo (spec §23);
-   - the aarch64 conformance suite on the M3 (`mac-vm`). Spec §20.1
+   - the aarch64 conformance suite on an Apple silicon `mac-vz` worker. Spec §20.1
      names `e2e/release-check.sh` for this, and it isn't written yet:
      run the suite by hand and attach its output to the release once
      it's published.

@@ -17,6 +17,39 @@ defmodule Crew.BoxesTest do
   end
 
   describe "join tokens and enrollment (§10.2)" do
+    test "retired Mac workers cannot be added or enroll with a previously issued token", %{
+      admin: admin
+    } do
+      attrs = %{"box_name" => "old-mac", "box_type" => "mac-vm"}
+      assert {:error, cs} = Boxes.create_join_token(admin, attrs)
+      assert errors_on(cs)[:box_type]
+
+      {:ok, raw} = Boxes.create_join_token(admin, %{attrs | "box_type" => "linux-vm"})
+      Repo.update_all(Crew.Boxes.JoinToken, set: [box_type: "mac-vm"])
+      {public, _} = CrewProtocol.Auth.generate_keypair()
+      assert {:error, :invalid_token} = Boxes.enroll(raw, enroll_attrs(public))
+      assert {:error, _} = Boxes.flatcar_ignition(raw, %{"arch" => "arm64"})
+      refute Boxes.get_by_name("old-mac")
+    end
+
+    test "a retired worker drains and keeps its original identity during migration", %{
+      admin: admin
+    } do
+      attrs = %{"box_name" => "old-mac", "box_type" => "mac-vz"}
+      {:ok, stale_token} = Boxes.create_join_token(admin, attrs)
+      box = box_fixture(name: "old-mac", type: "mac-vm", draining: false)
+      assert :draining in Boxes.issues(box, true)
+      assert Enum.find(Crew.Scheduler.snapshot().boxes, &(&1.id == box.id)).draining
+
+      assert {:error, cs} =
+               Boxes.create_join_token(admin, %{"box_name" => box.name, "box_type" => "mac-vz"})
+
+      assert errors_on(cs)[:box_name]
+      {replacement_key, _} = CrewProtocol.Auth.generate_keypair()
+      assert {:error, :invalid_token} = Boxes.enroll(stale_token, enroll_attrs(replacement_key))
+      assert Boxes.public_key(box.id) == {:ok, box.public_key}
+    end
+
     test "a token enrolls a box once, and only its hash is stored", %{admin: admin} do
       {:ok, raw} =
         Boxes.create_join_token(admin, %{"box_name" => "m1ultra", "box_type" => "mac-vz"})
@@ -74,7 +107,7 @@ defmodule Crew.BoxesTest do
       assert {:error, :invalid_token} = Boxes.enroll(raw, enroll_attrs(public))
     end
 
-    test "names are DNS labels of at most 40, and types are the four", %{admin: admin} do
+    test "names are DNS labels of at most 40, and types are restricted", %{admin: admin} do
       assert {:error, cs} =
                Boxes.create_join_token(admin, %{"box_name" => "Not OK", "box_type" => "mac-vz"})
 

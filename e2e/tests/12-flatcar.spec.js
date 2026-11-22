@@ -1,5 +1,5 @@
 // Flatcar boxes (§12.2, §12.3) in a real browser, under production's
-// style policy: Add box for linux-vm, mac-vm and linux-metal (one disk
+// style policy: Add box for linux-vm and linux-metal (one disk
 // and a separate data disk), the launcher and Ignition the control plane
 // serves for a join token, the Ignition download, and the box page's
 // reprovision Ignition. The
@@ -112,20 +112,20 @@ test("linux-vm: the launcher's one command, and the Ignition it fetches", async 
   expect(violations).toEqual([])
 })
 
-test("mac-vm: the launcher's one command", async ({page, request}) => {
+test("Mac workers use the native installer and the cache-only launcher", async ({page, request}) => {
   const violations = watchCsp(page)
   await signIn(page)
-  await startAdding(page, "studio", "mac-vm")
+  await startAdding(page, "studio", "mac-vz")
+  await expect(page.locator('input[type="radio"][value="mac-vm"]')).toHaveCount(0)
   await page.getByRole("button", {name: "Create join token"}).click()
-  await expect(page.locator("#join-command")).toContainText("/agent/mac-vm.sh | sudo sh -s -- --token cj_")
-
-  const script = await (await request.get("/agent/mac-vm.sh")).text()
-  expect(script).toContain("--nested")
-  expect(script).toMatch(/VFKIT_SHA256="[0-9a-f]{64}"/)
-
+  await expect(page.locator("#join-command")).toContainText("sudo ./install-macos.sh")
+  await expect(page.locator("#join-command")).toContainText("--cache-vm")
+  const response = await request.get("/agent/mac-cache-vm.sh")
+  expect(response.status()).toBe(200)
+  expect(await response.text()).not.toContain("--nested")
   await toMobile(page)
   expect(await fitsWidth(page)).toBe(true)
-  await shot(page, layer, "mac-vm-command-mobile")
+  await shot(page, layer, "mac-vz-command-mobile")
   expect(violations).toEqual([])
 })
 
@@ -242,7 +242,7 @@ test("linux-metal: a separate data disk", async ({page, request}) => {
 test("the box page's reprovision Ignition", async ({page, request}) => {
   const violations = watchCsp(page)
   await signIn(page)
-  await startAdding(page, "studio2", "mac-vm")
+  await startAdding(page, "studio2", "linux-vm")
   await page.getByRole("button", {name: "Create join token"}).click()
   const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
 
@@ -255,14 +255,14 @@ test("the box page's reprovision Ignition", async ({page, request}) => {
 
   await page.goto(`/boxes/${id}`)
   const panel = page.locator("#reprovision")
-  await expect(panel).toContainText("sudo crew-box reimage crew-studio2-arm64-reprovision.ign")
+  await expect(panel).toContainText("sudo crew-box reimage crew-studio2-amd64-reprovision.ign")
   await shot(page, layer, "box-reprovision")
 
   const [download] = await Promise.all([
     page.waitForEvent("download"),
     panel.getByRole("button", {name: "Download Ignition"}).click(),
   ])
-  expect(download.suggestedFilename()).toBe("crew-studio2-arm64-reprovision.ign")
+  expect(download.suggestedFilename()).toBe("crew-studio2-amd64-reprovision.ign")
   const ign = JSON.parse(readFileSync(await download.path(), "utf8"))
   const text = JSON.stringify(ign)
   expect(text).not.toContain("cj_")

@@ -195,7 +195,7 @@ defmodule Crew.Scheduler do
         id: box.id,
         name: box.name,
         online: Agents.online?(box.id),
-        draining: box.draining,
+        draining: Boxes.Box.draining?(box),
         quarantined_until: box.quarantined_until && ms(box.quarantined_until),
         needs_approval: box.needs_approval,
         firewall_ok: box.firewall_ok,

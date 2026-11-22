@@ -41,8 +41,8 @@ test("a Flatcar box enrolls and runs a job VM under Firecracker", async ({page, 
   await signIn(page)
   await fakePost(request, "/__fake/repos", {names: ["fc"]})
 
-  const token = await addBox(page, "fc-e2e", "mac-vm")
-  await shot(page, layer, "add-mac-vm")
+  const token = await addBox(page, "fc-e2e", "linux-vm")
+  await shot(page, layer, "add-linux-vm")
 
   rmSync(state, {recursive: true, force: true})
   mkdirSync(state, {recursive: true})

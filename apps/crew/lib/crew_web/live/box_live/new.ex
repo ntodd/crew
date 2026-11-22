@@ -3,7 +3,7 @@ defmodule CrewWeb.BoxLive.New do
   Add box (§12.2, §10.2): a name and a type, then a single-use join
   token (valid for an hour) and what to run on the machine.
 
-  A Flatcar box (`linux-metal`, `linux-vm`, `mac-vm`) also takes an
+  A Flatcar box (`linux-metal`, `linux-vm`) also takes an
   optional break-glass SSH key, a Tailscale auth key when the control
   plane has no OAuth client to mint one, and on bare metal its disks:
   one disk (the default), which `/srv/crew` shares with Flatcar, or a
@@ -19,7 +19,6 @@ defmodule CrewWeb.BoxLive.New do
 
   @types [
     {"mac-vz", "Mac (Virtualization.framework)"},
-    {"mac-vm", "Mac, M3 or later (Firecracker in a Flatcar VM)"},
     {"linux-vm", "Linux with KVM (Flatcar VM)"},
     {"linux-metal", "Dedicated Linux machine (Flatcar on bare metal)"}
   ]
@@ -301,7 +300,7 @@ defmodule CrewWeb.BoxLive.New do
             </ol>
             <.command
               id="join-command"
-              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token}#{release_key_option()} --cache-vm"}
+              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token} --name #{@box_name}#{release_key_option()} --cache-vm"}
             />
             <p id="cache-vm-note" class="mt-3 text-xs text-ink-3">
               <span class="font-mono">--cache-vm</span>
@@ -309,11 +308,11 @@ defmodule CrewWeb.BoxLive.New do
               Without it, set <span class="font-mono">CREW_VZ_DNS_FALLBACK</span>
               in the agent's env so job VMs can resolve names.
             </p>
-          <% type when type in ["linux-vm", "mac-vm"] -> %>
+          <% "linux-vm" -> %>
             <p class="mb-2 text-sm text-ink-2">On the host, run:</p>
             <.command
               id="join-command"
-              command={"curl -fsSL #{Crew.Config.base_url()}/agent/#{type}.sh | sudo sh -s -- --token #{@token}"}
+              command={"curl -fsSL #{Crew.Config.base_url()}/agent/linux-vm.sh | sudo sh -s -- --token #{@token}"}
             />
             <p class="mt-3 text-xs text-ink-3">
               It takes <span class="font-mono">--cpus N</span>,
@@ -321,7 +320,7 @@ defmodule CrewWeb.BoxLive.New do
               and <span class="font-mono">--data GiB</span>
               (the data disk, 200 by default, at least 100). It prints the box's progress until it has enrolled.
             </p>
-            <div :if={type == "linux-vm"} id="hand-built-vm" class="mt-6 border-t border-line pt-4">
+            <div id="hand-built-vm" class="mt-6 border-t border-line pt-4">
               <p class="mb-3 text-sm text-ink-2">
                 Or, where the launcher can't run (TrueNAS SCALE, say), build the VM yourself:
                 host CPU passthrough (it runs VMs of its own), UEFI, fixed memory, and two VirtIO disks,

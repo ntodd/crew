@@ -4,7 +4,7 @@
 # the Firecracker driver's real-KVM tests. Its state is in tmp/hostvm; it
 # answers as core@<address> with tmp/hostvm/id_ed25519 (the address is
 # printed in tmp/hostvm/serial.log). The first boot stages the Ignition as
-# the mac-vm launcher does (spec §12.3): the image's own kernel, an ISO.
+# the cache VM launcher does (spec §12.3): the image's own kernel, an ISO.
 #
 #   make -C native hostvm-dev && e2e/hostvm/up.sh
 #

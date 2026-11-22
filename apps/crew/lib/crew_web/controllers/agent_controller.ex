@@ -38,8 +38,8 @@ defmodule CrewWeb.AgentController do
   @doc "The linux-vm launcher (§12.3)."
   def linux_vm_script(conn, _params), do: send_launcher(conn, "linux-vm")
 
-  @doc "The mac-vm launcher (§12.3)."
-  def mac_vm_script(conn, _params), do: send_launcher(conn, "mac-vm")
+  @doc "The mac-vz cache VM launcher (§12.3)."
+  def mac_cache_vm_script(conn, _params), do: send_launcher(conn, "mac-cache-vm")
 
   defp send_launcher(conn, type) do
     case Crew.Boxes.Launcher.script(type, Crew.Config.base_url()) do

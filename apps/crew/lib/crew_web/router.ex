@@ -75,7 +75,9 @@ defmodule CrewWeb.Router do
     post "/flatcar/ignition", AgentController, :flatcar_ignition
     post "/flatcar/cachevm/ignition", AgentController, :cachevm_ignition
     get "/linux-vm.sh", AgentController, :linux_vm_script
-    get "/mac-vm.sh", AgentController, :mac_vm_script
+    get "/mac-cache-vm.sh", AgentController, :mac_cache_vm_script
+    # Released mac-vz installers fetch their cache launcher from this URL.
+    get "/mac-vm.sh", AgentController, :mac_cache_vm_script
   end
 
   # Admin pages outside /admin. Before the signed-in scope, so

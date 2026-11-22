@@ -1,11 +1,11 @@
 # What a Crew release pins for its Flatcar boxes (docs/crew_spec.md
 # §12.1, §12.3): the first-boot Flatcar, the Tailscale system extension
-# the Ignition installs, and vfkit for the mac-vm launcher. Flatcar keeps
+# the Ignition installs, and vfkit for the macOS cache launcher. Flatcar keeps
 # a box current after its first boot; these only decide where it starts.
 #
 # The single source: the control plane compiles it into the Ignition
 # (Crew.Boxes.Flatcar) and fills the launchers (/agent/linux-vm.sh,
-# /agent/mac-vm.sh) from it. KEY=value, no quotes, no spaces. Bumping any
+# /agent/mac-cache-vm.sh) from it. KEY=value, no quotes, no spaces. Bumping any
 # of these is a supply-chain review (§20.4).
 
 # Flatcar Container Linux, stable. The SHA-512s are from the release's
@@ -20,7 +20,7 @@ FLATCAR_KERNEL_SHA512_AMD64=8ac5ce48e95b6a62baa8b342b022c1c0df994fc30c3042e062ac
 FLATCAR_KERNEL_SHA512_ARM64=e9d852a45c4953123f513589f0c6b22abd3fbd58354875884fa03bc73d0be85b884cfcadb03646dc66b4b8ad9d710a2830cceee4f3b14712163fa56115f772b2
 FLATCAR_VERITY_AMD64=1eda159b35fabd052c62622359e7a2069af95db3ef23924c9c5652e444715586
 FLATCAR_VERITY_ARM64=6ae5c5ebc899cb7e26ff0cf052d73929ebb0340d53d537c96a4957eafa5184f4
-# The USR-A partition every Flatcar image boots from first (the mac-vm
+# The USR-A partition every Flatcar image boots from first (the Mac cache VM
 # prep boot mounts /usr by it and the verity hash).
 FLATCAR_USR_A=7130c94a-213a-4e5a-8e26-6cce9662f132
 

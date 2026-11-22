@@ -1,7 +1,7 @@
 defmodule CrewAgent.CacheVM do
   @moduledoc """
   A `mac-vz` box's cache VM (§12.1, §12.3, §15.6), from the agent on
-  the Mac. The cache VM is a Flatcar VM the mac-vm launcher runs with
+  the Mac. The cache VM is a Flatcar VM the cache launcher runs with
   `--role cache` (install-macos.sh `--cache-vm`); it runs crew_cache,
   and nothing of the agent's.
 

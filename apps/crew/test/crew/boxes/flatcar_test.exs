@@ -255,11 +255,8 @@ defmodule Crew.Boxes.FlatcarTest do
 
   describe "the data disk (§12.2, §12.4)" do
     test "is /dev/vdb for the launchers' VMs" do
-      for type <- ["linux-vm", "mac-vm"] do
-        config = ignition(type: type)
-        format = body(config, "crew-format-data.service")
-        assert format =~ "ExecStart=/bin/sh /etc/crew-box/format-data.sh /dev/vdb"
-      end
+      format = body(ignition(type: "linux-vm"), "crew-format-data.service")
+      assert format =~ "ExecStart=/bin/sh /etc/crew-box/format-data.sh /dev/vdb"
     end
 
     test "is the device Add box was given on bare metal" do
@@ -550,7 +547,7 @@ defmodule Crew.Boxes.FlatcarTest do
       end
     end
 
-    test "asks DHCP for an address by MAC, as the mac-vm launcher looks it up" do
+    test "asks DHCP for an address by MAC, across reboots" do
       assert contents(ignition(), "/etc/systemd/network/zz-default.network.d/crew-dhcp.conf") =~
                "ClientIdentifier=mac"
     end
@@ -797,7 +794,7 @@ defmodule Crew.Boxes.FlatcarTest do
   end
 
   test "sets the clock from the RTC on Apple's hypervisor only, every 10 s" do
-    config = ignition(type: "mac-vm")
+    config = ignition(type: "linux-vm")
     timer = body(config, "crew-clock-sync.timer")
     assert unit(config, "crew-clock-sync.timer")["enabled"]
     assert timer =~ "OnUnitActiveSec=10s"

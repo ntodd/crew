@@ -837,17 +837,9 @@ The other spikes are recorded here as they run.
 - **`crew-box reimage`** wraps the given Ignition in one that merges it
   (`ignition.config.merge`, a `data:` URL) and adds the launcher's own
   SSH key for `crew-box ssh`.
-- **The mac-vm launcher, end to end** (`e2e/tests/12-mac-vm.spec.js`,
-  `E2E_MAC_VM=1`): the served `mac-vm.sh` downloads vfkit and Flatcar
-  against their pins, writes the disks, stages the Ignition, starts the
-  box under launchd and follows it to enrollment; a job VM then boots
-  under Firecracker in it (nested), and `crew-box` status, ssh, stop,
-  start and uninstall each do what they say. It runs as the user, not
-  root: `CREW_BOX_ROOT` moves the Mac's paths under `/private/tmp/cmv`,
-  and shims answer `id -u` with 0, skip `chown` and send launchd's
-  system domain to the user's GUI domain. Passed on 2026-11-05 on the
-  M4 Max (macOS 27.2) in 1.9 minutes, downloads included. Not covered:
-  a real root install in the system domain, and a reboot of the Mac.
+- Existing mac-vm boxes drain after the control-plane upgrade. Operators can
+  track the last jobs in the original box and enroll their native replacement
+  with a fresh identity. [Migration and recovery](setup/upgrading.md#migrate-a-mac-vm-worker-to-mac-vz)
 
 ## Cache VM notes
 
@@ -863,7 +855,7 @@ The other spikes are recorded here as they run.
   only the Mac in, and the bearer token is required off loopback. That
   leaves Tailscale, its auth key and its enrollment out of the cache VM.
 - **Install:** `install-macos.sh --cache-vm` runs the control plane's
-  mac-vm launcher as `--role cache` with the box's join token, before
+  `/agent/mac-cache-vm.sh` launcher as `--role cache` with the box's join token, before
   the agent starts. The launcher gets the Ignition from
   `POST /agent/flatcar/cachevm/ignition` (a mac-vz token only), with the
   management token in `X-Crew-Cache-Token`; the control plane keeps no
@@ -1268,7 +1260,7 @@ plane, `CrewAgent.Updater` on the agent, `crew-root-install` and
   (`packaging/release/build-darwin.sh`) is the agent's release with
   `bin/crew-vz`, `bin/crew-launch`, `share/sandbox.sb`, `launchd/`,
   `install-macos.sh` and `VERSION` at its root. It doesn't carry vfkit
-  (§20.1 lists it): that's the mac-vm launcher's, not a mac-vz box's.
+  because the cache launcher fetches the pinned copy.
 - **An update depends on the tarballs' versions:** a box is sent its
   target until it joins on that version, so a release whose
   `bin/crew_agent version` isn't its tag's would be sent forever. Both

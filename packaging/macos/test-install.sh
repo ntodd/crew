@@ -103,18 +103,28 @@ has "$out/env" "CREW_VZ_HOST_RESERVE_MIB='16384'"
 grep -q "CREW_JOIN_TOKEN" "$out/env" && fail "a reinstall wrote a join token"
 [ "$(grep -c '^CREW_DATA_DIR=' "$out/env")" = 1 ] || fail "CREW_DATA_DIR twice"
 
-# --cache-vm (§12.3, §15.6): the mac-vm launcher makes the cache VM with
+# --cache-vm (§12.3, §15.6): the cache VM launcher makes the cache VM with
 # the box's join token, then the agent gets its MAC and the cache's
 # management token, and root's daemon restarts it when the agent asks.
 hostvm="$out/hostvm"
 CREW_HOSTVM_DIR="$hostvm" CREW_DRY_RUN_OUT="$out" "$here/install-macos.sh" --dry-run --cache-vm \
   --url wss://crew.example.ts.net/agent/websocket --token cj_test --name m1ultra > "$out/log4"
 has "$out/log4" "'curl' '-fsSL' '-o'"
-has "$out/log4" "'https://crew.example.ts.net/agent/mac-vm.sh'"
+has "$out/log4" "'https://crew.example.ts.net/agent/mac-cache-vm.sh'"
 has "$out/log4" "'--role' 'cache' '--token' 'cj_test'"
 run_line=$(grep -n "'--role' 'cache'" "$out/log4" | cut -d: -f1)
 agent_line=$(grep -n "bootstrap' 'system' '/Library/LaunchDaemons/com.crew.agent.plist'" "$out/log4" | cut -d: -f1)
 [ "$run_line" -lt "$agent_line" ] || fail "the cache VM must be up before the agent starts"
+
+# A worker previously named cachevm must keep its disks and cannot supply cache credentials.
+mkdir -p "$hostvm/cachevm"
+printf 'name=cachevm\n' > "$hostvm/cachevm/box.conf"
+if CREW_HOSTVM_DIR="$hostvm" "$here/install-macos.sh" --dry-run --cache-vm \
+  --url wss://crew.example.ts.net/agent/websocket --token cj_test > "$out/collision" 2>&1; then
+  fail "a legacy worker was accepted as the cache VM"
+fi
+has "$out/collision" "legacy worker"
+grep -q 'bootout' "$out/collision" && fail "collision stopped a service"
 
 # Once it exists, a run picks up its MAC and token instead of making another.
 mkdir -p "$hostvm/cachevm"

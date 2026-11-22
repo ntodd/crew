@@ -34,7 +34,7 @@ defmodule CrewWeb.CrewComponents do
       (online and box.pinned_capabilities != nil and not box.firewall_ok) &&
         {"rose", "Firewall unverified"},
       box.needs_approval && {"amber", "Needs approval"},
-      box.draining && {"sky", "Draining"},
+      Crew.Boxes.Box.draining?(box) && {"sky", "Draining"},
       box.quarantined_until && DateTime.compare(box.quarantined_until, now) == :gt &&
         {"rose", "Quarantined"},
       box.reboot_required && {"amber", "Reboot needed"}
