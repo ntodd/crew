@@ -947,6 +947,27 @@ defmodule Crew.VMs.ServerTest do
       await_state(vm.id, "destroyed")
     end
 
+    test "an exit recorded in inventory recovers a lost exit event", %{box: box, repo: repo} do
+      id = place(box, repo)
+      to_idle(box, id)
+
+      entry = %{
+        "vm_id" => id,
+        "alive" => false,
+        "exited" => %{"reason" => "poweroff", "at" => 1, "cleanup" => "error"}
+      }
+
+      agent_event(box, "box.inventory", %{"vms" => [entry], "images" => []})
+      assert await_state(id, "failed").fail_reason == "crashed"
+
+      agent_event(box, "box.inventory", %{
+        "vms" => [put_in(entry, ["exited", "cleanup"], "ok")],
+        "images" => []
+      })
+
+      assert await_state(id, "destroyed").destroyed_at
+    end
+
     test "the join inventory: missing VMs are lost, unknown live ones are stopped", %{
       box: box,
       repo: repo

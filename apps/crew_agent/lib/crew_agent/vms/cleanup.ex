@@ -122,7 +122,10 @@ defmodule CrewAgent.VMs.Cleanup do
   def retry_all(config \\ Config.get()) do
     driver = Driver.impl()
 
-    for vm_id <- pending_ids(config) do
+    for vm_id <- pending_ids(config),
+        dir = Config.vm_dir(config, vm_id),
+        # A failed cleanup records the marker before publishing its exit.
+        not File.exists?(Path.join(dir, "vm.json")) or File.exists?(Path.join(dir, "exited.json")) do
       case driver.cleanup(vm_id) do
         :ok ->
           Logger.info("VM #{vm_id}'s cleanup finished on a retry")

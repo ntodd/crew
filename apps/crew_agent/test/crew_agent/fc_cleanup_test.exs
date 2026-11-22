@@ -50,6 +50,11 @@ defmodule CrewAgent.FirecrackerCleanupTest do
       %{"verb" => "cleanup"} = req ->
         send(test, {:cleanup, req["vm_id"]})
 
+        if :counters.get(cleanup_works, 1) == 3 do
+          dir = Config.vm_dir(config, req["vm_id"])
+          send(test, {:exit_visible_before_cleanup, File.exists?(Path.join(dir, "exited.json"))})
+        end
+
         if :counters.get(cleanup_works, 1) == 1,
           do: %{"ok" => true},
           else: %{"ok" => false, "error" => "failed", "detail" => "rm: device busy"}
@@ -317,6 +322,15 @@ defmodule CrewAgent.FirecrackerCleanupTest do
     refute Cleanup.pending?(ctx.config, vm_id)
     assert {:ok, _} = Net.claim(other = CrewProtocol.uuid7(), index)
     Net.release(other)
+  end
+
+  test "an adoption failure publishes its exit only once the cleanup outcome is known", ctx do
+    id = vm_record(ctx, 4330, [])
+    :counters.put(ctx.works, 1, 3)
+    CrewAgent.VMs.adopt_all()
+    assert_received {:exit_visible_before_cleanup, false}
+    assert Enum.find(CrewAgent.VMs.inventory(), &(&1.vm_id == id)).exited.cleanup == "error"
+    Net.release(id)
   end
 
   test "at start a pending cleanup's lease is held before anything else can take it", ctx do

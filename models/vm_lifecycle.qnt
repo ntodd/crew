@@ -160,7 +160,7 @@ module vm_lifecycle {
     | AOpResult(bool)
     | AState(str)
     | AExited({ reason: str, cleanupOk: bool })
-    | AInventory({ listed: bool, alive: bool })
+    | AInventory({ listed: bool, alive: bool, exited: bool, reason: str, cleanupOk: bool })
 
   /// One call of Machine.transition/2 and what it answered: `after` and
   /// `effects` are the machine's own (before the server's alive_for and
@@ -394,8 +394,8 @@ module vm_lifecycle {
         else s.applyEvent(GuestJobStarted, "")
       | AExited(x) => s.applyEvent(Exited({ reason: x.reason, cleanupOk: x.cleanupOk }), "")
       | AInventory(i) =>
-        // apply_inventory/2 skips a requested VM.
-        if (s.cp.state == "requested") s
+        if (i.listed and i.exited) s.applyEvent(Exited({ reason: i.reason, cleanupOk: i.cleanupOk }), "")
+        else if (s.cp.state == "requested") s
         else if (not(i.listed)) s.applyEvent(InventoryMissing, "")
         else if (i.alive) s.applyEvent(InventoryAlive, "")
         else s
@@ -404,7 +404,7 @@ module vm_lifecycle {
   // ---- the agent (CrewAgent.VMs, CrewAgent.VM) ---------------------------
 
   pure def inventoryEntry(s: Sys): AgEv =
-    AInventory({ listed: s.dir, alive: s.dir and not(s.exitedJson) and (s.server or s.vmm) })
+    AInventory({ listed: s.dir, exited: s.exitedJson, reason: exitReason(s), cleanupOk: not(s.cleanupPending), alive: s.dir and not(s.exitedJson) and (s.server or s.vmm) })
 
   pure def emit(s: Sys, e: AgEv): Sys = s.with("toCp", s.toCp.append(e))
 

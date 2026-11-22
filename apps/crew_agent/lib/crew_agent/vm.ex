@@ -212,16 +212,13 @@ defmodule CrewAgent.VM do
           "detail" => "start_failed"
         }
 
-        _ = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
-        Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        :ok = Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        :ok = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
     end
   end
 
   # A VM that can't be adopted (a crash between writing vm.json and
-  # guest.json, say) ends as any other does: a terminal exit record, so
-  # it's never taken for live again, then its cleanup, which releases
-  # the lease, the clone and its kernel when it works and is retried
-  # when it doesn't, and vm.exited.
+  # guest.json, say) publishes its exit once the cleanup outcome is known.
   defp abandon_adoption(driver, vm_id, dir) do
     exited = %{
       "code" => 0,
@@ -230,19 +227,20 @@ defmodule CrewAgent.VM do
       "detail" => "adopt_failed"
     }
 
-    if File.dir?(dir),
-      do: _ = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
-
     cleanup =
       case driver.cleanup(vm_id) do
         :ok ->
-          Cleanup.done(vm_id)
           "ok"
 
         {:error, why} ->
-          Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
+          :ok = Cleanup.failed(vm_id, if(is_binary(why), do: why, else: inspect(why)))
           "error"
       end
+
+    if File.dir?(dir),
+      do: :ok = SafeFS.write_atomic(Path.join(dir, "exited.json"), Jason.encode!(exited), 0o640)
+
+    if cleanup == "ok", do: Cleanup.done(vm_id)
 
     emit(
       Event.new("vm.exited", %{
@@ -824,7 +822,7 @@ defmodule CrewAgent.VM do
         :ok
 
       {:error, why} ->
-        Cleanup.failed(state.vm_id, if(is_binary(why), do: why, else: inspect(why)))
+        :ok = Cleanup.failed(state.vm_id, if(is_binary(why), do: why, else: inspect(why)))
         {:error, why}
     end
   end

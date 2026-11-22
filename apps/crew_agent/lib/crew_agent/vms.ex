@@ -222,7 +222,12 @@ defmodule CrewAgent.VMs do
       since: meta["created_at"],
       exited:
         exited &&
-          %{reason: exited["reason"], exit_status: exited["code"] || 0, at: exited["at"] || 0}
+          %{
+            reason: exited["reason"],
+            exit_status: exited["code"] || 0,
+            at: exited["at"] || 0,
+            cleanup: if(Cleanup.pending?(vm_id), do: "error", else: "ok")
+          }
     }
   end
 

@@ -251,14 +251,24 @@ defmodule Crew.VMs do
 
     vms = for_box(box_id)
 
-    # A requested VM's vm.start may still be on its way, so its absence
-    # means nothing yet: the ack timeout covers a lost one. A listed VM
-    # that has exited gets its vm.exited from the agent's outbox.
-    for vm <- vms, vm.state != "requested" do
+    for vm <- vms do
       case Map.get(listed_by_id, vm.id) do
-        nil -> deliver_event(vm, :inventory_missing)
-        %{alive: true} -> deliver_event(vm, :inventory_alive)
-        %{alive: false} -> :ok
+        %{alive: false, exited: %{cleanup: cleanup, reason: reason}} ->
+          deliver_event(vm, {:exited, reason, if(cleanup == "ok", do: :ok, else: :error)})
+
+        # A requested VM's start may still be on its way.
+        _ when vm.state == "requested" ->
+          :ok
+
+        nil ->
+          deliver_event(vm, :inventory_missing)
+
+        %{alive: true} ->
+          deliver_event(vm, :inventory_alive)
+
+        # Older agents omit cleanup. Wait for their exit event or a later absence.
+        %{alive: false} ->
+          :ok
       end
     end
 

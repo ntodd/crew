@@ -25,7 +25,7 @@ defmodule CrewWeb.AgentChannel do
       )
 
       send(self(), :after_join)
-      {:ok, socket |> assign(:box, box) |> assign(:join, join)}
+      {:ok, %{inventory_cleanup: true}, socket |> assign(:box, box) |> assign(:join, join)}
     else
       {:error, :protocol} -> {:error, %{reason: "unsupported protocol version"}}
       {:error, _errors} -> {:error, %{reason: "invalid join payload"}}

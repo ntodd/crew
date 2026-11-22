@@ -1365,7 +1365,7 @@ both ends. The vocabulary is fixed: there's no generic exec.
 | `vm.metrics` | `vm_id`, `t`, `cpu_pct`, `mem_used_mib`, `mem_total_mib`, `disk_used_mib`, `net_rx_bps`, `net_tx_bps`, `host_cpu_pct`, `host_rss_mib`; from newer guests, `mem_peak_mib`, `oom_kills`, `cpu_pressure_pct`, `mem_pressure_pct`, `mem_full_pressure_pct` | Every 5 s per VM |
 | `box.metrics` | Host CPU, memory, swap, load, disk, `vm_area_free_mib`, `cache_used_mib`, `vms_running`, `t` | Every 5 s (Foreman's pattern) |
 | `box.capabilities` | §11.1 | On join and on change |
-| `box.inventory` | VMs [{vm_id, alive, since, exited: {reason, exit_status, at} or null}], images [{id, state}] | On join and on request |
+| `box.inventory` | VMs [{vm_id, alive, since, exited: {reason, exit_status, at, cleanup?} or null}], images [{id, state}] | On join and on request |
 | `box.reboot` | `required`, `packages` (≤ 50), `boot_id`, `can_restart`, `os_version`, and on `mac-vz` `cache_vm` {required, packages, boot_id} or null | On join and on change (copy Foreman's `box.reboot`) |
 | `image.state` | `image_id`, `state` ∈ {downloading, verifying, converting, ready, failed}, `progress`, `error` | During prepare |
 | `cache.stats` | Per host: hits, misses, bytes served, bytes stored; evictions; digest mismatches | Every 60 s |

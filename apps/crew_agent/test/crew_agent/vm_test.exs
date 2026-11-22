@@ -50,7 +50,7 @@ defmodule CrewAgent.VMTest do
     # Its server holds the unacknowledged logs, and nothing else.
     assert :sys.get_state(VM.whereis(vm_id)).exited
 
-    assert [%{vm_id: ^vm_id, alive: false, exited: %{reason: "poweroff"}}] =
+    assert [%{vm_id: ^vm_id, alive: false, exited: %{reason: "poweroff", cleanup: "ok"}}] =
              Enum.filter(VMs.inventory(), &(&1.vm_id == vm_id))
 
     # box.metrics' vms_running counts VMs that run, not servers holding logs.
