@@ -761,22 +761,26 @@ defmodule Crew.Jobs do
     ours =
       from(j in Job,
         where: j.classification == "ours",
-        select: {j.id, j.queued_at, [j.started_at, j.completed_at]}
+        select: {j.id, j.queued_at, j.runner_name, j.started_at, j.completed_at}
       )
 
     jobs =
       [
         where(ours, [j], j.gh_state == "queued"),
-        where(ours, [j], j.started_at > ^since),
+        where(ours, [j], j.started_at > ^since and j.runner_name != ""),
         where(
           ours,
           [j],
-          j.gh_state == "completed" and j.completed_at > ^since and is_nil(j.started_at)
+          j.gh_state == "completed" and j.completed_at > ^since and
+            (is_nil(j.started_at) or is_nil(j.runner_name) or j.runner_name == "")
         )
       ]
       |> Enum.flat_map(&Repo.all/1)
       |> Enum.uniq_by(&elem(&1, 0))
-      |> Enum.map(fn {_, from, ends} -> {from, ends} end)
+      |> Enum.map(fn
+        {_, from, runner, _, completed} when runner in [nil, ""] -> {from, [completed]}
+        {_, from, _, started, completed} -> {from, [started, completed]}
+      end)
 
     # Boots are cut off within minutes (§9.2), so an hour's margin before
     # the window catches every boot that overlaps it.
@@ -895,7 +899,9 @@ defmodule Crew.Jobs do
     rows =
       Repo.all(
         from j in Job,
-          where: j.classification == "ours" and j.started_at > ^since and j.started_at <= ^now,
+          where:
+            j.classification == "ours" and j.runner_name != "" and j.started_at > ^since and
+              j.started_at <= ^now,
           select: {j.started_at, j.conclusion}
       )
 
