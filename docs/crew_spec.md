@@ -326,7 +326,7 @@ personal account, so it's never missing there.
      - Failures are rate-limited per client, using Foreman's
        `ForemanWeb.ClientIP` (the last `X-Forwarded-For` entry, trusted
        only from loopback), at 60 a minute.
-     - **Correctly signed requests are never rate-limited.**
+     - After 60 signature failures from one client, return 429 before reading further bodies until the minute expires. GitHub redelivery can recover a signed delivery refused during that window.
   3. Insert `webhook_deliveries(github_delivery_id)`. If the id already
      exists, answer 200 and stop.
   4. Enqueue `Crew.GitHub.HookWorker` with the event name, the action and

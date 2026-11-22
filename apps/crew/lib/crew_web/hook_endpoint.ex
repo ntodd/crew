@@ -8,8 +8,8 @@ defmodule CrewWeb.HookEndpoint do
   Handling, in order:
   1. Refuse bodies over 5 MiB (413) before reading them.
   2. Verify `X-Hub-Signature-256`. On failure, 401; failures are
-     rate-limited per client (60 a minute), correctly signed requests
-     never are.
+     counted per client. After 60 failures, reject further requests in
+     the window before reading the body.
   3. Record the delivery id. Seen before: 200, and stop.
   4. Queue `Crew.GitHub.HookWorker` with the event, action and payload.
   5. 202: GitHub's 10-second timeout never waits on processing.
@@ -31,13 +31,17 @@ defmodule CrewWeb.HookEndpoint do
 
   @impl true
   def call(%Plug.Conn{method: "POST", path_info: ["hooks", "github"]} = conn, _opts) do
-    with :ok <- check_length(conn),
+    key = "hooks:" <> CrewWeb.ClientIP.from_conn(conn)
+
+    with false <- Crew.RateLimit.exhausted?(key, @fail_window, @fail_limit),
+         :ok <- check_length(conn),
          {:ok, body, conn} <- read_limited(conn),
-         :ok <- verify(conn, body),
+         :ok <- verify(conn, body, key),
          {:ok, delivery, event} <- headers(conn),
          {:ok, payload} <- decode(body) do
       accept(conn, delivery, event, payload)
     else
+      true -> respond(conn, 429)
       {:halt, conn, status} -> respond(conn, status)
       {:halt, status} -> respond(conn, status)
     end
@@ -68,7 +72,7 @@ defmodule CrewWeb.HookEndpoint do
     end
   end
 
-  defp verify(conn, body) do
+  defp verify(conn, body, key) do
     signature = conn |> get_req_header("x-hub-signature-256") |> List.first()
 
     case Webhook.verify(body, signature, Crew.GitHub.webhook_secret()) do
@@ -76,16 +80,12 @@ defmodule CrewWeb.HookEndpoint do
         :ok
 
       :error ->
-        key = "hooks:" <> CrewWeb.ClientIP.from_conn(conn)
+        count = Crew.RateLimit.inc(key, @fail_window)
 
-        if Crew.RateLimit.exhausted?(key, @fail_window, @fail_limit) do
-          {:halt, 429}
-        else
-          if Crew.RateLimit.failed(key, @fail_window, @fail_limit) == :first_over,
-            do: Logger.warning("webhook signature failures from #{key} are being rate limited")
+        if count == @fail_limit,
+          do: Logger.warning("webhook signature failures from #{key} have reached the limit")
 
-          {:halt, 401}
-        end
+        {:halt, if(count > @fail_limit, do: 429, else: 401)}
     end
   end
 
