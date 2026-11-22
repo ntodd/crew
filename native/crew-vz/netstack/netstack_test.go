@@ -369,7 +369,7 @@ func TestDNSGoesToFallback(t *testing.T) {
 	}
 	defer up.Close()
 	go func() {
-		buf := make([]byte, 1500)
+		buf := make([]byte, 65536)
 		for {
 			n, addr, err := up.ReadFrom(buf)
 			if err != nil {
@@ -384,11 +384,10 @@ func TestDNSGoesToFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	for i := 0; i < 3; i++ {
-		q := fmt.Sprintf("q%d", i)
+	for _, q := range []string{"q0", strings.Repeat("large", 800), "q2"} {
 		c.Write([]byte(q))
 		c.SetReadDeadline(time.Now().Add(3 * time.Second))
-		buf := make([]byte, 100)
+		buf := make([]byte, len(q)+len("answer:"))
 		n, err := c.Read(buf)
 		if err != nil || string(buf[:n]) != "answer:"+q {
 			t.Fatalf("dns reply %q, %v", buf[:n], err)
