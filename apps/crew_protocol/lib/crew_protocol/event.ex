@@ -137,6 +137,7 @@ defmodule CrewProtocol.Event do
            exited:
              {{:object,
                reason: {{:enum, @exit_reasons}, required: true},
+               cleanup: {{:enum, ["ok", "error"]}, []},
                exit_status: {:int, default: 0},
                at: {:integer, required: true}}, []}}}, required: true, max: 1000},
       images:

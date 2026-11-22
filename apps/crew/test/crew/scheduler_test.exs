@@ -46,6 +46,14 @@ defmodule Crew.SchedulerTest do
       assert id == job.id
     end
 
+    test "removing repository access settles queued jobs and prevents late demand", %{repo: repo} do
+      job = queued_job(repo, id: 31)
+      :ok = Crew.Repos.repos_removed(repo.installation.github_id, [%{"id" => repo.github_id}])
+      assert Scheduler.snapshot().jobs == []
+      assert Repo.reload!(job).classification == "not_ours"
+      assert queued_job(repo, id: 32).classification == "not_ours"
+    end
+
     test "carries each job's and VM's tier", %{box: box, repo: repo} do
       regular = queued_job(repo, id: 14)
       spare = queued_job(repo, id: 15, labels: ["crew-m-spare"])

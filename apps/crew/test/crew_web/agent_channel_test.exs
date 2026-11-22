@@ -76,6 +76,41 @@ defmodule CrewWeb.AgentChannelTest do
                )
     end
 
+    test "a replacement takes commands while the previous channel is suspended", %{box: box} do
+      old = join_as(box).channel_pid
+      Process.unlink(old)
+      :sys.suspend(old)
+
+      try do
+        _current = join_as(box)
+        assert {:ok, op} = Operations.dispatch(box.id, "box.inventory", %{})
+        op_id = op.id
+        assert_push "command", %{"op_id" => ^op_id}
+      after
+        :sys.resume(old)
+      end
+
+      assert eventually(fn -> not Process.alive?(old) end)
+      assert Agents.online?(box.id)
+      refute Repo.reload!(box).offline_at
+    end
+
+    test "channels reconnect when the connection directory restarts", %{box: box} do
+      channel = join_as(box).channel_pid
+      Process.unlink(channel)
+      ref = Process.monitor(channel)
+      :ok = Supervisor.terminate_child(Crew.Supervisor, Crew.Agents.Connections)
+
+      try do
+        assert_receive {:DOWN, ^ref, :process, ^channel, _}, 1_000
+      after
+        {:ok, _} = Supervisor.restart_child(Crew.Supervisor, Crew.Agents.Connections)
+      end
+
+      join_as(box)
+      assert Agents.online?(box.id)
+    end
+
     test "leaving marks the box offline", %{box: box} do
       socket = join_as(box)
       Process.unlink(socket.channel_pid)

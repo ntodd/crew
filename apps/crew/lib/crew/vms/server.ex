@@ -120,8 +120,7 @@ defmodule Crew.VMs.Server do
   def handle_continue(:boot, %{vm: %VM{state: "requested"}} = state) do
     # vm.start may have reached the agent: the runner is deleted first,
     # and a 422 means it took a job, so the VM is busy (§8.6).
-    delete_runner_then(state, "cp_restart")
-    {:noreply, state}
+    {:noreply, effect(state, {:delete_runner_then, "cp_restart"}, :boot)}
   end
 
   def handle_continue(:boot, state), do: {:noreply, rearm(state)}
@@ -249,14 +248,20 @@ defmodule Crew.VMs.Server do
     {:noreply, state |> Map.update!(:timers, &Map.delete(&1, name)) |> apply_transition(event)}
   end
 
-  def handle_info({:runner_delete_result, result, reason}, state) do
+  def handle_info(
+        {:runner_delete_result, ref, result},
+        %{delete_attempt: %{ref: ref, reason: reason} = attempt} = state
+      ) do
     case result do
       {:ok, outcome} ->
         {:noreply,
          %{state | delete_attempt: nil} |> apply_transition({:runner_deleted, outcome, reason})}
 
+      {:error, _} when attempt.origin != state.vm.state and reason != "lost" ->
+        {:noreply, %{state | delete_attempt: nil}}
+
       {:error, error} ->
-        since = state.delete_attempt || System.monotonic_time(:millisecond)
+        since = attempt.since
         limit = (Application.get_env(:crew, :idle_max_s, 600) + 300) * 1000
 
         if System.monotonic_time(:millisecond) - since > limit do
@@ -267,16 +272,23 @@ defmodule Crew.VMs.Server do
           {:noreply,
            %{state | delete_attempt: nil} |> apply_transition({:runner_deleted, :gone, reason})}
         else
-          Process.send_after(self(), {:retry_delete, reason}, ms(:delete_retry))
-          {:noreply, %{state | delete_attempt: since}}
+          Process.send_after(self(), {:retry_delete, ref}, ms(:delete_retry))
+          {:noreply, state}
         end
     end
   end
 
-  def handle_info({:retry_delete, reason}, state) do
-    delete_runner_then(state, reason)
-    {:noreply, state}
+  def handle_info({:retry_delete, ref}, %{delete_attempt: %{ref: ref}} = state) do
+    if state.delete_attempt.origin == state.vm.state or state.delete_attempt.reason == "lost" do
+      delete_runner_then(state, ref)
+      {:noreply, state}
+    else
+      {:noreply, %{state | delete_attempt: nil}}
+    end
   end
+
+  def handle_info({:retry_delete, _ref}, state), do: {:noreply, state}
+  def handle_info({:runner_delete_result, _ref, _result}, state), do: {:noreply, state}
 
   def handle_info({:op_result, %{status: status} = op}, state) do
     result = if status == "succeeded", do: :ok, else: :error
@@ -345,6 +357,9 @@ defmodule Crew.VMs.Server do
   # -- events -------------------------------------------------------------------------
 
   @impl true
+  def handle_cast({:event, {:reap, _}}, %{delete_attempt: attempt} = state)
+      when not is_nil(attempt), do: {:noreply, state}
+
   def handle_cast({:event, {:reap, why} = event}, state),
     do: {:noreply, apply_transition(%{state | reap_why: why}, event)}
 
@@ -362,8 +377,17 @@ defmodule Crew.VMs.Server do
       :ignored ->
         record(state, "ignored", %{"event" => describe(event)})
 
+      {:ok, ^machine, [{:delete_runner_then, _} = delete]} ->
+        effect(state, delete, event)
+
       {:ok, next, effects} ->
         next = override_reason(next, opts)
+
+        state =
+          if next.state in ~w(busy finished failed destroyed),
+            do: %{state | delete_attempt: nil},
+            else: state
+
         state = persist(state, machine, next, event)
         state = Enum.reduce(effects, state, &effect(&2, &1, event))
         state = accounting(state, machine, next)
@@ -499,10 +523,20 @@ defmodule Crew.VMs.Server do
   # delete: the answer is :gone, now. Sent to itself instead, it could
   # land after a JIT config already in the mailbox had registered a
   # runner and sent vm.start.
+  defp effect(%{delete_attempt: attempt} = state, {:delete_runner_then, _}, _event)
+       when not is_nil(attempt), do: state
+
   defp effect(state, {:delete_runner_then, reason}, _event) do
     if state.vm.runner_id do
-      delete_runner_then(state, reason)
-      disarm(state, :ack)
+      attempt = %{
+        ref: make_ref(),
+        since: System.monotonic_time(:millisecond),
+        reason: reason,
+        origin: state.vm.state
+      }
+
+      delete_runner_then(state, attempt.ref)
+      disarm(%{state | delete_attempt: attempt}, :ack)
     else
       apply_transition(state, {:runner_deleted, :gone, reason})
     end
@@ -583,7 +617,7 @@ defmodule Crew.VMs.Server do
     |> arm(:check, grace + ms(:finished_force) + ms(:check), :check)
   end
 
-  defp delete_runner_then(state, reason) do
+  defp delete_runner_then(state, ref) do
     server = self()
     vm = state.vm
     repo = vm.repo_id |> Repos.get!() |> Repos.with_installation()
@@ -601,7 +635,7 @@ defmodule Crew.VMs.Server do
           kind, error -> {:error, {kind, error}}
         end
 
-      send(server, {:runner_delete_result, result, reason})
+      send(server, {:runner_delete_result, ref, result})
     end)
   end
 

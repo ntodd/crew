@@ -162,7 +162,7 @@ defmodule CrewWeb.QueueLiveTest do
       })
     end
 
-    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    :ok = Crew.Agents.register(box.id)
     {:ok, view, _} = live(log_in(conn, user_fixture(role: "admin")), ~p"/queue")
     assert has_element?(view, "#queue-count", "3")
     assert has_element?(view, "#queue-covered-count", "2")

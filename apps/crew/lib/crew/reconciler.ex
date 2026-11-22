@@ -45,6 +45,7 @@ defmodule Crew.Reconciler do
   @stale_s 3600
   @recheck_s 300
   @webhook_quiet_s 300
+  @attempts_per_sweep 2
   @sweep_s 300
   @active_window_s 3600
   @recent_days 7
@@ -209,7 +210,10 @@ defmodule Crew.Reconciler do
     if Application.get_env(:crew, :webhooks, true) do
       @sweep_s
     else
-      poll_interval(length(active_repos()), hourly_limit())
+      repos = active_repos()
+      observed = :persistent_term.get({__MODULE__, :open_runs}, %{})
+      open_runs = Enum.sum(for id <- repos, do: Map.get(observed, id, 1))
+      poll_interval(length(repos), hourly_limit(), open_runs)
     end
   end
 
@@ -220,24 +224,38 @@ defmodule Crew.Reconciler do
   end
 
   @doc """
-  The poll-only sweep interval in seconds (§8.8):
-  `max(15, ⌈3600 × calls_per_sweep × active_repos ÷ (0.3 × hourly_limit)⌉)`,
-  with about 3 calls per sweep (two run lists, plus their jobs).
+  The poll-only interval budgets two run listings per active repo and one
+  job listing per observed open attempt. Unseen repos assume one attempt.
+  Additional pages cost extra calls.
   """
-  def poll_interval(active_repos, hourly_limit) do
-    max(15, ceil(3600 * 3 * active_repos / (0.3 * hourly_limit)))
+  def poll_interval(active_repos, hourly_limit),
+    do: poll_interval(active_repos, hourly_limit, active_repos)
+
+  def poll_interval(active_repos, hourly_limit, open_runs) do
+    max(15, ceil(3600 * (2 * active_repos + open_runs) / (0.3 * hourly_limit)))
   end
 
   @doc "Sweeps for jobs Crew doesn't know. `{:ok, %{repos:, added:}}`."
   def sweep_missed do
     :persistent_term.put({__MODULE__, :swept_at}, System.monotonic_time(:second))
 
+    webhooks? = Application.get_env(:crew, :webhooks, true)
+
     repos =
-      if Application.get_env(:crew, :webhooks, true),
+      if webhooks?,
         do: repos_with_recent_jobs(),
         else: repos_due_for_polling()
 
-    added = repos |> Enum.map(&sweep_repo/1) |> Enum.sum()
+    results = Enum.map(repos, &sweep_repo(&1, webhooks?))
+
+    unless webhooks? do
+      :persistent_term.put(
+        {__MODULE__, :open_runs},
+        Map.new(results, fn {id, open, _} -> {id, open} end)
+      )
+    end
+
+    added = Enum.sum(for {_, _, n} <- results, do: n)
     {:ok, %{repos: length(repos), added: added}}
   end
 
@@ -289,19 +307,35 @@ defmodule Crew.Reconciler do
     )
   end
 
-  defp sweep_repo(repo) do
+  defp sweep_repo(repo, webhooks?) do
     inst = repo.installation.github_id
 
-    ["queued", "in_progress"]
-    |> Enum.flat_map(fn status ->
-      case Client.list_runs(inst, repo.full_name, status) do
-        {:ok, runs} -> runs
-        error -> Logger.warning("sweeping #{repo.full_name}: #{inspect(error)}") && []
-      end
-    end)
-    |> Enum.uniq_by(&{&1["id"], &1["run_attempt"]})
-    |> Enum.map(&sweep_run(repo, &1))
-    |> Enum.sum()
+    runs =
+      ["queued", "in_progress"]
+      |> Enum.flat_map(fn status ->
+        case Client.list_runs(inst, repo.full_name, status) do
+          {:ok, runs} -> runs
+          error -> Logger.warning("sweeping #{repo.full_name}: #{inspect(error)}") && []
+        end
+      end)
+      |> Enum.uniq_by(&{&1["id"], &1["run_attempt"]})
+
+    selected = if webhooks?, do: rotate_attempts(repo.id, runs), else: runs
+    added = Enum.sum(Enum.map(selected, &sweep_run(repo, &1)))
+    {repo.id, length(runs), added}
+  end
+
+  # Finish the previous round before starting another, even if new runs
+  # arrive on every pass. A run can grow new matrix jobs between rounds.
+  defp rotate_attempts(repo_id, runs) do
+    key = "sweep_attempts_#{repo_id}"
+    by_attempt = Map.new(runs, &{[&1["id"], &1["run_attempt"] || 1], &1})
+    saved = Crew.Settings.get(key, [])
+    pending = Enum.filter(saved, &Map.has_key?(by_attempt, &1))
+    round = if pending == [], do: Enum.sort(Map.keys(by_attempt)), else: pending
+    {selected, remaining} = Enum.split(round, @attempts_per_sweep)
+    if remaining != saved, do: Crew.Settings.put(key, remaining)
+    Enum.map(selected, &Map.fetch!(by_attempt, &1))
   end
 
   defp sweep_run(repo, run) do

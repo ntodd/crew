@@ -90,9 +90,9 @@ defmodule Crew.Repos do
       Repo.transact(fn ->
         i |> Ecto.Changeset.change(removed_at: now) |> Repo.update!()
 
-        Repo.update_all(
-          from(r in GitRepo, where: r.installation_id == ^i.id and is_nil(r.archived_at)),
-          set: [archived_at: now, updated_at: now]
+        archive(
+          from(r in GitRepo, where: r.installation_id == ^i.id),
+          now
         )
 
         {:ok, :done}
@@ -118,9 +118,9 @@ defmodule Crew.Repos do
       ids = Enum.map(repos, & &1["id"])
       now = DateTime.utc_now()
 
-      Repo.update_all(
+      archive(
         from(r in GitRepo, where: r.installation_id == ^i.id and r.github_id in ^ids),
-        set: [archived_at: now, updated_at: now]
+        now
       )
     end
 
@@ -207,13 +207,11 @@ defmodule Crew.Repos do
         listed = Enum.map(repos, & &1["id"])
         now = DateTime.utc_now()
 
-        Repo.update_all(
+        archive(
           from(r in GitRepo,
-            where:
-              r.installation_id == ^installation.id and r.github_id not in ^listed and
-                is_nil(r.archived_at)
+            where: r.installation_id == ^installation.id and r.github_id not in ^listed
           ),
-          set: [archived_at: now, updated_at: now]
+          now
         )
 
         installation |> Ecto.Changeset.change(synced_at: now) |> Repo.update!()
@@ -226,6 +224,29 @@ defmodule Crew.Repos do
 
         0
     end
+  end
+
+  defp archive(repos, now) do
+    Repo.transact(fn ->
+      ids = select(repos, [r], r.id)
+
+      Repo.update_all(from(r in repos, where: is_nil(r.archived_at)),
+        set: [archived_at: now, updated_at: now]
+      )
+
+      settle =
+        from(j in Crew.Jobs.Job,
+          where:
+            j.repo_id in subquery(ids) and j.gh_state in ["queued", "waiting"] and
+              j.classification != "not_ours"
+        )
+
+      Repo.update_all(settle,
+        set: [classification: "not_ours", wait_reason: nil, blocked_reason: nil, updated_at: now]
+      )
+
+      {:ok, :done}
+    end)
   end
 
   defp upsert_repo(installation, data) do
@@ -241,9 +262,15 @@ defmodule Crew.Repos do
       archived_at: archived_at
     }
 
-    (get_by_github_id(data["id"]) || %GitRepo{})
-    |> GitRepo.github_changeset(attrs)
-    |> Repo.insert_or_update()
+    Repo.transact(fn ->
+      with {:ok, repo} <-
+             (get_by_github_id(data["id"]) || %GitRepo{})
+             |> GitRepo.github_changeset(attrs)
+             |> Repo.insert_or_update() do
+        if archived_at, do: archive(from(r in GitRepo, where: r.id == ^repo.id), archived_at)
+        {:ok, repo}
+      end
+    end)
   end
 
   # -- permissions ---------------------------------------------------------------

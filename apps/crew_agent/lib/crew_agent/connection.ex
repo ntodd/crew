@@ -26,6 +26,13 @@ defmodule CrewAgent.Connection do
   @rejoin_backoff [500, 1_000, 2_000, 5_000, 10_000, 30_000]
   @watchdog_ms 30_000
 
+  # Slipstream starts this module directly as a GenServer.
+  def format_status(status) do
+    CrewAgent.Redactor.status(status, fn socket ->
+      Map.take(socket.assigns, [:attempt, :joined, :topic])
+    end)
+  end
+
   def start_link(opts), do: Slipstream.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl Slipstream
@@ -142,14 +149,14 @@ defmodule CrewAgent.Connection do
   end
 
   @impl Slipstream
-  def handle_join(topic, _reply, socket) do
+  def handle_join(topic, reply, socket) do
     Logger.info("joined #{topic}")
     Outbox.attach(self())
     # Joining is what makes a newly installed release good (§20.2).
     after_update(socket.assigns.config)
     Reporter.report_now()
     VMs.connected()
-    {:ok, assign(socket, joined: true)}
+    {:ok, assign(socket, joined: true, inventory_cleanup: reply["inventory_cleanup"] == true)}
   end
 
   defp after_update(config) do
@@ -292,7 +299,24 @@ defmodule CrewAgent.Connection do
   # invalid UTF-8 byte would raise there and take this process with it,
   # again on every reconnect for a result. Scrubbed here as a last line.
   defp safe_push(socket, event) do
-    push(socket, socket.assigns.topic, "event", Event.to_wire(event))
+    wire = Event.to_wire(event)
+
+    wire =
+      if event.type == "box.inventory" and socket.assigns[:inventory_cleanup] != true do
+        update_in(wire, ["payload", "vms"], fn vms ->
+          Enum.map(vms, fn
+            %{"exited" => exit} = entry when is_map(exit) ->
+              Map.put(entry, "exited", Map.delete(exit, "cleanup"))
+
+            entry ->
+              entry
+          end)
+        end)
+      else
+        wire
+      end
+
+    push(socket, socket.assigns.topic, "event", wire)
   catch
     kind, reason ->
       {:error, {:push_failed, Exception.format_banner(kind, reason)}}

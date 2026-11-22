@@ -87,7 +87,7 @@ defmodule CrewWeb.BoxControlsTest do
 
   test "killing a VM sends a forced stop, audited", %{conn: conn, box: box} do
     repo = repo_fixture(name: "web")
-    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    :ok = Crew.Agents.register(box.id)
     size = Repo.get_by!(Crew.Sizes.Size, name: "m")
 
     [vm] =

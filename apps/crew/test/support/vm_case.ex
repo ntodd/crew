@@ -76,7 +76,7 @@ defmodule Crew.VMCase do
 
   @doc "The test process becomes `box`'s connected agent."
   def online(box) do
-    {:ok, _} = Registry.register(Crew.Registry, {:agent, box.id}, %{})
+    :ok = Crew.Agents.register(box.id)
     box
   end
 

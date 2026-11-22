@@ -111,6 +111,9 @@ defmodule Crew.VMs.Machine do
 
   def transition(_vm, :box_disconnected), do: :ignored
 
+  def transition(%{state: s} = vm, :box_revoked) when s in @pre_job,
+    do: {:ok, %{vm | state: "destroyed", alive: false}, [:delete_runner]}
+
   def transition(vm, :box_revoked), do: {:ok, %{vm | state: "destroyed", alive: false}, []}
 
   # The join inventory (§10.6).
