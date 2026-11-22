@@ -113,6 +113,17 @@ defmodule Crew.Sizing do
     |> Repo.all()
   end
 
+  defp median([]), do: nil
+
+  defp median(durations) do
+    count = length(durations)
+    [middle | rest] = durations |> Enum.sort() |> Enum.drop(div(count - 1, 2))
+
+    other = if rem(count, 2) == 0, do: hd(rest), else: middle
+    sum = middle + other
+    if rem(sum, 2) == 0, do: div(sum, 2), else: sum / 2
+  end
+
   defp medians(runs) do
     sizes = Sizes.list()
 
@@ -123,7 +134,7 @@ defmodule Crew.Sizing do
       %{
         shape: %{name: name, vcpus: vcpus, memory_mib: memory},
         runs: length(ds),
-        median_s: ds |> Enum.sort() |> Enum.at(div(length(ds), 2))
+        median_s: median(ds)
       }
     end)
     |> Enum.sort_by(&{&1.shape.memory_mib, &1.shape.vcpus})
@@ -459,7 +470,7 @@ defmodule Crew.Sizing do
       median_before_s: before.median,
       median_after_s: after_move.median,
       slower:
-        is_integer(before.median) and is_integer(after_move.median) and
+        is_number(before.median) and is_number(after_move.median) and
           after_move.median > before.median * @slower,
       ooms: after_move.ooms,
       freed_gib_h: (old.memory_mib - job.memory_mib) * after_move.week_seconds / @mib_hour
@@ -594,7 +605,7 @@ defmodule Crew.Sizing do
          count: first.count,
          started_at: first.first_start,
          ooms: first.ooms,
-         median: Enum.at(Enum.sort(ds), div(length(ds), 2)),
+         median: median(ds),
          week_seconds: week_seconds
        }}
     end)

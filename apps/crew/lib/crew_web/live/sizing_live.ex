@@ -92,13 +92,13 @@ defmodule CrewWeb.SizingLive do
 
   defp outcome(%{slower: true}), do: {"amber", "Slower"}
 
-  defp outcome(%{median_before_s: b, median_after_s: a}) when is_integer(b) and is_integer(a),
+  defp outcome(%{median_before_s: b, median_after_s: a}) when is_number(b) and is_number(a),
     do: {"emerald", "No slower"}
 
   defp outcome(_change), do: {"zinc", "Too few successful runs to compare"}
 
   defp medians(%{median_before_s: b, median_after_s: a, from: from, to: to})
-       when is_integer(b) and is_integer(a),
+       when is_number(b) and is_number(a),
        do:
          "Median #{JobStatus.format(b)} on #{from.name || "the old size"}, " <>
            "#{JobStatus.format(a)} on #{to.name || "the new size"}"
