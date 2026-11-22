@@ -528,7 +528,14 @@ defmodule Crew.ReconcilerTest do
   end
 
   describe "redelivery (§6.2)" do
-    test "asks GitHub to redeliver failed deliveries Crew never got, back to the newest it processed" do
+    test "a completed cron scan does not suppress the boot scan" do
+      {:ok, cron} = Oban.insert(Crew.GitHub.Redeliver.new(%{}))
+      Repo.update!(Ecto.Changeset.change(cron, state: "completed"))
+      Crew.Reconciler.Ticker.handle_info(:boot, nil)
+      assert_enqueued(worker: Crew.GitHub.Redeliver)
+    end
+
+    test "asks GitHub to redeliver failed deliveries Crew never got, including failures older than a processed delivery" do
       Repo.insert!(%Crew.GitHub.Delivery{
         github_delivery_id: "g-done",
         event: "workflow_job",
@@ -572,13 +579,18 @@ defmodule Crew.ReconcilerTest do
                "redelivery" => false
              }
            ]},
+        {"POST", "/app/hook/deliveries/0/attempts"} => fn conn ->
+          send(pid, {:redeliver, 0})
+          GitHubStub.json(conn, 202, %{})
+        end,
         {"POST", "/app/hook/deliveries/3/attempts"} => fn conn ->
           send(pid, {:redeliver, 3})
           GitHubStub.json(conn, 202, %{})
         end
       })
 
-      assert {:ok, 1} = Crew.GitHub.Redeliver.run()
+      assert {:ok, 2} = Crew.GitHub.Redeliver.run()
+      assert_received {:redeliver, 0}
       assert_received {:redeliver, 3}
       refute_received {:redeliver, _}
     end

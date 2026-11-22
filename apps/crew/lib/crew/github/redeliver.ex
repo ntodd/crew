@@ -2,21 +2,25 @@ defmodule Crew.GitHub.Redeliver do
   @moduledoc """
   Missed deliveries (§6.2): GitHub doesn't redeliver on its own. Every
   5 minutes, and at boot, this lists the App's deliveries back to the
-  newest one Crew processed (at most 3 days), and asks GitHub to deliver
+  previous scan with an overlap (at most 3 days), and asks GitHub to deliver
   again each failed one Crew never recorded. The reconciler covers
   anything that still slips through.
   """
-  use Oban.Worker, queue: :reconcile, max_attempts: 1, unique: [period: 240]
+  use Oban.Worker,
+    queue: :reconcile,
+    max_attempts: 1,
+    unique: [period: 240, states: [:available, :scheduled, :executing, :retryable]]
 
   import Ecto.Query
 
   require Logger
 
   alias Crew.GitHub.{Client, Delivery}
-  alias Crew.Repo
+  alias Crew.{Repo, Settings}
 
   @max_age_s 3 * 86_400
   @max_pages 20
+  @overlap_s 600
 
   @impl true
   def perform(_job) do
@@ -31,42 +35,43 @@ defmodule Crew.GitHub.Redeliver do
   def run do
     case Crew.GitHub.app() do
       nil -> {:error, :not_configured}
-      app -> with {:ok, deliveries} <- collect(app, nil, [], 1), do: redeliver(app, deliveries)
+      app -> scan(app)
     end
   end
 
-  defp collect(_app, _cursor, acc, page) when page > @max_pages, do: {:ok, acc}
+  defp scan(app) do
+    now = System.system_time(:second)
+    key = "redelivery_scan_#{app.app_id}"
+    state = Settings.get(key, %{})
+    started = state["started"] || now
+    since = max(now - @max_age_s, (state["last_scan"] || 0) - @overlap_s)
+    cutoff = DateTime.from_unix!(since)
 
-  defp collect(app, cursor, acc, page) do
+    with {:ok, items, next} <- collect(app, state["cursor"], cutoff, [], 1),
+         {:ok, count} <- redeliver(app, items) do
+      checkpoint =
+        if next do
+          Map.merge(state, %{"cursor" => next, "started" => started})
+        else
+          %{"last_scan" => started}
+        end
+
+      Settings.put(key, checkpoint)
+      {:ok, count}
+    end
+  end
+
+  defp collect(app, cursor, cutoff, acc, page) do
     with {:ok, items, next} <- Client.list_hook_deliveries(app, cursor) do
-      cutoff = DateTime.add(DateTime.utc_now(), -@max_age_s)
-      {kept, stop?} = take_until_processed(items, cutoff)
+      kept = Enum.take_while(items, &(not too_old?(&1, cutoff)))
       acc = acc ++ kept
 
-      if stop? or is_nil(next), do: {:ok, acc}, else: collect(app, next, acc, page + 1)
-    end
-  end
-
-  # Newest first: keep going until a delivery Crew processed, or one too old.
-  defp take_until_processed(items, cutoff) do
-    guids = items |> Enum.map(& &1["guid"]) |> Enum.reject(&is_nil/1)
-
-    processed =
-      Repo.all(
-        from d in Delivery,
-          where: d.github_delivery_id in ^guids and not is_nil(d.processed_at),
-          select: d.github_delivery_id
-      )
-      |> MapSet.new()
-
-    Enum.reduce_while(items, {[], false}, fn item, {acc, _} ->
       cond do
-        MapSet.member?(processed, item["guid"]) -> {:halt, {acc, true}}
-        too_old?(item, cutoff) -> {:halt, {acc, true}}
-        true -> {:cont, {[item | acc], false}}
+        length(kept) < length(items) or is_nil(next) -> {:ok, acc, nil}
+        page == @max_pages -> {:ok, acc, next}
+        true -> collect(app, next, cutoff, acc, page + 1)
       end
-    end)
-    |> then(fn {acc, stop?} -> {Enum.reverse(acc), stop?} end)
+    end
   end
 
   defp too_old?(%{"delivered_at" => at}, cutoff) when is_binary(at) do
@@ -108,7 +113,7 @@ defmodule Crew.GitHub.Redeliver do
         end
       end)
 
-    {:ok, count}
+    if count == length(missed), do: {:ok, count}, else: {:error, :redelivery_failed}
   end
 
   defp ok?(%{"status_code" => code}) when is_integer(code), do: code in 200..299

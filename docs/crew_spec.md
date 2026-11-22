@@ -335,8 +335,9 @@ personal account, so it's never missing there.
   5. Answer 202. GitHub's 10-second timeout never waits on processing.
 - **Missed deliveries:** GitHub doesn't redeliver on its own.
   - Every 5 minutes, and at boot, `Crew.GitHub.Redeliver` lists
-    `GET /app/hook/deliveries` (JWT auth) back to the newest delivery
-    already processed, at most 3 days back.
+    `GET /app/hook/deliveries` (JWT auth) back to the last completed scan with a
+    ten-minute overlap, at most 3 days back. A scan spanning more than
+    twenty pages resumes from its saved cursor on the next pass.
   - For each failed delivery that isn't in `webhook_deliveries`, it calls
     `POST /app/hook/deliveries/{id}/attempts`.
   - The reconciler (§8.8) covers anything that still slips through.
