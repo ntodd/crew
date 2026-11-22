@@ -129,24 +129,23 @@ defmodule Crew.Metrics do
     all = vm_series(vm.id)
 
     case while_running(all, started_at, completed_at) do
-      [] -> nil
-      samples -> summarize(samples, before(all, samples), vm, started_at, completed_at)
+      {[], _} -> nil
+      {samples, baseline} -> summarize(samples, baseline, vm, started_at, completed_at)
     end
   end
 
   defp while_running(samples, %DateTime{} = from, %DateTime{} = until) do
     {a, b} = {DateTime.to_unix(from), DateTime.to_unix(until) + @slack_s}
 
-    case Enum.filter(samples, &(&1.t >= a and &1.t <= b)) do
-      [] -> samples
-      kept -> kept
-    end
+    {before, rest} = Enum.split_while(samples, &(&1.t < a))
+    kept = Enum.take_while(rest, &(&1.t <= b))
+
+    if kept == [] and DateTime.diff(until, from) in 0..(@first_s - 1),
+      do: {samples, List.first(samples)},
+      else: {kept, List.last(before)}
   end
 
-  defp while_running(samples, _from, _until), do: samples
-
-  # The last sample before the job's: its OOM count is where the job's starts.
-  defp before(all, [first | _]), do: all |> Enum.take_while(&(&1 != first)) |> List.last()
+  defp while_running(samples, _from, _until), do: {samples, List.first(samples)}
 
   defp summarize(samples, before, vm, started_at, completed_at) do
     net =
