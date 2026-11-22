@@ -94,6 +94,19 @@ defmodule CrewWeb.RunPageTest do
     }
   end
 
+  test "invalid run, attempt and job identifiers return 404", %{conn: conn} do
+    for path <- [
+          "/runs/abc/attempts/1",
+          "/runs/1/attempts/2x",
+          "/runs/abc/attempts/2/jobs/501",
+          "/runs/5150/attempts/x/jobs/501",
+          "/runs/5150/attempts/2/jobs/abc",
+          "/runs/5150/attempts/2/jobs/9999999999999999999999999999"
+        ] do
+      assert_error_sent 404, fn -> get(conn, path) end
+    end
+  end
+
   defp vm_for(job, box, repo) do
     id = CrewProtocol.uuid7()
     now = DateTime.utc_now()

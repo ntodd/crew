@@ -233,6 +233,7 @@ defmodule Crew.Jobs do
 
   @doc "A job of a run attempt the scope can read, by its GitHub id, with its attempt."
   def get_attempt_job!(%Crew.Scope{} = scope, run_id, attempt, job_github_id) do
+    job_github_id = route_id!(job_github_id, :bigint, Job)
     attempt = get_run_attempt!(scope, run_id, attempt)
 
     job =
@@ -287,11 +288,25 @@ defmodule Crew.Jobs do
   it. Raises `Ecto.NoResultsError` otherwise, so the page 404s.
   """
   def get_run_attempt!(%Crew.Scope{} = scope, run_id, attempt) do
+    run_id = route_id!(run_id, :bigint, RunAttempt)
+    attempt = route_id!(attempt, :integer, RunAttempt)
+
     from(a in RunAttempt, where: a.github_run_id == ^run_id and a.run_attempt == ^attempt)
     |> readable(scope)
     |> preload([:repo, :jobs])
     |> Repo.one!()
     |> with_earlier_attempts()
+  end
+
+  # These identifiers can come straight from a URL. Bound them to the
+  # database column's range before handing them to either adapter.
+  defp route_id!(raw, type, schema) do
+    max = if type == :bigint, do: 9_223_372_036_854_775_807, else: 2_147_483_647
+
+    case Ecto.Type.cast(:integer, raw) do
+      {:ok, n} when is_integer(n) and n > 0 and n <= max -> n
+      _ -> raise Ecto.NoResultsError, queryable: schema
+    end
   end
 
   # -- workflow_job ----------------------------------------------------------

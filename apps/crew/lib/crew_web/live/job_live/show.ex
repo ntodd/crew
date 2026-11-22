@@ -27,7 +27,7 @@ defmodule CrewWeb.JobLive.Show do
   @impl true
   def mount(%{"run_id" => run_id, "n" => n, "job_id" => job_id}, _session, socket) do
     {attempt, job} =
-      Jobs.get_attempt_job!(socket.assigns.current_scope, int!(run_id), int!(n), int!(job_id))
+      Jobs.get_attempt_job!(socket.assigns.current_scope, run_id, n, job_id)
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Crew.PubSub, "job:#{job.id}")
@@ -51,11 +51,6 @@ defmodule CrewWeb.JobLive.Show do
   end
 
   defp start_polling(socket), do: socket
-
-  defp int!(text) do
-    {n, ""} = Integer.parse(text)
-    n
-  end
 
   defp load(socket, job) do
     vm = job.vm_id && VMs.get(job.vm_id)
