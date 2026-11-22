@@ -233,6 +233,7 @@ defmodule Crew.Jobs do
 
   @doc "A job of a run attempt the scope can read, by its GitHub id, with its attempt."
   def get_attempt_job!(%Crew.Scope{} = scope, run_id, attempt, job_github_id) do
+    job_github_id = route_id!(job_github_id, :bigint, Job)
     attempt = get_run_attempt!(scope, run_id, attempt)
 
     job =
@@ -287,11 +288,25 @@ defmodule Crew.Jobs do
   it. Raises `Ecto.NoResultsError` otherwise, so the page 404s.
   """
   def get_run_attempt!(%Crew.Scope{} = scope, run_id, attempt) do
+    run_id = route_id!(run_id, :bigint, RunAttempt)
+    attempt = route_id!(attempt, :integer, RunAttempt)
+
     from(a in RunAttempt, where: a.github_run_id == ^run_id and a.run_attempt == ^attempt)
     |> readable(scope)
     |> preload([:repo, :jobs])
     |> Repo.one!()
     |> with_earlier_attempts()
+  end
+
+  # These identifiers can come straight from a URL. Bound them to the
+  # database column's range before handing them to either adapter.
+  defp route_id!(raw, type, schema) do
+    max = if type == :bigint, do: 9_223_372_036_854_775_807, else: 2_147_483_647
+
+    case Ecto.Type.cast(:integer, raw) do
+      {:ok, n} when is_integer(n) and n > 0 and n <= max -> n
+      _ -> raise Ecto.NoResultsError, queryable: schema
+    end
   end
 
   # -- workflow_job ----------------------------------------------------------
@@ -746,22 +761,26 @@ defmodule Crew.Jobs do
     ours =
       from(j in Job,
         where: j.classification == "ours",
-        select: {j.id, j.queued_at, [j.started_at, j.completed_at]}
+        select: {j.id, j.queued_at, j.runner_name, j.started_at, j.completed_at}
       )
 
     jobs =
       [
         where(ours, [j], j.gh_state == "queued"),
-        where(ours, [j], j.started_at > ^since),
+        where(ours, [j], j.started_at > ^since and j.runner_name != ""),
         where(
           ours,
           [j],
-          j.gh_state == "completed" and j.completed_at > ^since and is_nil(j.started_at)
+          j.gh_state == "completed" and j.completed_at > ^since and
+            (is_nil(j.started_at) or is_nil(j.runner_name) or j.runner_name == "")
         )
       ]
       |> Enum.flat_map(&Repo.all/1)
       |> Enum.uniq_by(&elem(&1, 0))
-      |> Enum.map(fn {_, from, ends} -> {from, ends} end)
+      |> Enum.map(fn
+        {_, from, runner, _, completed} when runner in [nil, ""] -> {from, [completed]}
+        {_, from, _, started, completed} -> {from, [started, completed]}
+      end)
 
     # Boots are cut off within minutes (§9.2), so an hour's margin before
     # the window catches every boot that overlaps it.
@@ -880,7 +899,9 @@ defmodule Crew.Jobs do
     rows =
       Repo.all(
         from j in Job,
-          where: j.classification == "ours" and j.started_at > ^since and j.started_at <= ^now,
+          where:
+            j.classification == "ours" and j.runner_name != "" and j.started_at > ^since and
+              j.started_at <= ^now,
           select: {j.started_at, j.conclusion}
       )
 
@@ -954,16 +975,14 @@ defmodule Crew.Jobs do
 
   @doc "The last `n` successful completions of the same job (repo, workflow, name), for \"usually X\"."
   def recent_successes(%Job{} = job, n) do
-    Repo.all(
-      from j in Job,
-        where:
-          j.repo_id == ^job.repo_id and j.workflow_name == ^job.workflow_name and
-            j.name == ^job.name and
-            j.conclusion == "success" and j.id != ^job.id,
-        order_by: [desc: j.completed_at],
-        limit: ^n,
-        select: map(j, [:steps])
+    from(j in Job,
+      where: j.repo_id == ^job.repo_id and j.conclusion == "success" and j.id != ^job.id,
+      order_by: [desc: j.completed_at],
+      limit: ^n,
+      select: map(j, [:steps])
     )
+    |> Job.same_job(job)
+    |> Repo.all()
   end
 
   @doc """

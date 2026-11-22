@@ -13,7 +13,8 @@ defmodule Crew.Jobs.Prune do
   - A VM's age is when it was destroyed. One that isn't destroyed stays,
     and so does one a job that's kept ran on.
 
-  Nothing goes that the usage rollup may still read (§16.6): the cutoff
+  Webhook deliveries are kept for seven days. For jobs and VMs,
+  nothing goes that the usage rollup may still read (§16.6): the cutoff
   is never later than `Crew.Usage.rows_needed_from/1`.
   """
   use Oban.Worker, queue: :maintenance, max_attempts: 3, unique: [period: 1800]
@@ -21,7 +22,9 @@ defmodule Crew.Jobs.Prune do
   import Ecto.Query
 
   alias Crew.{Repo, Usage}
+  alias Crew.GitHub.Delivery
   alias Crew.Jobs.{Job, RunAttempt}
+  alias Crew.Operations.Operation
   alias Crew.VMs.VM
 
   @impl true
@@ -32,7 +35,15 @@ defmodule Crew.Jobs.Prune do
     needed =
       now |> DateTime.to_date() |> Usage.rows_needed_from() |> DateTime.new!(~T[00:00:00.000000])
 
-    cutoff = Enum.min([DateTime.add(now, -days * 86_400), needed], DateTime)
+    retention = DateTime.add(now, -days * 86_400)
+    cutoff = Enum.min([retention, needed], DateTime)
+
+    delete_batched(from(o in Operation, where: o.finished_at < ^retention))
+
+    delete_batched(
+      from(d in Delivery, where: d.received_at < ^DateTime.add(now, -7, :day)),
+      :github_delivery_id
+    )
 
     prune_attempts(cutoff)
     delete_batched(from(j in Job, where: is_nil(j.run_attempt_id), where: ^old(cutoff)))
@@ -110,12 +121,12 @@ defmodule Crew.Jobs.Prune do
   # hold SQLite's write lock for long, and checked again as it's deleted.
   # Events and samples go with their rows, on the foreign keys' ON DELETE
   # CASCADE.
-  defp delete_batched(query) do
+  defp delete_batched(query, key \\ :id) do
     batch = batch()
 
-    with [_ | _] = ids <- Repo.all(query |> select([r], r.id) |> limit(^batch)),
-         {^batch, _} <- Repo.delete_all(where(query, [r], r.id in ^ids)),
-         do: delete_batched(query)
+    with [_ | _] = ids <- Repo.all(query |> select([r], field(r, ^key)) |> limit(^batch)),
+         {^batch, _} <- Repo.delete_all(where(query, [r], field(r, ^key) in ^ids)),
+         do: delete_batched(query, key)
   end
 
   defp batch, do: Application.get_env(:crew, :job_prune_batch, 100)

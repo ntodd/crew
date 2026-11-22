@@ -109,8 +109,19 @@ defmodule Crew.Sizing do
       limit: @history,
       select: map(j, [:vcpus, :memory_mib, :started_at, :completed_at])
     )
-    |> same_job(job)
+    |> Job.same_job(job)
     |> Repo.all()
+  end
+
+  defp median([]), do: nil
+
+  defp median(durations) do
+    count = length(durations)
+    [middle | rest] = durations |> Enum.sort() |> Enum.drop(div(count - 1, 2))
+
+    other = if rem(count, 2) == 0, do: hd(rest), else: middle
+    sum = middle + other
+    if rem(sum, 2) == 0, do: div(sum, 2), else: sum / 2
   end
 
   defp medians(runs) do
@@ -123,7 +134,7 @@ defmodule Crew.Sizing do
       %{
         shape: %{name: name, vcpus: vcpus, memory_mib: memory},
         runs: length(ds),
-        median_s: ds |> Enum.sort() |> Enum.at(div(length(ds), 2))
+        median_s: median(ds)
       }
     end)
     |> Enum.sort_by(&{&1.shape.memory_mib, &1.shape.vcpus})
@@ -459,7 +470,7 @@ defmodule Crew.Sizing do
       median_before_s: before.median,
       median_after_s: after_move.median,
       slower:
-        is_integer(before.median) and is_integer(after_move.median) and
+        is_number(before.median) and is_number(after_move.median) and
           after_move.median > before.median * @slower,
       ooms: after_move.ooms,
       freed_gib_h: (old.memory_mib - job.memory_mib) * after_move.week_seconds / @mib_hour
@@ -516,7 +527,7 @@ defmodule Crew.Sizing do
           completed_at: j.completed_at
         }
       )
-      |> same_job(job)
+      |> Job.same_job(job)
 
     before_move =
       from j in runs,
@@ -594,7 +605,7 @@ defmodule Crew.Sizing do
          count: first.count,
          started_at: first.first_start,
          ooms: first.ooms,
-         median: Enum.at(Enum.sort(ds), div(length(ds), 2)),
+         median: median(ds),
          week_seconds: week_seconds
        }}
     end)
@@ -679,7 +690,7 @@ defmodule Crew.Sizing do
         ],
         select: %{id: j.id, rank: over(row_number(), :per_job)}
       )
-      |> then(&if(job, do: same_job(&1, job), else: &1))
+      |> then(&if(job, do: Job.same_job(&1, job), else: &1))
 
     from(j in Job,
       join: r in subquery(ranked),
@@ -728,7 +739,7 @@ defmodule Crew.Sizing do
       limit: @history,
       select: map(j, ^@run_fields)
     )
-    |> same_job(job)
+    |> Job.same_job(job)
     |> Repo.all()
     |> Enum.map(&run/1)
     |> then(&hd(trace([&1])))
@@ -779,14 +790,6 @@ defmodule Crew.Sizing do
     |> Map.take(@run_fields)
     |> Map.put(:duration_s, duration(job.started_at, job.completed_at))
   end
-
-  # The runs of `job`'s (workflow, name), either of which GitHub may
-  # leave out: SQL's `=` never matches a null.
-  defp same_job(query, job),
-    do: query |> same(:workflow_name, job.workflow_name) |> same(:name, job.name)
-
-  defp same(query, field, nil), do: where(query, [j], is_nil(field(j, ^field)))
-  defp same(query, field, value), do: where(query, [j], field(j, ^field) == ^value)
 
   defp duration(%DateTime{} = a, %DateTime{} = b), do: DateTime.diff(b, a)
   defp duration(_a, _b), do: nil

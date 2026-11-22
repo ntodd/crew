@@ -554,6 +554,15 @@ defmodule Crew.SizingTest do
       assert change.job.github_id
     end
 
+    test "even-sized samples use both middle durations on both reports", %{repo: repo} do
+      ran(repo, 90, 100, @l)
+      ran(repo, 80, 100, [])
+      newest = ran(repo, 70, 201, [])
+
+      assert [%{median_after_s: 150.5, slower: true}] = Sizing.changes(admin())
+      assert [%{median_s: 150.5}, %{median_s: 100}] = Sizing.durations(newest)
+    end
+
     test "more than 5% slower on the new size is flagged", %{repo: repo} do
       for h <- [240, 200, 160], do: ran(repo, h, 600, @l)
       for h <- [40, 30, 20], do: ran(repo, h, 640, [])

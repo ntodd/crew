@@ -423,7 +423,7 @@ All calls go through `Crew.GitHub.Client` (Req). The client:
   450 an hour per installation, under GitHub's secondary limit on
   content-creating requests. JIT generation is served first. Runner DELETEs
   for reaping wait when the bucket is empty.
-- **Backs off** on 403/429 with `retry-after`, or until the reset.
+- **Backs off** on 403/429 with `retry-after` or an exhausted primary budget until reset. A secondary-limit 403 or a 429 without a retry delay starts at one minute and doubles on repeated attempts, up to an hour.
 
 Calls are classed by importance:
 
@@ -1252,6 +1252,7 @@ what it may show (§18.3).
 | Logs | 30 days (`CREW_LOG_RETENTION_DAYS`), and at most `CREW_LOG_MAX_GIB` in total, oldest deleted first |
 | `box_metrics`, `vm_metrics`, `cache_stats` | 7 days (copy Foreman's `PruneMetrics`) |
 | `usage_days`, `usage_box_days`, `usage_rollups` | Forever: tens of rows a day, and they outlive the job and VM rows they add up (§16.6) |
+| Completed agent operations | `CREW_JOB_RETENTION_DAYS` (default 90 days) after finishing. Unfinished operations stay. |
 | Webhook deliveries | 7 days |
 | Audit log | Forever |
 

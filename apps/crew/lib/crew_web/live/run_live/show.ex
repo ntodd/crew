@@ -29,8 +29,6 @@ defmodule CrewWeb.RunLive.Show do
 
   @impl true
   def mount(%{"run_id" => run_id, "n" => n}, _session, socket) do
-    {run_id, ""} = Integer.parse(run_id)
-    {n, ""} = Integer.parse(n)
     attempt = Jobs.get_run_attempt!(socket.assigns.current_scope, run_id, n)
 
     socket =

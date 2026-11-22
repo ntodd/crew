@@ -139,6 +139,7 @@ defmodule CrewWeb.JobStatus do
 
   @doc "45s, 3m 04s, 1h 02m."
   def format(nil), do: "–"
+  def format(s) when is_float(s), do: format(round(s))
   def format(s) when s < 60, do: "#{s}s"
   def format(s) when s < 3600, do: "#{div(s, 60)}m #{pad(rem(s, 60))}s"
   def format(s), do: "#{div(s, 3600)}h #{pad(div(rem(s, 3600), 60))}m"

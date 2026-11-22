@@ -100,6 +100,24 @@ test("an index from the server merges into what the viewer learned live", () => 
   assert.deepEqual(stale.index.groups, [[5, 8, "A"]])
 })
 
+test("live groups and merged history keep only the earliest thousand", () => {
+  const local = {steps: {}, groups: [], annotations: []}
+  const lines = Array.from({length: 1001}, (_, i) => ({n: i + 2, text: "::group::live"}))
+  indexAdd(local, lines)
+  assert.equal(local.groups.length, 1000)
+  assert.deepEqual(local.groups.at(-1), [1001, 1001, "live"])
+
+  const remote = {steps: {}, groups: [[1, 1, "early"], [2000, 2001, "late"]], annotations: []}
+  const {index, added} = mergeIndex(local, remote)
+  assert.equal(index.groups.length, 1000)
+  assert.equal(index.groups.at(-1)[0], 1000)
+  assert.deepEqual(added, [[1, 1, "early"]])
+  const rows = new Rows(2000)
+  rows.collapse([[1001, null]])
+  rows.syncEnds(index.groups)
+  assert.equal(rows.count(), 2000)
+})
+
 test("a folded group that was open gets its end when it closes", () => {
   const rows = new Rows(100)
   rows.collapse([[10, null]])

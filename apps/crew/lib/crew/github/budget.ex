@@ -14,8 +14,8 @@ defmodule Crew.GitHub.Budget do
     windows. JIT generation is served first: other writes (runner
     deletes for reaping) leave the last 10 a minute and 30 an hour to
     it.
-  - **Backs off** on 429, or a 403 with nothing left, until `retry-after`
-    or the reset.
+  - **Backs off** on primary and secondary rate limits. Without a
+    server-specified delay, secondary limits back off exponentially.
 
   Kinds: `:read`, `:jit` (generating a JIT config) and `:delete`/
   `:write` (any other POST, PATCH or DELETE).
@@ -84,6 +84,7 @@ defmodule Crew.GitHub.Budget do
       limit: nil,
       reset_ms: nil,
       backoff_until: nil,
+      secondary_wait: 0,
       in_flight: %{},
       waiters: :queue.new(),
       writes: :queue.new()
@@ -300,17 +301,33 @@ defmodule Crew.GitHub.Budget do
 
     retry_after = header_int(headers, "retry-after")
 
-    cond do
-      status == 429 or (status == 403 and retry_after != nil) ->
-        %{inst | backoff_until: now + (retry_after || 60) * 1000}
-
-      status == 403 and remaining == 0 and inst.reset_ms ->
-        %{inst | backoff_until: inst.reset_ms}
-
-      true ->
-        inst
+    if status in [403, 429, :secondary_limit] do
+      inst = limit_backoff(inst, status, retry_after, now)
+      if remaining == 0 and inst.reset_ms, do: backoff(inst, inst.reset_ms), else: inst
+    else
+      if status in 200..299 and (inst.backoff_until || 0) <= now,
+        do: %{inst | secondary_wait: 0},
+        else: inst
     end
   end
+
+  defp limit_backoff(inst, _status, retry_after, now)
+       when is_integer(retry_after) and retry_after >= 0,
+       do: backoff(inst, now + retry_after * 1000)
+
+  defp limit_backoff(inst, status, _retry_after, now) when status in [429, :secondary_limit] do
+    # Several requests can already be in flight when the first one hits
+    # the limit. Increase the delay only after a new attempt was possible.
+    wait =
+      if (inst.backoff_until || 0) > now, do: inst.secondary_wait, else: inst.secondary_wait * 2
+
+    wait = wait |> max(@minute) |> min(@hour)
+    backoff(%{inst | secondary_wait: wait}, now + wait)
+  end
+
+  defp limit_backoff(inst, _status, _retry_after, _now), do: inst
+
+  defp backoff(inst, until), do: %{inst | backoff_until: max(inst.backoff_until || 0, until)}
 
   defp header_int(headers, name) do
     case headers[name] do

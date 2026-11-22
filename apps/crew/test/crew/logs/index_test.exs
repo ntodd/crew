@@ -21,10 +21,10 @@ defmodule Crew.Logs.IndexTest do
       |> Index.add([line(1, "::group::Install"), line(2, "x"), line(3, "::endgroup::")])
       |> Index.add([line(4, "##[group]Build"), line(5, "y")])
 
-    assert index.groups == [[1, 3, "Install"], [4, nil, "Build"]]
+    assert Index.groups(index) == [[1, 3, "Install"], [4, nil, "Build"]]
 
     index = Index.add(index, [line(6, "##[endgroup]")])
-    assert index.groups == [[1, 3, "Install"], [4, 6, "Build"]]
+    assert Index.groups(index) == [[1, 3, "Install"], [4, 6, "Build"]]
   end
 
   test "a new group closes an open one (the runner doesn't nest them)" do
@@ -35,7 +35,7 @@ defmodule Crew.Logs.IndexTest do
         line(3, "::endgroup::")
       ])
 
-    assert index.groups == [[1, 1, "A"], [2, 3, "B"]]
+    assert Index.groups(index) == [[1, 1, "A"], [2, 3, "B"]]
   end
 
   test "annotations, with ANSI and the runner's prefix stripped, capped" do
@@ -55,6 +55,31 @@ defmodule Crew.Logs.IndexTest do
 
     many = for n <- 1..2000, do: line(n, "::error::e#{n}")
     assert length(Index.add(Index.new(), many).annotations) == 1000
+  end
+
+  test "group recording stops at the cap and closes the last retained group" do
+    many = for n <- 1..2000, do: line(n, "::group::g#{n}")
+    index = Enum.reduce(Enum.chunk_every(many, 100), Index.new(), &Index.add(&2, &1))
+    saved = Jason.decode!(Index.encode(index))
+    assert length(saved["groups"]) == 1000
+    assert hd(saved["groups"]) == [1, 1, "g1"]
+    assert List.last(saved["groups"]) == [1000, 1000, "g1000"]
+    assert saved["open"] == nil
+  end
+
+  test "an oversized index from an earlier release keeps its first groups when reopened" do
+    groups = for n <- 1..1001, do: [n, if(n < 1001, do: n), "group"]
+    old = Jason.encode!(%{groups: groups, open: 1001})
+
+    saved =
+      old
+      |> Index.decode()
+      |> Index.add([line(1002, "::endgroup::")])
+      |> Index.encode()
+      |> Jason.decode!()
+
+    assert saved["groups"] == Enum.take(groups, 1000)
+    assert saved["open"] == nil
   end
 
   test "round-trips through JSON" do

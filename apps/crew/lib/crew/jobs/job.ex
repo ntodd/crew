@@ -7,6 +7,8 @@ defmodule Crew.Jobs.Job do
   """
   use Crew.Schema
 
+  import Ecto.Query
+
   @ranks %{"waiting" => 0, "queued" => 1, "in_progress" => 2, "completed" => 3}
 
   schema "jobs" do
@@ -59,6 +61,13 @@ defmodule Crew.Jobs.Job do
     field :coverage, :float
     timestamps()
   end
+
+  @doc "Restricts a job query to the same workflow and job names, including missing names."
+  def same_job(query, job),
+    do: query |> same(:workflow_name, job.workflow_name) |> same(:name, job.name)
+
+  defp same(query, field, nil), do: where(query, [j], is_nil(field(j, ^field)))
+  defp same(query, field, value), do: where(query, [j], field(j, ^field) == ^value)
 
   def rank(state), do: Map.fetch!(@ranks, state)
   def state?(state), do: Map.has_key?(@ranks, state)

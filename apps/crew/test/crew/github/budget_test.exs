@@ -146,6 +146,42 @@ defmodule Crew.GitHub.BudgetTest do
   end
 
   describe "403 and 429" do
+    test "consecutive headerless rate limits double the wait and a recovered request resets it",
+         %{b: b, clock: clock} do
+      for wait <- [60_000, 120_000, 240_000] do
+        {:ok, ref} = Budget.acquire(b, 1, :essential, :read)
+        Budget.release(b, 1, ref, 429, %{})
+        assert {:error, {:backoff, until}} = Budget.acquire(b, 1, :essential, :read)
+        assert until == :counters.get(clock, 1) + wait
+        advance(clock, wait)
+      end
+
+      {:ok, ref} = Budget.acquire(b, 1, :essential, :read)
+      Budget.release(b, 1, ref, 200, %{})
+      {:ok, ref} = Budget.acquire(b, 1, :essential, :read)
+      Budget.release(b, 1, ref, 429, %{})
+      assert {:error, {:backoff, until}} = Budget.acquire(b, 1, :essential, :read)
+      assert until == :counters.get(clock, 1) + 60_000
+    end
+
+    test "concurrent responses cannot shorten a backoff or multiply the first penalty",
+         %{b: b, clock: clock} do
+      [first, second, third, fourth] =
+        for _ <- 1..4 do
+          {:ok, ref} = Budget.acquire(b, 1, :normal, :read)
+          ref
+        end
+
+      Budget.release(b, 1, first, :secondary_limit, %{})
+      Budget.release(b, 1, second, 429, %{})
+      assert {:error, {:backoff, 1_060_000}} = Budget.acquire(b, 1, :essential, :read)
+      Budget.release(b, 1, third, 429, %{"retry-after" => ["300"]})
+      Budget.release(b, 1, fourth, 429, %{"retry-after" => ["1"]})
+      assert {:error, {:backoff, 1_300_000}} = Budget.acquire(b, 1, :essential, :read)
+      advance(clock, 300_000)
+      assert {:ok, _} = Budget.acquire(b, 1, :essential, :read)
+    end
+
     test "back off for retry-after", %{b: b, clock: clock} do
       {:ok, ref} = Budget.acquire(b, 1, :normal, :read)
       :ok = Budget.release(b, 1, ref, 429, %{"retry-after" => ["30"]})

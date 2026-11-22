@@ -304,7 +304,7 @@ defmodule Crew.LogsTest do
 
     index = eventually(fn -> (i = Logs.index(:vm, id)) && i.annotations != [] && i end)
     assert index.steps == %{"s1" => 1, "s2" => 3}
-    assert index.groups == [[1, 2, "Install"]]
+    assert Crew.Logs.Index.groups(index) == [[1, 2, "Install"]]
     assert [%{n: 3, level: "error", file: "a.ex", line: 3}] = index.annotations
   end
 
@@ -337,7 +337,7 @@ defmodule Crew.LogsTest do
       "mem_total_mib" => 8192
     })
 
-    assert_receive {:vm_metrics, ^id}
+    assert_receive {:vm_metrics, ^id, 1_800_000_000}
 
     assert [%{t: 1_800_000_000, cpu_pct: 42.5, mem_used_mib: 900, box_id: box_id}] =
              Crew.Metrics.vm_series(id)

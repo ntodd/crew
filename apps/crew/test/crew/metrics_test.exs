@@ -127,6 +127,19 @@ defmodule Crew.MetricsTest do
       assert %{peak_mem_mib: 5000} = Metrics.job_summary(vm, @start, @finish)
     end
 
+    test "a job at least one interval long cannot borrow boot or idle samples", %{vm: vm} do
+      for s <- -120..-5//5, do: vm_metric_fixture(vm, at(s), oom_kills: 1)
+      vm_metric_fixture(vm, at(90), oom_kills: 2)
+      assert is_nil(Metrics.job_summary(vm, @start, @finish))
+      assert is_nil(Metrics.job_summary(vm, @start, DateTime.add(@start, 5)))
+    end
+
+    test "a short job's fallback takes its OOM baseline from the first reading", %{vm: vm} do
+      vm_metric_fixture(vm, at(-5), oom_kills: 1)
+      vm_metric_fixture(vm, at(20), oom_kills: 1)
+      assert %{oom: false} = Metrics.job_summary(vm, @start, DateTime.add(@start, 1))
+    end
+
     test "a job shorter than one sample gets every sample of its VM", %{vm: vm} do
       vm_metric_fixture(vm, at(-5), cpu_pct: 20.0, mem_used_mib: 500)
       vm_metric_fixture(vm, at(20), cpu_pct: 40.0, mem_used_mib: 700)

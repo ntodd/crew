@@ -75,6 +75,50 @@ defmodule CrewWeb.JobLiveTest do
     }
   end
 
+  test "jobs without workflow or job names have their own history and open normally",
+       %{conn: conn, path: path, repo: repo, job: job} do
+    job = Repo.update!(Ecto.Changeset.change(job, workflow_name: nil, name: nil))
+    steps = [%{"name" => "historical step"}]
+    job_row_fixture(repo, workflow_name: nil, name: nil, steps: steps, conclusion: "success")
+    job_row_fixture(repo, workflow_name: "CI", name: nil, conclusion: "success")
+    job_row_fixture(repo, workflow_name: nil, name: "build", conclusion: "success")
+
+    assert [%{steps: ^steps}] = Jobs.recent_successes(job, 10)
+    assert {:ok, _view, _html} = live(conn, path)
+  end
+
+  test "a metrics notification refreshes only the charts and reads a bounded sample range",
+       %{conn: conn, path: path, vm: vm, job: job} do
+    # Avoid the unrelated live step poll in this query audit.
+    Repo.update!(Ecto.Changeset.change(job, gh_state: "completed"))
+    for t <- 1..125, do: vm_metric_fixture(vm, t, cpu_pct: 10.0)
+    {:ok, view, _} = live(conn, path)
+
+    handler = make_ref()
+
+    :ok =
+      :telemetry.attach(
+        handler,
+        [:crew, :repo, :query],
+        &__MODULE__.report_query/4,
+        {self(), view.pid}
+      )
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+
+    vm_metric_fixture(vm, 126, cpu_pct: 73.0)
+    send(view.pid, {:vm_metrics, vm.id, 126})
+    wait_until(fn -> has_element?(view, "#chart-cpu", "73%") end)
+    assert_receive {:view_query, "vm_metrics", query}
+    assert query =~ "LIMIT"
+    refute_received {:view_query, "jobs", _}
+    refute_received {:view_query, "vms", _}
+  end
+
+  def report_query(_event, _measurements, metadata, {watcher, view}) do
+    if self() == view, do: send(watcher, {:view_query, metadata[:source], metadata.query})
+  end
+
   defp vm_for(job, box, repo) do
     id = CrewProtocol.uuid7()
     size = Repo.get_by!(Crew.Sizes.Size, name: "m")
