@@ -8,6 +8,7 @@ defmodule CrewAgent.Config do
   `vms/<vm_id>/`, `images/<image_id>/`.
   """
 
+  @derive {Inspect, except: [:join_token, :cache_mgmt_token]}
   defstruct url: nil,
             join_token: nil,
             box_name: nil,

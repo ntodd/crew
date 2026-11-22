@@ -58,6 +58,11 @@ defmodule CrewAgent.VM do
   @doc "The table the guest API resolves tokens in: `sha256(token) => {vm_id, guest_ip}`."
   def sessions_table, do: @sessions
 
+  @impl true
+  def format_status(status) do
+    CrewAgent.Redactor.status(status, &Map.take(&1, [:vm_id, :epoch, :exited, :payload_fetched]))
+  end
+
   def call(vm_id, msg, timeout \\ 5_000) do
     case whereis(vm_id) do
       nil -> {:error, :no_vm}

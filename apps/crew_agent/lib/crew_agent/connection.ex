@@ -26,6 +26,13 @@ defmodule CrewAgent.Connection do
   @rejoin_backoff [500, 1_000, 2_000, 5_000, 10_000, 30_000]
   @watchdog_ms 30_000
 
+  # Slipstream starts this module directly as a GenServer.
+  def format_status(status) do
+    CrewAgent.Redactor.status(status, fn socket ->
+      Map.take(socket.assigns, [:attempt, :joined, :topic])
+    end)
+  end
+
   def start_link(opts), do: Slipstream.start_link(__MODULE__, opts, name: __MODULE__)
 
   @impl Slipstream
