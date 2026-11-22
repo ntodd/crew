@@ -484,6 +484,35 @@ defmodule Crew.VMs.ServerTest do
       await_state(id, "busy")
     end
 
+    @tag timers: %{jit: 200}
+    test "a local write limit pauses the request timer until registration can resume", %{
+      inst: inst,
+      box: box,
+      repo: repo
+    } do
+      alias Crew.GitHub.Budget
+
+      for _ <- 1..60 do
+        {:ok, ref} = Budget.acquire(inst, :essential, :jit)
+        Budget.release(inst, ref, 201, %{})
+      end
+
+      id = place(box, repo)
+      eventually(fn -> Repo.get_by(Crew.VMs.VMEvent, vm_id: id, kind: "jit_budget_wait") end)
+      pid = Server.whereis(id)
+      state = :sys.get_state(pid)
+      refute Map.has_key?(state.timers, :jit)
+      assert Process.read_timer(state.timers.jit_budget) > 30_000
+      assert VMs.get!(id).state == "requested"
+
+      Budget.reset()
+      send(pid, {:timeout, make_ref(), :jit_budget})
+      assert :sys.get_state(pid).timers.jit_budget == state.timers.jit_budget
+      Process.cancel_timer(state.timers.jit_budget)
+      send(pid, {:timeout, state.timers.jit_budget, :jit_budget})
+      assert assert_command("vm.start").payload.vm_id == id
+    end
+
     @tag timers: %{jit: 50, jit_retry: 10}
     test "no JIT config: jit_timeout", %{box: box, repo: repo} do
       GitHubStub.stub(

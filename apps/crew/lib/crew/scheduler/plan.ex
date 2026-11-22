@@ -348,8 +348,17 @@ defmodule Crew.Scheduler.Plan do
 
   defp supply_vm?(snap, vm) do
     box = Enum.find(snap.boxes, &(&1.id == vm.box_id))
-    vm.state in @supply and is_nil(vm.job_id) and box != nil and box.online and not box.draining
+
+    vm.state in @supply and is_nil(vm.job_id) and box != nil and box.online and not box.draining and
+      not awaiting_registration?(snap, vm)
   end
+
+  defp awaiting_registration?(snap, %{state: "requested", runner_id: nil, repo_id: repo_id}) do
+    until_ms = get_in(snap.repos, [repo_id, :jit_wait_until])
+    is_integer(until_ms) and until_ms > snap.now
+  end
+
+  defp awaiting_registration?(_snap, _vm), do: false
 
   defp supply(snap, class),
     do: Enum.count(snap.vms, &(&1.class == class and supply_vm?(snap, &1)))
@@ -389,6 +398,11 @@ defmodule Crew.Scheduler.Plan do
     cond do
       repo[:max_concurrent] && counted(pass.active, unit) >= repo[:max_concurrent] ->
         do_place(snap, rest, pass, [{:reasons, unit.id, "repo at max_concurrent", nil} | acc])
+
+      is_integer(repo[:jit_wait_until]) and repo.jit_wait_until > snap.now ->
+        until = DateTime.from_unix!(repo.jit_wait_until, :millisecond)
+        wait = "GitHub write budget until #{DateTime.to_iso8601(until)}"
+        do_place(snap, rest, pass, [{:reasons, unit.id, nil, wait} | acc])
 
       backoff = in_backoff(snap, unit.class) ->
         msg =

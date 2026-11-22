@@ -114,6 +114,17 @@ defmodule Crew.GitHub.BudgetTest do
       assert {:ok, _} = Budget.acquire(b, 1, :essential, :jit)
     end
 
+    test "the later write window determines when registration can resume", %{b: b, clock: clock} do
+      for _ <- 1..450 do
+        advance(clock, 1_000)
+        {:ok, ref} = Budget.acquire(b, 1, :essential, :jit)
+        Budget.release(b, 1, ref, 201, %{})
+      end
+
+      assert {:error, {:write_limited, 4_601_000}} = Budget.acquire(b, 1, :essential, :jit)
+      assert {:ok, _} = Budget.acquire(b, 2, :essential, :jit)
+    end
+
     test "and 450 an hour", %{b: b, clock: clock} do
       for _ <- 1..450 do
         advance(clock, 1000)
