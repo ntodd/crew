@@ -6,20 +6,24 @@ defmodule Crew.Logs.Index do
   - `steps`: each step's first line, by `step_ref`;
   - `groups`: `[start, end | nil, title]` for `::group::`/`##[group]` up
     to the matching end; the runner doesn't nest them, so a new group
-    closes an open one;
+    closes an open one. The first 1000 groups are kept;
   - `annotations`: `::error`, `::warning` and `::notice` (and the
     runner's `##[error]` forms), at most #{1000}.
   """
 
+  @max_groups 1000
   @max_annotations 1000
   @ansi ~r/\e(?:\[[0-?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\)|[@-Z\\-_])/
   @group ~r/\A(?:::group::|##\[group\])(.*)\z/s
   @endgroup ~r/\A(?:::endgroup::|##\[endgroup\])/
   @annotation ~r/\A(?:::(error|warning|notice)(?:\s+([^:]*))?::|##\[(error|warning|notice)\])(.*)\z/s
 
-  defstruct steps: %{}, groups: [], annotations: [], open: nil
+  defstruct steps: %{}, groups_rev: [], group_count: 0, annotations: [], open: nil
 
   def new, do: %__MODULE__{}
+
+  @doc "The retained groups in log order, including the currently open group."
+  def groups(index), do: Enum.reverse(index.groups_rev)
 
   @doc "The index with `lines` (in order) added."
   def add(%__MODULE__{} = index, lines), do: Enum.reduce(lines, index, &add_line/2)
@@ -43,15 +47,24 @@ defmodule Crew.Logs.Index do
   defp step(index, _line), do: index
 
   defp open_group(index, n, title) do
-    index = if index.open, do: close_group(index, n - 1), else: index
-    %{index | groups: index.groups ++ [[n, nil, title]], open: n}
+    index = close_group(index, n - 1)
+
+    if index.group_count == @max_groups do
+      index
+    else
+      %{
+        index
+        | groups_rev: [[n, nil, title] | index.groups_rev],
+          group_count: index.group_count + 1,
+          open: n
+      }
+    end
   end
 
   defp close_group(%{open: nil} = index, _n), do: index
 
-  defp close_group(index, n) do
-    groups = List.update_at(index.groups, -1, fn [start, _end, title] -> [start, n, title] end)
-    %{index | groups: groups, open: nil}
+  defp close_group(%{groups_rev: [[start, nil, title] | rest]} = index, n) do
+    %{index | groups_rev: [[start, n, title] | rest], open: nil}
   end
 
   defp annotate(index, n, text) do
@@ -103,7 +116,7 @@ defmodule Crew.Logs.Index do
     do:
       Jason.encode!(%{
         steps: index.steps,
-        groups: index.groups,
+        groups: groups(index),
         annotations: index.annotations,
         open: index.open
       })
@@ -111,14 +124,23 @@ defmodule Crew.Logs.Index do
   def decode(json) do
     case Jason.decode(json) do
       {:ok, map} ->
+        groups = (map["groups"] || []) |> Enum.take(@max_groups) |> Enum.reverse()
+
+        open =
+          case groups do
+            [[start, nil, _] | _] -> start
+            _ -> nil
+          end
+
         %__MODULE__{
           steps: map["steps"] || %{},
-          groups: map["groups"] || [],
+          groups_rev: groups,
+          group_count: length(groups),
           annotations:
             Enum.map(map["annotations"] || [], fn a ->
               %{n: a["n"], level: a["level"], text: a["text"], file: a["file"], line: a["line"]}
             end),
-          open: map["open"]
+          open: open
         }
 
       _ ->

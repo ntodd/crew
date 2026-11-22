@@ -304,7 +304,7 @@ defmodule Crew.LogsTest do
 
     index = eventually(fn -> (i = Logs.index(:vm, id)) && i.annotations != [] && i end)
     assert index.steps == %{"s1" => 1, "s2" => 3}
-    assert index.groups == [[1, 2, "Install"]]
+    assert Crew.Logs.Index.groups(index) == [[1, 2, "Install"]]
     assert [%{n: 3, level: "error", file: "a.ex", line: 3}] = index.annotations
   end
 

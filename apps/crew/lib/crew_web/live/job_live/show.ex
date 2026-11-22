@@ -396,7 +396,8 @@ defmodule CrewWeb.JobLive.Show do
     |> push_event("append", %{source: "live", lines: lines, total: total})
   end
 
-  defp viewer_index(index), do: Map.take(index, [:steps, :groups, :annotations])
+  defp viewer_index(index),
+    do: %{steps: index.steps, groups: Logs.Index.groups(index), annotations: index.annotations}
 
   defp viewer_steps(steps),
     do: Enum.map(steps, &Map.take(&1, [:number, :name, :status, :conclusion, :ref, :started_at]))

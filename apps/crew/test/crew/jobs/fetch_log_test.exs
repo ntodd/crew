@@ -105,7 +105,7 @@ defmodule Crew.Jobs.FetchLogTest do
     assert Logs.last_n(:job, job.id) == 6
     index = Logs.index(:job, job.id)
     assert index.steps == %{"step-1" => 1, "step-2" => 4}
-    assert index.groups == [[2, 3, "Operating System"]]
+    assert Crew.Logs.Index.groups(index) == [[2, 3, "Operating System"]]
   end
 
   test "a 404 is tried again at 15, 60 and 180 s; then the live log is all there is", %{

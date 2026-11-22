@@ -135,10 +135,16 @@ export class Rows {
 
   // A folded group that was still open takes its end once the index has it.
   syncEnds(groups) {
+    if (!this.hidden.size) return
+    const ends = new Map(groups.map(([start, end]) => [start, end]))
     let changed = false
-    for (const [start, end] of groups) {
-      if (end !== null && this.hidden.has(start) && this.hidden.get(start) === null) {
-        this.hidden.set(start, end)
+    for (const [start, previous] of this.hidden) {
+      if (!ends.has(start)) {
+        // Earlier history can displace a live group at the cap.
+        this.hidden.delete(start)
+        changed = true
+      } else if (previous === null && ends.get(start) !== null) {
+        this.hidden.set(start, ends.get(start))
         changed = true
       }
     }
@@ -210,6 +216,7 @@ export class Rows {
 const GROUP = /^(?:::group::|##\[group\])(.*)$/s
 const ENDGROUP = /^(?:::endgroup::|##\[endgroup\])/
 const ANNOTATION = /^(?:::(error|warning|notice)(?:\s+([^:]*))?::|##\[(error|warning|notice)\])(.*)$/s
+const MAX_GROUPS = 1000
 const MAX_ANNOTATIONS = 1000
 
 export function annotationOf(text) {
@@ -239,7 +246,7 @@ export function indexAdd(index, lines) {
     const open = index.groups.length && index.groups[index.groups.length - 1][1] === null
     if (title !== null) {
       if (open) index.groups[index.groups.length - 1][1] = line.n - 1
-      index.groups.push([line.n, null, title])
+      if (index.groups.length < MAX_GROUPS) index.groups.push([line.n, null, title])
     } else if (isEndGroup(line.text)) {
       if (open) index.groups[index.groups.length - 1][1] = line.n
     } else if (index.annotations.length < MAX_ANNOTATIONS) {
@@ -301,15 +308,16 @@ export function mergeIndex(local, remote) {
   for (const [ref, n] of Object.entries(local.steps)) steps[ref] = Math.min(n, steps[ref] ?? n)
 
   const byStart = new Map(local.groups.map(g => [g[0], g]))
-  const added = []
+  const newStarts = new Set()
   for (const g of remote.groups) {
     const mine = byStart.get(g[0])
     if (!mine) {
       byStart.set(g[0], g)
-      added.push(g)
+      newStarts.add(g[0])
     } else if (mine[1] === null && g[1] !== null) byStart.set(g[0], g)
   }
-  const groups = [...byStart.values()].sort((a, b) => a[0] - b[0])
+  const groups = [...byStart.values()].sort((a, b) => a[0] - b[0]).slice(0, MAX_GROUPS)
+  const added = groups.filter(g => newStarts.has(g[0]))
 
   const byN = new Map(remote.annotations.map(a => [a.n, a]))
   for (const a of local.annotations) byN.set(a.n, a)
