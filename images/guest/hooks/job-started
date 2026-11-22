@@ -20,7 +20,7 @@ set -u
 run_dir=${1:-/run/crew}
 
 case ${GITHUB_EVENT_NAME:-} in
-  pull_request | pull_request_target | pull_request_review | pull_request_review_comment) ;;
+  pull_request | pull_request_target | pull_request_review | pull_request_review_comment | workflow_run) ;;
   *) exit 0 ;;
 esac
 
@@ -31,10 +31,11 @@ fi
 
 # The PR comes from the repo itself: its head repo is there and has the
 # repo's full name.
-if jq -e '
-  (.repository.full_name | type == "string" and length > 0)
-  and (.pull_request.head.repo | type == "object")
-  and .pull_request.head.repo.full_name == .repository.full_name
+if jq -e --arg event "$GITHUB_EVENT_NAME" '
+  (if $event == "workflow_run" then .workflow_run.head_repository else .pull_request.head.repo end) as $head
+  | (.repository.full_name | type == "string" and length > 0)
+    and ($head.full_name | type == "string")
+    and ($head.full_name | ascii_downcase) == (.repository.full_name | ascii_downcase)
 ' "${GITHUB_EVENT_PATH:-/nonexistent}" >/dev/null 2>&1; then
   exit 0
 fi

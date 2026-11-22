@@ -481,6 +481,15 @@ defmodule Crew.JobsTest do
       assert Enum.count(Crew.Audit.recent(), &(&1.action == "run.fork_refused")) == 1
     end
 
+    test "a workflow_run without a known head counts as a fork", %{repo: repo} do
+      {:ok, attempt} =
+        Jobs.handle_workflow_run(
+          workflow_run_payload(repo, event: "workflow_run", head_repo: nil)
+        )
+
+      assert attempt.is_fork
+    end
+
     test "a null head repo on a PR event counts as a fork", %{repo: repo} do
       {:ok, attempt} =
         Jobs.handle_workflow_run(
