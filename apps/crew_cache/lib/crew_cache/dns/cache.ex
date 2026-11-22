@@ -70,7 +70,11 @@ defmodule CrewCache.DNS.Cache do
   end
 
   @doc "Whether `ip` may ask another query now."
-  def allow?(ip) do
+  def allow?(ip), do: proxy?(ip) or take_token(ip)
+
+  defp proxy?(ip), do: ip == CrewCache.Config.get().dns_proxy_ip
+
+  defp take_token(ip) do
     now = now_ms()
 
     {tokens, last} =
@@ -91,7 +95,9 @@ defmodule CrewCache.DNS.Cache do
   end
 
   @doc "Count a TCP connection from `ip`; false when it already has #{16}."
-  def tcp_open(ip) do
+  def tcp_open(ip), do: proxy?(ip) or reserve_tcp(ip)
+
+  defp reserve_tcp(ip) do
     if :ets.update_counter(@tcp, ip, 1, {ip, 0}) <= @tcp_per_client do
       true
     else
@@ -101,7 +107,13 @@ defmodule CrewCache.DNS.Cache do
   end
 
   def tcp_closed(ip) do
-    if :ets.update_counter(@tcp, ip, -1, {ip, 0}) <= 0, do: :ets.delete(@tcp, ip)
+    unless proxy?(ip) do
+      if :ets.update_counter(@tcp, ip, {2, -1, 0, 0}, {ip, 0}) == 0 do
+        # Keep a concurrent open between the decrement and removal.
+        :ets.delete_object(@tcp, {ip, 0})
+      end
+    end
+
     :ok
   end
 

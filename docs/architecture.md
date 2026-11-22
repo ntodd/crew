@@ -674,6 +674,10 @@ The other spikes are recorded here as they run.
 - **Management** updates are partial (what isn't sent is unchanged) and
   unknown fields are refused; `POST /purge` takes `cache.purge`'s scope
   strings. A token, when set, guards every endpoint.
+- On mac-vz the helper meters each guest before forwarding DNS to the
+  cache VM. The cache's boot-time firewall and resolver use the same
+  vmnet gateway address. For an existing installation, update crew-vz
+  before installing the cache VM's updated network configuration.
 - **DNS:** each client gets 100 queries a second (a token bucket): over
   it, UDP queries are dropped without a reply or a task, and TCP ones
   answered REFUSED. A client has at most 16 TCP connections, all clients

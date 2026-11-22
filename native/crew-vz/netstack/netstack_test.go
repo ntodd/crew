@@ -362,6 +362,16 @@ func TestUDPRefusalIsPortUnreachable(t *testing.T) {
 	}
 }
 
+func TestDNSStreamAccountsForEachQuery(t *testing.T) {
+	var output strings.Builder
+	queries := strings.NewReader("\x00\x03one\x00\x03two")
+	left := 1
+	err := copyDNSQueries(&output, queries, func() bool { left--; return left >= 0 })
+	if err == nil || output.String() != "\x00\x03one" {
+		t.Fatalf("forwarded %q, err %v", output.String(), err)
+	}
+}
+
 func TestDNSGoesToFallback(t *testing.T) {
 	up, err := net.ListenPacket("udp4", "127.0.0.1:0")
 	if err != nil {
