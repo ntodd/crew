@@ -39,6 +39,7 @@ Restart=no
 LimitNOFILE=65536
 # Spare crew-guest from the OOM killer; the runner wrapper puts the job
 # back to 0.
+OOMPolicy=continue
 OOMScoreAdjust=-500
 StandardOutput=journal
 StandardError=journal
