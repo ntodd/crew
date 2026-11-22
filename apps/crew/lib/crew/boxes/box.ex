@@ -2,7 +2,7 @@ defmodule Crew.Boxes.Box do
   @moduledoc "A machine that runs jobs: one agent, one driver (§3, §22)."
   use Crew.Schema
 
-  @types ~w(linux-metal linux-vm mac-vm mac-vz)
+  @types ~w(linux-metal linux-vm mac-vz)
 
   schema "boxes" do
     field :name, :string
@@ -59,4 +59,10 @@ defmodule Crew.Boxes.Box do
   end
 
   def types, do: @types
+
+  # Existing nested workers keep their keys and finish their jobs while draining.
+  def retired?(%__MODULE__{type: "mac-vm"}), do: true
+  def retired?(_box), do: false
+
+  def draining?(box), do: box.draining or retired?(box)
 end

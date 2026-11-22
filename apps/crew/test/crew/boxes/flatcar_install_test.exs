@@ -49,7 +49,7 @@ defmodule Crew.Boxes.FlatcarInstallTest do
           %{
             mode: :provision,
             name: "m3max",
-            type: "mac-vm",
+            type: "linux-vm",
             arch: "arm64",
             url: "https://crew.tail1234.ts.net",
             join_token: "cj_install-test-token",

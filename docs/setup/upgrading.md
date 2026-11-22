@@ -158,3 +158,41 @@ The protocol sets a floor: the control plane accepts agents on its own
 protocol and the one before (§10.5), so once boxes run agents on a
 newer protocol, a control plane older than that refuses them. The
 release notes say when the protocol changes.
+
+## Migrate a mac-vm worker to mac-vz
+
+Apple silicon workers now run the agent on macOS. Each job still gets a fresh
+arm64 Linux VM. Virtualization.framework starts those VMs, and Crew's userspace
+network stack enforces their network policy. The optional registry and DNS cache
+runs in its own Flatcar VM. Size and architecture labels continue to work. Review
+repository box restrictions and the new worker's reported capacity before moving
+traffic. Account for macOS memory, disk space, other VMs on the Mac, and sleep.
+
+1. After updating the control plane, open the old box in **Boxes**. Crew drains
+   it automatically, reaps idle runners and lets busy jobs finish. Wait until the
+   VM list is empty. Run `sudo crew-box stop OLD_NAME` on the Mac and keep the
+   old VM's disks and installed launcher for recovery. Disable its boot-time
+   launch with `sudo launchctl disable system/com.crew.hostvm.OLD_NAME`.
+2. For both fresh installs and replacements, choose **Boxes → Add box → mac-vz**.
+   Give the replacement a new name. Verify the release key and use the displayed
+   Darwin installer command on the Mac. The new join token and key pair identify
+   this box. Keep the nested agent's key on its original disk. If the Mac already
+   runs a mac-vz worker, use that box and its existing identity.
+3. The installer's `--cache-vm` option provisions the cache on a fresh install.
+   An existing cache keeps its store, MAC address and management token. If the
+   retired worker itself was named `cachevm`, back it up and remove that stopped
+   worker with the old launcher before provisioning a cache with the same local name.
+4. Check the new box's architecture, firewall and capacity on its box page.
+   Run and cancel an arm64 workflow, check DNS and a registry pull, restart the
+   agent during another job, and confirm the job finishes and its VM disappears.
+   Record the macOS version and hardware with the result. Once satisfied, revoke
+   the old box in Crew. Its historical runs remain under its original identity.
+
+If native setup fails, keep the drained box and its disks while repairing the
+mac-vz installation. Rerun the installer on an enrolled Mac to preserve its
+identity. To repair the cache OS, download the cache reprovision Ignition from
+the mac-vz box page and run its reimage command. The cache data disk is retained.
+Revocation is permanent. If a control-plane rollback requires the old worker,
+restore the previous release before revoking it, enable its original launch job
+with `sudo launchctl enable system/com.crew.hostvm.OLD_NAME`, and use the old
+launcher to start it.

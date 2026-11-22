@@ -1,7 +1,6 @@
 defmodule Crew.Boxes.Launcher do
   @moduledoc """
-  The `linux-vm` and `mac-vm` launchers (§12.3), Foreman's `vm.sh` and
-  `mac.sh` for Crew: `priv/agent/*-vm.sh`, served at `/agent/<type>.sh`
+  The Linux worker and macOS cache VM launchers (§12.3): `priv/agent/*-vm.sh`, served at `/agent/<type>.sh`
   with this control plane's URL and the release's pins
   (`images/flatcar/VERSION`, through `Crew.Boxes.Flatcar.pins/0`) filled
   in, so a launcher always installs the Flatcar its release was built
@@ -9,7 +8,7 @@ defmodule Crew.Boxes.Launcher do
   """
 
   @dir Path.expand("../../../priv/agent", __DIR__)
-  @types ~w(linux-vm mac-vm)
+  @types ~w(linux-vm mac-cache-vm)
   for type <- @types, do: @external_resource(Path.join(@dir, "#{type}.sh"))
   @scripts Map.new(@types, &{&1, File.read!(Path.join(@dir, "#{&1}.sh"))})
 

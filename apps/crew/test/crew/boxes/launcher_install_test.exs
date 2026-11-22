@@ -84,7 +84,7 @@ defmodule Crew.Boxes.LauncherInstallTest do
     """)
   end
 
-  describe "mac-vm.sh" do
+  describe "mac-cache-vm.sh" do
     setup ctx do
       vfkit =
         stub(ctx, "vfkit-served", """
@@ -97,7 +97,7 @@ defmodule Crew.Boxes.LauncherInstallTest do
         exit 0
         """)
 
-      {:ok, script} = Launcher.script("mac-vm", @url)
+      {:ok, script} = Launcher.script("mac-cache-vm", @url)
       pins = Flatcar.pins()
 
       script =
@@ -106,7 +106,7 @@ defmodule Crew.Boxes.LauncherInstallTest do
         |> String.replace(pins["FLATCAR_KERNEL_SHA512_ARM64"], sha(ctx.kernel, :sha512))
         |> String.replace(pins["VFKIT_SHA256"], sha(vfkit, :sha256))
 
-      launcher = Path.join(ctx.state, "mac-vm.sh")
+      launcher = Path.join(ctx.state, "mac-cache-vm.sh")
       File.write!(launcher, script)
 
       stub_curl(ctx, [
@@ -159,37 +159,12 @@ defmodule Crew.Boxes.LauncherInstallTest do
       )
     end
 
-    test "a first install makes the box and its LaunchDaemon", ctx do
+    test "the former worker installation command points to mac-vz before touching the host",
+         ctx do
       {out, status} = mac_install(ctx)
-      assert status == 0, out
-      assert out =~ "crew-box: done: devbox is on the Boxes page in Crew"
-
-      box = Path.join(ctx.root, "Library/Application Support/Crew/hostvm/devbox")
-
-      for f <- ~w(os.img data.img box.conf id_ed25519 id_ed25519.pub),
-          do: assert(File.exists?(Path.join(box, f)), f)
-
-      assert File.read!(Path.join(box, "box.conf")) =~ "data=100"
-
-      # What the agent takes off a mac-vz box's capacity (§11.4): hostvm/
-      # is readable, each VM's own directory isn't.
-      hostvm = Path.join(ctx.root, "Library/Application Support/Crew/hostvm")
-      assert File.read!(Path.join(hostvm, "devbox.conf")) == "memory_mib=4096\n"
-      assert Bitwise.band(File.stat!(hostvm).mode, 0o777) == 0o755
-      assert Bitwise.band(File.stat!(box).mode, 0o777) == 0o700
-
-      plist =
-        File.read!(Path.join(ctx.root, "Library/LaunchDaemons/com.crew.hostvm.devbox.plist"))
-
-      assert plist =~ "<string>run</string><string>devbox</string>"
-      assert File.read!(Path.join(ctx.state, "launchctl.log")) =~ "launchctl bootstrap system"
-      assert {:ok, _} = File.read_link(Path.join(ctx.root, "usr/local/bin/crew-box"))
-
-      curl = File.read!(Path.join(ctx.state, "curl.log"))
-      assert curl =~ "data arch=arm64"
-      assert curl =~ "data ssh_keys[]=ssh-ed25519 "
-      # Nothing of the install's own is left: the config went to the OS disk.
-      refute File.exists?(Path.join(box, "config.ign"))
+      assert status != 0
+      assert out =~ "mac-vz"
+      refute File.exists?(Path.join(ctx.root, "Library/Application Support/Crew"))
     end
 
     defp cache_install(ctx, env \\ []) do
@@ -345,12 +320,26 @@ defmodule Crew.Boxes.LauncherInstallTest do
       refute File.exists?(Path.join(ctx.root, "Library/Application Support/Crew"))
     end
 
-    test "a bad token fails before anything is downloaded, and leaves nothing", ctx do
-      {out, status} = mac_install(ctx, [{"STUB_IGNITION_CODE", "401"}])
-      assert status == 1
-      assert out =~ "Crew said 401"
-      refute File.exists?(Path.join(ctx.root, "Library/Application Support/Crew"))
-      refute File.read!(Path.join(ctx.state, "curl.log")) =~ "vfkit"
+    test "updating cachevm leaves a legacy worker and its installed launcher alone", ctx do
+      hostvm = Path.join(ctx.root, "Library/Application Support/Crew/hostvm")
+      worker = Path.join(hostvm, "old-worker")
+      old_launcher = Path.join(hostvm, "bin/crew-box")
+      File.mkdir_p!(Path.dirname(old_launcher))
+      File.write!(old_launcher, "legacy launcher")
+      File.mkdir_p!(worker)
+      File.write!(Path.join(worker, "box.conf"), "name=old-worker\nmemory=8\n")
+      {_, 0} = cache_install(ctx)
+      cache = Path.join(hostvm, "cachevm")
+      File.write!(Path.join(cache, "data.img"), "cached layers")
+      token = File.read!(Path.join(cache, "mgmt-token"))
+      assert {_, 0} = crew_box(ctx, ["--role", "cache", "--memory", "5"])
+      assert File.read!(Path.join(cache, "data.img")) == "cached layers"
+      assert File.read!(Path.join(cache, "mgmt-token")) == token
+      assert File.read!(Path.join(hostvm, "cachevm.conf")) == "memory_mib=5120\n"
+      assert File.read!(old_launcher) == "legacy launcher"
+      refute File.read!(Path.join(ctx.state, "launchctl.log")) =~ "old-worker"
+      assert {_, 1} = crew_box(ctx, ["uninstall", "--yes", "old-worker"])
+      assert File.exists?(Path.join(worker, "box.conf"))
     end
   end
 

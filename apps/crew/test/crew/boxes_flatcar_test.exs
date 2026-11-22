@@ -32,7 +32,7 @@ defmodule Crew.BoxesFlatcarTest do
     {:ok, raw} =
       Boxes.create_join_token(
         admin,
-        Map.merge(%{"box_name" => "m3max", "box_type" => "mac-vm"}, attrs)
+        Map.merge(%{"box_name" => "m3max", "box_type" => "linux-vm"}, attrs)
       )
 
     raw
@@ -223,7 +223,7 @@ defmodule Crew.BoxesFlatcarTest do
       assert {:error, cs} =
                Boxes.create_join_token(admin, %{
                  "box_name" => "x",
-                 "box_type" => "mac-vm",
+                 "box_type" => "linux-vm",
                  "ssh_keys" => "not a key"
                })
 

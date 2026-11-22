@@ -1,39 +1,10 @@
 #!/bin/sh
-# Runs a Crew box on this Mac (docs/crew_spec.md §12.3, mac-vm): Flatcar
-# Container Linux in a VM on Apple's hypervisor through vfkit, with nested
-# virtualization for the box's own job VMs, started by launchd at boot
-# whether or not anyone is logged in. The box sets itself up on its first
-# boot and enrolls with the control plane.
-#
-#   curl -fsSL __CREW_URL__/agent/mac-vm.sh | sudo sh -s -- --token cj_...
-#
-#   --cpus N        virtual CPUs (default: half this Mac's cores)
-#   --memory GiB    memory (default: half this Mac's, at most 16)
-#   --disk GiB      the OS disk (default 12)
-#   --data GiB      the data disk: images, job VMs, the cache (default 200,
-#                   at least 100)
-#   --role cache    a mac-vz box's cache VM instead (§12.3, §15.6), named
-#                   cachevm: crew_cache for the box's job VMs, no nested
-#                   virtualization, so any Apple silicon (default 2 CPUs,
-#                   4 GiB, data 100 GiB, at least 20). install-macos.sh
-#                   --cache-vm runs it with the box's join token; the
-#                   cache's management token is left in cachevm/mgmt-token.
-#
-# Needs macOS 15 or later on an M3 or later (Apple's nested
-# virtualization). Both disks are sparse files. Running it again updates
-# the launcher and vfkit and keeps the boxes; it needs no token. --cpus
-# and --memory then apply to the box named with --name (or the only one)
-# from its next start. Afterwards, crew-box manages a box:
-#
-#   crew-box status | start | stop | restart | ssh | logs [name]
-#   crew-box restart --role cache [--trigger FILE]   the cache VM (launchd's
-#                                        com.crew.hostvm-restart, for the agent)
-#   crew-box reimage <ignition> [name]   a fresh OS disk, for recovery
-#   crew-box uninstall --yes [name]
-#
-# Everything is root's, in /Library/Application Support/Crew/hostvm. The
-# VM sees nothing of the Mac's files and reaches the network through the
-# Mac's NAT.
+# Flatcar registry cache for mac-vz workers on Apple silicon (§12.3).
+# install-macos.sh --cache-vm uses the box's join token to provision it.
+#   curl -fsSL __CREW_URL__/agent/mac-cache-vm.sh | sudo sh -s -- --role cache --token cj_...
+# An update (--role cache, without a token) preserves the sparse disks,
+# SSH key and management token. Defaults: 2 CPUs, 4 GiB RAM, 12 GiB OS
+# and 100 GiB data. crew-box manages the installed cache by name: cachevm.
 set -eu
 
 CREW_URL="__CREW_URL__"
@@ -57,7 +28,7 @@ VFKIT_SHA256="__VFKIT_SHA256__"
 ROOT="${CREW_BOX_ROOT:-}"
 HOSTVM="${CREW_HOSTVM_DIR:-$ROOT/Library/Application Support/Crew/hostvm}"
 BIN="$HOSTVM/bin"
-SELF="$BIN/crew-box"
+SELF="$BIN/crew-cache-vm"
 LINK="$ROOT/usr/local/bin/crew-box"
 LAUNCHD="$ROOT/Library/LaunchDaemons"
 
@@ -75,23 +46,14 @@ sha512() { shasum -a 512 "$1" | cut -d' ' -f1; }
 
 # -- one box -------------------------------------------------------------------
 
-# Picks the box: the name given, or the only one.
+# Older workers can share this hostvm directory. Only the cache belongs to this launcher.
 pick() {
-  name=${1:-}
-  if [ -z "$name" ]; then
-    set --
-    for d in "$HOSTVM"/*/box.conf; do
-      if [ -f "$d" ]; then set -- "$@" "$(basename "$(dirname "$d")")"; fi
-    done
-    [ $# -gt 0 ] || fail "there's no box on this Mac"
-    [ $# -eq 1 ] || fail "there are several boxes here ($*); name one"
-    name=$1
-  fi
-  case "$name" in "" | *[!a-z0-9-]*) fail "'$name' isn't a box name" ;; esac
-  BOX="$HOSTVM/$name"
-  LABEL="com.crew.hostvm.$name"
+  name=${1:-cachevm}
+  [ "$name" = cachevm ] || fail "this launcher manages cachevm only; use mac-vz for Mac workers"
+  BOX="$HOSTVM/cachevm"
+  LABEL="com.crew.hostvm.cachevm"
   PLIST="$LAUNCHD/$LABEL.plist"
-  [ -f "$BOX/box.conf" ] || [ -n "${2:-}" ] || fail "there's no box named $name here"
+  [ "${2:-}" = new ] || grep -qx 'role=cache' "$BOX/box.conf" 2>/dev/null || fail "no cache VM is installed"
 }
 
 conf() { sed -n "s/^$1=//p" "$BOX/box.conf" 2>/dev/null | tail -1; }
@@ -103,17 +65,6 @@ cache_boot() {
   [ -n "$ip" ] && [ -s "$BOX/mgmt-token" ] || return 0
   curl -fsS --max-time 5 -H "authorization: Bearer $(cat "$BOX/mgmt-token")" "http://$ip:7780/host" </dev/null 2>/dev/null |
     sed -n 's/.*"boot_id":"\([0-9a-f-]*\)".*/\1/p' || true
-}
-
-# Picks the VM with a role (the cache VM).
-pick_role() {
-  for d in "$HOSTVM"/*/box.conf; do
-    if [ -f "$d" ] && grep -qx "role=$1" "$d"; then
-      pick "$(basename "$(dirname "$d")")"
-      return 0
-    fi
-  done
-  fail "there's no $1 VM on this Mac"
 }
 
 rest() { curl -fsS --max-time 10 --unix-socket "$BOX/rest.sock" "$@"; }
@@ -141,9 +92,7 @@ run() {
   # Keep the previous boot's console for a look after a crash.
   [ ! -s "$BOX/serial.log" ] || mv -f "$BOX/serial.log" "$BOX/serial.log.1"
   rm -f "$BOX/rest.sock"
-  # Nested virtualization for a box's job VMs; the cache VM runs none.
-  if [ "$(conf role)" = cache ]; then set --; else set -- --nested; fi
-  exec "$BIN/vfkit" \
+  exec "$BIN/cache-vfkit" \
     --cpus "$(conf cpus)" --memory "$(($(conf memory) * 1024))" \
     --bootloader "$store" \
     --device "virtio-blk,path=$BOX/os.img" \
@@ -151,8 +100,7 @@ run() {
     --device "virtio-net,nat,mac=$(conf mac)" \
     --device "virtio-serial,logFilePath=$BOX/serial.log" \
     --device virtio-rng \
-    --restful-uri "unix://$BOX/rest.sock" \
-    "$@"
+    --restful-uri "unix://$BOX/rest.sock"
 }
 
 start() {
@@ -214,7 +162,7 @@ follow() {
 
 # Flatcar's image and kernel, checked against their pinned digests.
 fetch_flatcar() {
-  images="$HOSTVM/images/$FLATCAR_VERSION-arm64"
+  images="$BOX/flatcar-$FLATCAR_VERSION-arm64"
   mkdir -p "$images"
   base="https://stable.release.flatcar-linux.net/arm64-usr/$FLATCAR_VERSION"
   for f in "flatcar_production_image.bin.bz2:$FLATCAR_IMAGE_SHA512_ARM64" \
@@ -266,7 +214,7 @@ EOF
   cmdline="$cmdline mount.usr=/dev/mapper/usr verity.usr=PARTUUID=$FLATCAR_USR_A verity.usrhash=$FLATCAR_VERITY_ARM64"
   cmdline="$cmdline systemd.mount-extra=LABEL=CRWCFG:/run/crewcfg:iso9660:ro \"systemd.run=/usr/bin/sh /run/crewcfg/prep.sh\""
   cmdline="$cmdline systemd.run_success_action=poweroff systemd.run_failure_action=poweroff"
-  "$BIN/vfkit" --cpus 2 --memory 2048 \
+  "$BIN/cache-vfkit" --cpus 2 --memory 2048 \
     --kernel "$images/flatcar_production_image.vmlinuz" --initrd "$2/empty.cpio" --kernel-cmdline "$cmdline" \
     --device "virtio-blk,path=$BOX/os.img.part" --device "virtio-blk,path=$2/config.iso,readonly" \
     --device virtio-net,nat --device "virtio-serial,logFilePath=$2/prep.log" --device virtio-rng \
@@ -296,8 +244,7 @@ with_launcher_key() {
 
 # A fresh OS disk from the release's first-boot Flatcar, booted with the
 # given Ignition (the box page's reprovision one): for recovery (§12.1).
-# The data disk, and with it the agent, its identity and the tailnet
-# node, stays as it is.
+# The data disk holds the cache store and management token.
 reimage() {
   [ -n "${1:-}" ] && [ -f "$1" ] || fail "usage: crew-box reimage <ignition file> [name] (the box page has one)"
   grep -q '"ignition"' "$1" || fail "$1 isn't an Ignition config"
@@ -313,28 +260,26 @@ reimage() {
   write_os_disk "$(conf disk)"
   stage_ignition "$work/config.ign" "$work"
   mv -f "$BOX/os.img.part" "$BOX/os.img"
-  rm -rf "$work" "$HOSTVM/images"
+  rm -rf "$work" "$images"
   rm -f "$BOX/efi-vars" "$BOX/serial.log" "$BOX/serial.log.1"
   start
-  if [ "$(conf role)" = cache ]; then
-    follow 'cache ready|crew_cache didn.t|the cache.s management token'
-  else
-    follow 'enrolled|agent started|there.s no agent|the agent|the data disk'
-  fi
+  follow 'cache ready|crew_cache didn.t|the cache.s management token'
   say "reimaged $(conf name) with Flatcar $FLATCAR_VERSION; it updates itself from here"
 }
 
 uninstall() {
-  [ "${1:-}" = --yes ] || fail "this deletes the box's disks and everything on them; run: crew-box uninstall --yes [name] (and revoke the box in Crew)"
+  [ "${1:-}" = --yes ] || fail "this deletes the box's disks and everything on them; run: crew-box uninstall --yes cachevm"
   pick "${2:-}"
   stop
   rm -f "$PLIST" "$HOSTVM/$name.conf"
   rm -rf "$BOX"
-  if ! ls "$HOSTVM"/*/box.conf >/dev/null 2>&1; then
-    rm -f "$LINK"
-    rm -rf "$HOSTVM"
+  if [ "$(readlink "$BIN/crew-box" 2>/dev/null || true)" = "$SELF" ]; then
+    if [ "$(readlink "$LINK" 2>/dev/null || true)" = "$BIN/crew-box" ]; then rm -f "$LINK"; fi
+    rm -f "$BIN/crew-box"
   fi
-  say "removed $name; revoke it on its page in Crew"
+  rm -f "$BIN/cache-vfkit" "$SELF"
+  rmdir "$BIN" "$HOSTVM" 2>/dev/null || true
+  say "removed $name"
 }
 
 as_root() { [ "$(id -u)" -eq 0 ] || fail "run this as root (sudo crew-box $*)"; }
@@ -358,7 +303,7 @@ case "${1:-}" in
         asked=$(head -n 1 "$2" | tr -d '\r\n')
         rm -f "$2"
       fi
-      pick_role cache
+      pick cachevm
       if printf '%s\n' "$asked" | grep -Eqx '[0-9a-f-]{36}'; then
         # A boot it already restarted (a second request for it can come
         # while the new boot isn't answering yet), or one it has left.
@@ -416,7 +361,7 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(uname -s)" = Darwin ] || fail "this is for macOS; on Linux use linux-vm.sh"
-case "$ROLE" in "" | cache) ;; *) fail "--role takes cache (a mac-vz box's cache VM)" ;; esac
+[ "$ROLE" = cache ] || fail "mac-vm workers are retired; choose mac-vz in Add box. For its cache VM use --role cache."
 [ "$(id -u)" -eq 0 ] || fail "run this as root: curl ... | sudo sh -s -- --token ..."
 for n in CPUS MEMORY DISK DATA; do
   eval "v=\${$n}"
@@ -424,15 +369,8 @@ for n in CPUS MEMORY DISK DATA; do
   case "$v" in *[!0-9]*) fail "--$(echo "$n" | tr '[:upper:]' '[:lower:]') takes a whole number" ;; esac
 done
 
-# Apple's hypervisor offers nested virtualization from macOS 15, on an M3
-# or later; the box's job VMs need it. The cache VM runs no VMs.
-major=$(sw_vers -productVersion | cut -d. -f1)
-chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || true)
-generation=$(printf '%s\n' "$chip" | sed -n 's/^Apple M\([0-9][0-9]*\).*/\1/p')
-if [ -z "$ROLE" ] && { [ "$major" -lt 15 ] || [ -z "$generation" ] || [ "$generation" -lt 3 ]; }; then
-  fail "a mac-vm box needs macOS 15 or later on an M3 or later, for nested virtualization (this is macOS $(sw_vers -productVersion) on ${chip:-an unknown chip}); a mac-vz box runs on any Apple silicon Mac"
-fi
-[ "$(uname -m)" = arm64 ] || fail "a mac-vm box needs Apple silicon"
+[ "$(uname -m)" = arm64 ] || fail "the cache VM needs Apple silicon"
+[ -z "$NAME" ] || [ "$NAME" = cachevm ] || fail "the cache VM is named cachevm"
 
 # vfkit, this script as the command that manages the boxes (the control
 # plane's current copy), and each box's launchd job.
@@ -442,24 +380,21 @@ install_launcher() {
   # memory, off its capacity (§11.4); each VM's own directory is 0700.
   chmod 0755 "$HOSTVM" "$BIN"
   [ -d "$(dirname "$LINK")" ] || install -d -m 0755 "$(dirname "$LINK")"
-  if [ ! -x "$BIN/vfkit" ] || [ "$(sha256 "$BIN/vfkit")" != "$VFKIT_SHA256" ]; then
+  if [ ! -x "$BIN/cache-vfkit" ] || [ "$(sha256 "$BIN/cache-vfkit")" != "$VFKIT_SHA256" ]; then
     say "downloading vfkit $VFKIT_VERSION"
-    curl -fsSL -o "$BIN/vfkit.new" "https://github.com/crc-org/vfkit/releases/download/$VFKIT_VERSION/vfkit" </dev/null
-    [ "$(sha256 "$BIN/vfkit.new")" = "$VFKIT_SHA256" ] || { rm -f "$BIN/vfkit.new"; fail "vfkit doesn't match its digest"; }
-    chmod 0755 "$BIN/vfkit.new"
-    mv -f "$BIN/vfkit.new" "$BIN/vfkit"
+    curl -fsSL -o "$BIN/cache-vfkit.new" "https://github.com/crc-org/vfkit/releases/download/$VFKIT_VERSION/vfkit" </dev/null
+    [ "$(sha256 "$BIN/cache-vfkit.new")" = "$VFKIT_SHA256" ] || { rm -f "$BIN/cache-vfkit.new"; fail "vfkit doesn't match its digest"; }
+    chmod 0755 "$BIN/cache-vfkit.new"
+    mv -f "$BIN/cache-vfkit.new" "$BIN/cache-vfkit"
   fi
 
-  curl -fsSL -o "$SELF.new" "$CREW_URL/agent/mac-vm.sh" </dev/null || fail "couldn't reach $CREW_URL"
+  curl -fsSL -o "$SELF.new" "$CREW_URL/agent/mac-cache-vm.sh" </dev/null || fail "couldn't reach $CREW_URL"
   chmod 0755 "$SELF.new"
   mv -f "$SELF.new" "$SELF"
-  ln -sf "$SELF" "$LINK"
-
-  # An if, not `[ ] &&`: with no box yet the glob stays as it is, and a
-  # false test as the function's last status would end the install.
-  for conf_file in "$HOSTVM"/*/box.conf; do
-    if [ -f "$conf_file" ]; then write_plist "$(basename "$(dirname "$conf_file")")"; fi
-  done
+  # Previous releases call bin/crew-box for cache restarts. Leave any
+  # installed worker launcher in place for draining and recovery.
+  if [ ! -e "$BIN/crew-box" ]; then ln -sf "$SELF" "$BIN/crew-box"; fi
+  if [ ! -e "$LINK" ]; then ln -sf "$BIN/crew-box" "$LINK"; fi
 }
 
 # What a mac-vz box's agent takes off its capacity (§11.4): this VM's
@@ -501,71 +436,46 @@ EOF
   mv -f "$plist.new" "$plist"
 }
 
-sleep_note() {
-  if [ "$(pmset -g 2>/dev/null | awk '$1 == "sleep" { print $2 }')" != 0 ]; then
-    say "this Mac sleeps, which pauses its boxes and their jobs; to keep it awake: sudo pmset -a sleep 0"
-  fi
-}
-
 if [ -z "$TOKEN" ]; then
-  # An update: the boxes and their disks stay as they are. (To start one
-  # over with a new token: crew-box uninstall --yes <name>, then this
-  # again.)
-  ls "$HOSTVM"/*/box.conf >/dev/null 2>&1 || fail "--token is required (Add box in Crew makes one)"
+  pick cachevm
   install_launcher
+  write_plist cachevm
   if [ -n "$CPUS$MEMORY" ]; then
-    pick "$NAME"
     { grep -v -e '^cpus=' -e '^memory=' "$BOX/box.conf"
       echo "cpus=${CPUS:-$(conf cpus)}"
       echo "memory=${MEMORY:-$(conf memory)}"; } > "$BOX/box.conf.new"
     mv -f "$BOX/box.conf.new" "$BOX/box.conf"
-    write_memory "$name"
     say "$name gets $(conf cpus) CPUs and $(conf memory) GiB from its next start (sudo crew-box restart $name)"
   fi
-  for conf_file in "$HOSTVM"/*/box.conf; do
-    pick "$(basename "$(dirname "$conf_file")")"
-    write_memory "$name"
-    start
-  done
-  say "updated; the boxes keep their disks and enrollment"
+  write_memory cachevm
+  start
+  say "updated cachevm; its disks and management token are preserved"
   exit 0
 fi
 
 cores=$(sysctl -n hw.ncpu)
 mem_gib=$(($(sysctl -n hw.memsize) / 1073741824))
-if [ "$ROLE" = cache ]; then
-  # crew_cache and its store: small, and on any Mac beside the box.
-  [ -n "$CPUS" ] || CPUS=2
-  [ -n "$MEMORY" ] || MEMORY=4
-  [ -n "$DATA" ] || DATA=100
-  [ "$DATA" -ge 20 ] || fail "--data needs at least 20 GiB for the cache"
-else
-  [ -n "$CPUS" ] || CPUS=$((cores / 2 > 2 ? cores / 2 : 2))
-  [ -n "$MEMORY" ] || MEMORY=$((mem_gib / 2 > 16 ? 16 : (mem_gib / 2 < 4 ? 4 : mem_gib / 2)))
-  [ -n "$DATA" ] || DATA=200
-  [ "$DATA" -ge 100 ] || fail "--data needs at least 100 GiB"
-fi
+[ -n "$CPUS" ] || CPUS=2
+[ -n "$MEMORY" ] || MEMORY=4
+[ -n "$DATA" ] || DATA=100
+[ "$DATA" -ge 20 ] || fail "--data needs at least 20 GiB for the cache"
 [ "$CPUS" -le "$cores" ] || fail "--cpus $CPUS is more than this Mac's $cores"
 [ "$MEMORY" -lt "$mem_gib" ] || fail "--memory $MEMORY GiB leaves nothing for this Mac's $mem_gib GiB"
 [ "$DISK" -ge 8 ] || fail "--disk needs at least 8 GiB"
 
 # A new box. Until it starts, a failure leaves nothing behind.
-fresh_hostvm=""
-[ -e "$HOSTVM" ] || fresh_hostvm=1
+created_cache=""
 work=$(mktemp -d)
 BOX=""
 # The EXIT trap runs it (SC2317 and SC2329 are the same check in older and newer ShellCheck).
 # shellcheck disable=SC2317,SC2329
 cleanup() {
   rm -rf "$work"
-  if [ -n "$BOX" ]; then
+  if [ -n "$created_cache" ]; then
     rm -f "$PLIST"
     rm -rf "$BOX"
   fi
-  if [ -n "$fresh_hostvm" ]; then
-    rm -f "$LINK"
-    rm -rf "$HOSTVM"
-  fi
+
 }
 trap cleanup EXIT
 
@@ -574,17 +484,10 @@ ssh-keygen -q -t ed25519 -N "" -C "crew-box@$(hostname -s)" -f "$work/id_ed25519
 mac=$(od -An -N3 -tx1 /dev/urandom | tr -s ' ' ':' | sed 's/^/52:54:00/; s/:$//')
 
 # First, so a bad token fails before anything is downloaded.
-if [ "$ROLE" = cache ]; then
-  say "asking $CREW_URL for the cache VM's first-boot config"
-  endpoint="$CREW_URL/agent/flatcar/cachevm/ignition"
-  set --
-else
-  say "asking $CREW_URL for the box's first-boot config"
-  endpoint="$CREW_URL/agent/flatcar/ignition"
-  set -- --data-urlencode "arch=arm64"
-fi
+say "asking $CREW_URL for the cache VM's first-boot config"
+endpoint="$CREW_URL/agent/flatcar/cachevm/ignition"
 code=$(curl -sS -D "$work/headers" -o "$work/config.ign" -w '%{http_code}' \
-  -X POST "$endpoint" --data-urlencode "join_token=$TOKEN" "$@" \
+  -X POST "$endpoint" --data-urlencode "join_token=$TOKEN" \
   --data-urlencode "ssh_keys[]=$(cat "$work/id_ed25519.pub")" </dev/null) || fail "couldn't reach $CREW_URL"
 [ "$code" = 200 ] || fail "Crew said $code: $(cat "$work/config.ign")"
 # A response header's value (names are case-insensitive).
@@ -594,21 +497,19 @@ header() {
 }
 box_name=$(header X-Crew-Box)
 case "$box_name" in "" | *[!a-z0-9-]*) fail "Crew didn't name the box" ;; esac
-name=$box_name
-if [ "$ROLE" = cache ]; then
-  name=cachevm
-  mgmt_token=$(header X-Crew-Cache-Token)
-  case "$mgmt_token" in "" | *[!A-Za-z0-9_-]*) fail "Crew didn't give the cache a management token" ;; esac
-  [ ! -e "$HOSTVM/$name" ] || fail "there's a cache VM here already; to start it over: sudo crew-box uninstall --yes $name"
-fi
-[ ! -e "$HOSTVM/$name" ] || fail "there's a box named $name here already; to start it over: sudo crew-box uninstall --yes $name"
+name=cachevm
+mgmt_token=$(header X-Crew-Cache-Token)
+case "$mgmt_token" in "" | *[!A-Za-z0-9_-]*) fail "Crew didn't give the cache a management token" ;; esac
+[ ! -e "$HOSTVM/$name" ] || fail "there is already a VM named cachevm"
 
 pick "$name" new
-mkdir -p "$BOX"
+mkdir -p "$HOSTVM"
+mkdir "$BOX"
+created_cache=1
 chmod 0700 "$BOX"
 install -m 0600 "$work/id_ed25519" "$BOX/id_ed25519"
 install -m 0644 "$work/id_ed25519.pub" "$BOX/id_ed25519.pub"
-if [ "$ROLE" = cache ]; then printf '%s\n' "$mgmt_token" > "$BOX/mgmt-token"; fi
+printf '%s\n' "$mgmt_token" > "$BOX/mgmt-token"
 
 install_launcher
 fetch_flatcar
@@ -618,7 +519,7 @@ write_os_disk "$DISK"
 stage_ignition "$work/config.ign" "$work"
 mv -f "$BOX/os.img.part" "$BOX/os.img"
 truncate -s "${DATA}g" "$BOX/data.img" 2>/dev/null || mkfile -n "${DATA}g" "$BOX/data.img"
-rm -rf "$HOSTVM/images"
+rm -rf "$images"
 
 cat > "$BOX/box.conf" <<EOF
 name=$name
@@ -628,8 +529,8 @@ disk=$DISK
 data=$DATA
 mac=$mac
 flatcar=$FLATCAR_VERSION
+role=cache
 EOF
-if [ "$ROLE" = cache ]; then echo "role=cache" >> "$BOX/box.conf"; fi
 write_memory "$name"
 write_plist "$name"
 
@@ -638,15 +539,5 @@ trap 'rm -rf "$work"' EXIT
 say "starting the box ($CPUS CPUs, $MEMORY GiB); it sets itself up on its first boot"
 start
 
-if [ "$ROLE" = cache ]; then
-  # Its first boot: Ignition, the data disk, crew_cache.
-  follow 'cache ready'
-  say "done: $box_name's cache VM is up (crew-box status $name)"
-  exit 0
-fi
-
-# Its first boot: Ignition, the data disk, the tailnet, the agent.
-follow enrolled
-say "done: $name is on the Boxes page in Crew"
-say "manage it with crew-box (status, stop, start, restart, ssh, logs, reimage, uninstall)"
-sleep_note
+follow 'cache ready'
+say "done: $box_name's cache VM is up (crew-box status $name)"

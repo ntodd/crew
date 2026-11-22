@@ -1,8 +1,8 @@
 defmodule Crew.Boxes.Flatcar do
   @moduledoc """
   The Ignition (3.4.0) for a box that runs Flatcar Container Linux
-  (§12.1, §12.2): `linux-metal` on the machine itself, `linux-vm` and
-  `mac-vm` as a VM the launchers boot (`priv/agent/*-vm.sh`). Built as a
+  (§12.1, §12.2): `linux-metal` on the machine itself, or `linux-vm`
+  as a VM the Linux launcher boots (`priv/agent/linux-vm.sh`). Built as a
   map, JSON-ready, as Foreman's `Boxes.Flatcar` builds it, rather than
   rendered from Butane: there's no Butane binary to ship or pin, and the
   tests read the map.
@@ -68,7 +68,7 @@ defmodule Crew.Boxes.Flatcar do
 
   @bakery "https://extensions.flatcar.org/extensions"
   @bakery_arch %{"amd64" => "x86-64", "arm64" => "arm64"}
-  @types ~w(linux-metal linux-vm mac-vm)
+  @types ~w(linux-metal linux-vm)
 
   # Fixed ids, so a new OS disk (reprovisioning) owns the data disk's
   # files: well clear of Flatcar's own users, core (500) and the job VMs'

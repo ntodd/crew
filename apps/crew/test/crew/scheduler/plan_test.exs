@@ -15,7 +15,7 @@ defmodule Crew.Scheduler.PlanTest do
           guest_arch: "x64",
           vmm_overhead_mib: 64
         ),
-        box("m3max", vcpus: 14, memory_mib: 36_864, vm_area_mib: 204_800, vmm_overhead_mib: 64),
+        box("m3max", vcpus: 14, memory_mib: 36_864, vm_area_mib: 204_800, vmm_overhead_mib: 128),
         box("m1ultra",
           vcpus: 18,
           memory_mib: 110_592,

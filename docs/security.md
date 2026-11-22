@@ -24,7 +24,7 @@ departs.
 
 ### Job VM and host (the main boundary)
 
-**Firecracker boxes (`linux-metal`, `linux-vm`, `mac-vm`):**
+**Firecracker boxes (`linux-metal`, `linux-vm`):**
 
 - KVM and Firecracker's small device model, started through the jailer:
   a chroot per VM, a unique uid and gid (`200000 + lease`), a private
@@ -82,9 +82,8 @@ departs.
 
 ### Host VM and physical host
 
-`linux-vm` and `mac-vm` boxes add a second hypervisor boundary: Flatcar
-in QEMU (Linux) or vfkit (macOS), with nested virtualization for
-Firecracker inside it.
+On a `linux-vm` box, Flatcar runs in QEMU on Linux. KVM provides nested
+virtualization for the Firecracker job VMs inside it.
 
 ### Job VM and the network
 
@@ -211,7 +210,7 @@ code.
 5. **The guest API token is readable in the guest,** by design. It's
    per VM, and the guest API refuses another VM's token.
 6. **Nested virtualization isn't a supported Firecracker setup.**
-   `linux-vm` and `mac-vm` trade it for not needing a dedicated machine.
+   `linux-vm` lets operators share a Linux host.
    `linux-metal` is the hardened option, and repos can be pinned to it.
 7. **The vz driver's network isolation is Crew's own code:** the
    userspace stack in `crew-vz`. A bug there is an isolation bug. It runs

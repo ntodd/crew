@@ -49,7 +49,7 @@ defmodule Crew.Boxes do
       box.needs_approval && :needs_approval,
       (box.quarantined_until != nil and DateTime.compare(box.quarantined_until, now) == :gt) &&
         :quarantined,
-      box.draining && :draining,
+      Box.draining?(box) && :draining,
       box.sleep_disabled == false && :sleep_on,
       box.reboot_required && :reboot_required
     ]
@@ -102,11 +102,7 @@ defmodule Crew.Boxes do
       {%{}, types}
       |> Ecto.Changeset.cast(attrs, Map.keys(types))
       |> Ecto.Changeset.validate_required([:box_name, :box_type])
-      |> Ecto.Changeset.validate_change(:box_name, fn :box_name, name ->
-        if CrewProtocol.Names.box_name?(name),
-          do: [],
-          else: [box_name: "must be a lowercase DNS label of at most 40 characters"]
-      end)
+      |> Ecto.Changeset.validate_change(:box_name, &validate_join_name/2)
       |> Ecto.Changeset.validate_inclusion(:box_type, Box.types())
       |> validate_network()
       |> validate_disks()
@@ -152,6 +148,19 @@ defmodule Crew.Boxes do
 
         Audit.log(scope, "box.join_token", {"Box", data.box_name}, %{"type" => data.box_type})
         {:ok, raw}
+    end
+  end
+
+  defp validate_join_name(:box_name, name) do
+    cond do
+      not CrewProtocol.Names.box_name?(name) ->
+        [box_name: "must be a lowercase DNS label of at most 40 characters"]
+
+      Box.retired?(get_by_name(name)) ->
+        [box_name: "belongs to a retired mac-vm worker. Choose a new name for its replacement."]
+
+      true ->
+        []
     end
   end
 
@@ -257,7 +266,9 @@ defmodule Crew.Boxes do
   defp claim_token(raw, now) do
     query =
       from t in JoinToken,
-        where: t.token_hash == ^hash(raw) and is_nil(t.used_at) and t.expires_at > ^now,
+        where:
+          t.token_hash == ^hash(raw) and is_nil(t.used_at) and t.expires_at > ^now and
+            t.box_type in ^Box.types(),
         select: t
 
     case Repo.update_all(query, set: [used_at: now, tailscale_auth_key: nil]) do
@@ -318,7 +329,7 @@ defmodule Crew.Boxes do
   @doc """
   The cache VM's first-boot Ignition for a `mac-vz` box's join token
   (§12.3, §15.6), and the management token it carries: the box's
-  installer (install-macos.sh, through the mac-vm launcher's `--role
+  installer (install-macos.sh, through the cache launcher's `--role
   cache`) gives the same token to the agent. A new token each time; the
   control plane keeps none of them, and the join token stays good for
   the agent's enrollment.
@@ -347,7 +358,9 @@ defmodule Crew.Boxes do
   defp valid_join_token(raw) when is_binary(raw) do
     case Repo.get_by(JoinToken, token_hash: hash(raw)) do
       %JoinToken{used_at: nil} = token ->
-        if DateTime.compare(token.expires_at, DateTime.utc_now()) == :gt, do: token
+        if token.box_type in Box.types() and
+             DateTime.compare(token.expires_at, DateTime.utc_now()) == :gt,
+           do: token
 
       _ ->
         nil
@@ -505,7 +518,7 @@ defmodule Crew.Boxes do
   defp upsert_enrolled_box(token, public_key, attrs) do
     box = get_by_name(token.box_name) || %Box{name: token.box_name}
 
-    if box.revoked_at do
+    if box.revoked_at || Box.retired?(box) do
       {:error, :revoked}
     else
       box

@@ -276,7 +276,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-[ "$(uname -s)" = Linux ] || fail "this is for Linux; on a Mac use mac-vm.sh"
+[ "$(uname -s)" = Linux ] || fail "this is for Linux; on a Mac choose mac-vz in Add box"
 [ "$(id -u)" -eq 0 ] || fail "run this as root (sudo)"
 command -v systemctl >/dev/null 2>&1 || fail "systemd is required"
 for n in CPUS MEMORY DISK DATA SSH_PORT; do

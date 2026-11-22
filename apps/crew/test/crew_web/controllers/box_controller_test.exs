@@ -7,7 +7,7 @@ defmodule CrewWeb.BoxControllerTest do
     scope = Crew.Scope.for_user(admin)
 
     {:ok, raw} =
-      Crew.Boxes.create_join_token(scope, %{"box_name" => "m3max", "box_type" => "mac-vm"})
+      Crew.Boxes.create_join_token(scope, %{"box_name" => "m3max", "box_type" => "linux-vm"})
 
     {public, _} = CrewProtocol.Auth.generate_keypair()
     {:ok, box} = Crew.Boxes.enroll(raw, %{"public_key" => Base.encode64(public)})

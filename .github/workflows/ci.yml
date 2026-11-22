@@ -105,7 +105,7 @@ jobs:
         run: |
           # linux-metal in both disk layouts (one disk, the default, and
           # a separate data disk).
-          for box in linux-metal:one linux-metal:separate linux-vm mac-vm; do
+          for box in linux-metal:one linux-metal:separate linux-vm; do
             type=${box%%:*}
             name=${box/:/-}
             layout=()

@@ -61,7 +61,7 @@ defmodule CrewWeb.AgentControllerTest do
       admin = Crew.Scope.for_user(user_fixture(role: "admin"))
 
       {:ok, token} =
-        Crew.Boxes.create_join_token(admin, %{"box_name" => "m3max", "box_type" => "mac-vm"})
+        Crew.Boxes.create_join_token(admin, %{"box_name" => "m3max", "box_type" => "linux-vm"})
 
       %{flatcar_token: token}
     end
@@ -233,7 +233,7 @@ defmodule CrewWeb.AgentControllerTest do
       admin = Crew.Scope.for_user(user_fixture(role: "admin"))
 
       {:ok, flatcar} =
-        Crew.Boxes.create_join_token(admin, %{"box_name" => "m3max", "box_type" => "mac-vm"})
+        Crew.Boxes.create_join_token(admin, %{"box_name" => "m3max", "box_type" => "linux-vm"})
 
       conn = post(conn, "/agent/flatcar/cachevm/ignition", %{"join_token" => flatcar})
       assert json_response(conn, 400)["error"] =~ "mac-vz"
@@ -255,7 +255,7 @@ defmodule CrewWeb.AgentControllerTest do
   end
 
   test "serves the launchers, filled in", %{conn: conn} do
-    for type <- ["linux-vm", "mac-vm"] do
+    for type <- ["linux-vm", "mac-cache-vm", "mac-vm"] do
       conn = get(conn, "/agent/#{type}.sh")
       assert conn.status == 200
       assert [content_type] = get_resp_header(conn, "content-type")

@@ -233,16 +233,10 @@ defmodule CrewWeb.BoxLiveTest do
       assert has_element?(view, "#join-command", "--release-key #{Base.encode64(key.public)}")
     end
 
-    test "shows the launcher command for linux-vm and mac-vm", %{conn: conn} do
+    test "mac-vz is the only Mac worker offered", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/boxes/new")
-
-      html =
-        view
-        |> form("#add-box", %{"box" => %{"box_name" => "m3max", "box_type" => "mac-vm"}})
-        |> render_submit()
-
-      assert html =~ "/agent/mac-vm.sh | sudo sh -s -- --token cj_"
-      refute has_element?(view, "#ignition-download")
+      assert has_element?(view, "input[type=radio][value=mac-vz]")
+      refute has_element?(view, "input[type=radio][value=mac-vm]")
     end
 
     # A Flatcar VM built by hand, on a host the launcher can't run on
@@ -483,13 +477,13 @@ defmodule CrewWeb.BoxLiveTest do
 
     test "asks for a Tailscale auth key only without an OAuth client", %{conn: conn} do
       {:ok, view, _} = live(conn, ~p"/boxes/new")
-      view |> form("#add-box", %{"box" => %{"box_type" => "mac-vm"}}) |> render_change()
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-vm"}}) |> render_change()
       assert has_element?(view, "#box_tailscale_auth_key")
 
       Application.put_env(:crew, :tailscale, %{client_id: "k", client_secret: "s", tailnet: "-"})
       on_exit(fn -> Application.delete_env(:crew, :tailscale) end)
       {:ok, view, _} = live(conn, ~p"/boxes/new")
-      view |> form("#add-box", %{"box" => %{"box_type" => "mac-vm"}}) |> render_change()
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-vm"}}) |> render_change()
       refute has_element?(view, "#box_tailscale_auth_key")
       assert has_element?(view, "#tailscale-minted")
     end
@@ -632,12 +626,13 @@ defmodule CrewWeb.BoxLiveTest do
       assert has_element?(view, "#reprovision-command", "flatcar-install -d #{@os_disk}")
     end
 
-    test "a VM box's says to use crew-box reimage", %{conn: conn} do
+    test "a retired Mac shows migration steps and continues to show its VMs", %{conn: conn} do
       box = box_fixture(type: "mac-vm")
       {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
-      assert has_element?(view, "#reprovision", "crew-box reimage")
-      refute has_element?(view, "#reprovision input[name=data_disk]")
-      refute has_element?(view, "#reprovision-install-command")
+      assert has_element?(view, "#retired-mac-worker", "sudo crew-box stop #{box.name}")
+      assert has_element?(view, "#vms")
+      refute has_element?(view, "#reprovision")
+      refute has_element?(view, "#undrain")
     end
 
     test "a linux-vm box's also says how to reinstall a VM built by hand", %{conn: conn} do

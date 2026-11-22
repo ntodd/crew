@@ -167,15 +167,14 @@ other 14 start as slots free up.
                         ▼
  Browser ─LiveView─► Control plane (Phoenix · SQLite/Postgres · Oban) ── tailnet only
                         ▲ wss:// over the tailnet; agent dials out; signed connect
-     ┌──────────────────┼──────────────────────────────┐
- Linux box           M3 Max box                    M1 Ultra box
- Flatcar (metal or   macOS → vfkit --nested →       macOS
-  host VM on KVM)     Flatcar host VM (nested)       ├ crew agent (darwin, _crewagent)
- ├ crew agent        ├ crew agent                   ├ crew-vzd (LaunchDaemon, _crewvm)
- ├ crew-vmctl (root) ├ crew-vmctl (root)            │   └ crew-vz ×N → job VMs (arm64)
- ├ crew cache        ├ crew cache                   ├ cache VM (Flatcar): crew cache
- └ firecracker ×N    └ firecracker ×N               └ service VM (Flatcar): control
-   (jailed, x86_64)    (jailed, arm64)                plane + parent cache
+     ┌──────────────────┴─────────────────────────┐
+ Linux box                                   Apple silicon Mac
+ Flatcar on metal or in QEMU/KVM              macOS
+ ├ crew agent                                ├ crew agent (darwin, _crewagent)
+ ├ crew-vmctl (root)                         ├ crew-vzd (LaunchDaemon, _crewvm)
+ ├ crew cache                                │   └ crew-vz ×N → arm64 Linux job VMs
+ └ Firecracker ×N (jailed)                   ├ cache VM (Flatcar): crew cache
+                                             └ optional service VM: control plane + parent cache
 ```
 
 A monorepo of separate Mix projects, like Foreman's, and not an umbrella:
@@ -214,7 +213,6 @@ e2e/
 |---|---|---|---|
 | `linux-metal` | Bare-metal Flatcar → agent | `firecracker` | the host's (x86_64 or arm64) |
 | `linux-vm` | Linux with KVM and `nested=1` → Flatcar host VM → agent | `firecracker` | x86_64 |
-| `mac-vm` | macOS 15+ on M3 or later → `vfkit --nested` → Flatcar host VM → agent | `firecracker` | arm64 |
 | `mac-vz` | macOS on Apple Silicon → agent (native) → `crew-vzd` → `crew-vz` per job | `vz` | arm64 |
 
 - **Two hypervisors deep at most** (a host VM on the physical host). A
@@ -225,7 +223,7 @@ e2e/
   - The box page shows them.
   - The setup docs explain that a `linux-vm` box must run on the physical
     host.
-- `mac-vm` depends on spike S1; `mac-vz` on S3 and S4.
+- Existing nested Mac workers drain during migration. [Operator steps](setup/upgrading.md#migrate-a-mac-vm-worker-to-mac-vz)
 - **A `linux-metal` box needs one disk.** By default `/srv/crew` is
   partition 10 of the OS disk (§12.2, §12.4), since most machines worth
   dedicating have one NVMe drive. A separate data disk is the option.
@@ -235,7 +233,7 @@ e2e/
 | Machine | Runs |
 |---|---|
 | M1 Ultra | The service VM (control plane, parent cache), the cache VM, and a `mac-vz` box |
-| M3 Max | A `mac-vm` box |
+| M3 Max | A `mac-vz` box |
 | Linux machines | `linux-metal` boxes where they're dedicated, `linux-vm` otherwise |
 
 The control plane is a GHCR image run with compose, like Foreman's. It can
@@ -997,12 +995,11 @@ with 16 GiB free (largest free: 12 GiB on m3max)".
 | Box | Reported | Allocatable | Fits m |
 |---|---|---|---|
 | linux-a (`linux-metal`, fc) | 24 vCPU; 65,536 MiB; vm area 768 GiB, all free | vCPU 23 × 1.5 = 34.5; memory 65,536 − (2,048 + 3,276) = 60,212 MiB | vCPU ⌊34.5/4⌋ = 8; memory ⌊60,212 / 8,455⌋ = 7; disk: with k VMs, 786,432 − 30,720k − 30,720 ≥ 117,965 → k ≤ 20 → **7** |
-| m3max (`mac-vm`, fc) | 14 vCPU; 36,864 MiB; vm area 200 GiB | vCPU 13 × 1.5 = 19.5; memory 36,864 − (2,048 + 1,843) = 32,973 | vCPU 4; memory ⌊32,973 / 8,455⌋ = 3; disk: 204,800 − 30,720k − 30,720 ≥ 30,720 → k ≤ 4 → **3** |
+| m3max (`mac-vz`) | 14 vCPU; 36,864 MiB; vm area 200 GiB | vCPU 13 × 1.5 = 19.5; memory 36,864 − (2,048 + 1,843) = 32,973 | vCPU 4; memory ⌊32,973 / 8,519⌋ = 3; disk: 204,800 − 30,720k − 30,720 ≥ 30,720 → k ≤ 4 → **3** |
 | m1ultra (`mac-vz`) | 18 vCPU; 110,592 MiB; vm area 400 GiB | vCPU 17 × 1.5 = 25.5; memory 110,592 − (2,048 + 5,529) = 103,015 | vCPU ⌊25.5/4⌋ = 6; memory ⌊103,015 / 8,519⌋ = 12; disk: 409,600 − 30,720k − 30,720 ≥ 61,440 → k ≤ 10 → **6** |
 
 **Result:** 16 run at once and 14 wait. Each completion frees a slot that
-the next pass fills. (The Macs' figures follow §11.4 for the M1 and the
-vfkit settings for the M3. The RAM numbers are examples, not
+the next pass fills. (The Macs' figures follow §11.4. The RAM numbers are examples, not
 measurements. Each m VM holds 8,192 + 64 (Firecracker) + 199 (guest
 reserve) = 8,455 MiB, or 8,519 MiB on vz.)
 
@@ -1323,8 +1320,8 @@ and registers the public key with the token.
 - **Flatcar boxes:** the control plane renders the Ignition for a join
   token (§12.2). It embeds the join token, the Tailscale auth key, the
   release public key and its fingerprint, plus the GitHub release URLs
-  and SHA-256s of the agent and cache tarballs. The `linux-vm` and
-  `mac-vm` launchers fetch it themselves; `linux-metal`, and a
+  and SHA-256s of the agent and cache tarballs. The `linux-vm` launcher
+  fetches it; `linux-metal`, and a
   `linux-vm` box whose VM is built by hand, download it from **Add box**.
   A `linux-metal` token also keeps the box's disks (§12.2), which its
   reprovision Ignition uses too.
@@ -1810,7 +1807,7 @@ by itself, and nothing reboots a box on its own.
   will fail, and it's audit-logged.
 - **A resent `box.restart`** after the reboot finds a different boot ID
   and answers `ok` with `already: true`. It never reboots twice.
-- **Host VMs:** on `mac-vm`, a guest reboot makes vfkit exit, and launchd
+- **Host VMs:** when a Mac cache VM reboots, vfkit exits and launchd
   starts it again (§12.3). On `linux-vm`, QEMU reboots in place.
 - **Reviewing an update:** the box page shows the pending Flatcar version
   with a link to its release notes on flatcar.org. The admin reads them
@@ -1864,7 +1861,7 @@ but they have no agent:
 
 **Add box** asks for:
 - a name (DNS label, ≤ 40)
-- the type (`linux-metal`, `linux-vm` or `mac-vm`)
+- the type (`linux-metal` or `linux-vm`)
 - a Tailscale auth key, only when there's no Tailscale OAuth client (§5.3)
 - for `linux-metal`, its disks: **one disk** (the default), or a
   **separate data disk**. Both ask for the OS disk, which goes into the
@@ -1881,7 +1878,7 @@ but they have no agent:
 It creates the join token and shows the release-key fingerprint, which
 the admin compares with the one in Crew's README and release notes
 (§20.2). Then:
-- **`linux-vm`, `mac-vm`:** it shows the launcher's one command (§12.3).
+- **`linux-vm`:** it shows the launcher's one command (§12.3).
   The launcher fetches the Ignition itself.
 - **`linux-metal`:** it offers the Ignition for download, and the
   `flatcar-install -d <OS disk>` command.
@@ -1990,7 +1987,7 @@ disk and starts the installed agent.
   command appears once the operator enters the OS disk's by-id path.
 - Tailscale state lives on the data disk (`/srv/crew/tailscale`), so the
   node keeps its identity.
-- On `linux-vm` and `mac-vm`, `crew-box reimage <file>` (§12.3) applies
+- On `linux-vm`, `crew-box reimage <file>` (§12.3) applies
   it. A `linux-vm` box built by hand installs it from Flatcar's live
   image instead (`flatcar-install -d /dev/vda`).
 
@@ -1999,21 +1996,21 @@ disk and starts the installed agent.
 Both launchers copy Foreman's (`priv/agent/vm.sh` and `priv/agent/mac.sh`
 in ntodd/foreman#132), which were tested end to end on an i7-12700 and an
 M4 Max. The control plane serves them at `/agent/linux-vm.sh` and
-`/agent/mac-vm.sh`, built from the running release, with the pinned
+`/agent/mac-cache-vm.sh`, built from the running release, with the pinned
 Flatcar version and its digests filled in. Each is one command:
 
 ```sh
 curl -fsSL https://crew.<tailnet>.ts.net/agent/linux-vm.sh | sudo sh -s -- --token cj_...
-curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-vm.sh   | sudo sh -s -- --token cj_...
+curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-cache-vm.sh   | sudo sh -s -- --role cache --token cj_...
 ```
 
 **Shared behaviour:**
 - **Options:** `--cpus N`, `--memory GiB`, `--disk GiB` (OS disk,
-  default 12), `--data GiB` (data disk, default 200, minimum 100). Both
+  default 12), `--data GiB` (data disk, Linux default 200, minimum 100; Mac cache default 100, minimum 20). Both
   disks are sparse files.
 - **A bad token fails before anything is downloaded**, and a failed first
   install leaves nothing behind. The launcher fetches the Ignition first,
-  passing `arch` and the public half of an SSH key it generates for
+  passing the Linux architecture when applicable and the public half of an SSH key it generates for
   `crew-box ssh`.
 - **Flatcar** is downloaded from `<arch>-usr/<version>` on Flatcar's
   stable release server and checked against SHA-512 digests from the
@@ -2021,7 +2018,7 @@ curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-vm.sh   | sudo sh -s -- --tok
 - **Running it again** updates the launcher in place and keeps the box
   and its disks. `--cpus` and `--memory` then apply from the next start.
 - **It prints the box's `crew-box: ` lines** from the serial log until
-  `crew-box: enrolled`, or gives up after 10 minutes and says how to
+  `crew-box: enrolled` (worker) or `crew-box: cache ready` (cache), or gives up after 10 minutes and says how to
   watch it.
 - **`crew-box`** manages the box afterwards: `status`, `start`, `stop`,
   `restart`, `ssh`, `logs`, `reimage <ignition>` and `uninstall --yes`.
@@ -2066,8 +2063,7 @@ curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-vm.sh   | sudo sh -s -- --tok
   from a job VM that a listener on the host's `127.0.0.1` can't be
   reached.
 
-**`mac-vm`, and the M1's cache VM and service VM.** Copy Foreman's
-`mac.sh`, with vfkit:
+**The mac-vz cache VM.** The launcher boots Flatcar with vfkit:
 - **vfkit** v0.6.4 (crc-org/vfkit), Red Hat's signed universal release
   with the virtualization entitlement, downloaded from its GitHub release
   and checked against a SHA-256 pinned in the Crew release. It's built on
@@ -2091,12 +2087,7 @@ curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-vm.sh   | sudo sh -s -- --tok
     boot's is kept as `serial.log.1`);
   - `--device virtio-rng`;
   - `--restful-uri unix://<dir>/rest.sock`, which `crew-box status`
-    reads;
-  - `--nested`, **required for `mac-vm` boxes** and not used for the
-    cache and service VMs. The launcher checks first for macOS 15 or
-    later and an M3 or later, and refuses with a message that names
-    both. vfkit itself refuses with "nested virtualization is not
-    supported".
+    reads.
 - **Getting the Ignition in.** vfkit's `--ignition` needs vsock in the
   initrd, which Flatcar's doesn't have, and the OEM partition is btrfs,
   which macOS can't write. So, as in Foreman, a prep boot stages it:
@@ -3260,7 +3251,7 @@ The sidebar has:
     capabilities; firewall and virtualisation.
   - **Reprovision Ignition** (§12.2) and **Revoke** (copy Foreman's).
   - **Add box:** a tab per type, copying Foreman's: the launcher command
-    (`linux-vm`, `mac-vm`), the Ignition download (`linux-metal`, and
+    (`linux-vm`), the Ignition download (`linux-metal`, and
     `linux-vm` for a VM built by hand), or the macOS steps (`mac-vz`)
     (§10.2, §12.2).
 
@@ -3466,8 +3457,7 @@ section.
      through `crew-vmctl`'s fixed verbs (§10.8);
    - nftables (§14.2).
    - On vz: Apple's hypervisor, plus `crew-vz` as `_crewvm` in a sandbox.
-2. **Host VM → physical host:** a second hypervisor boundary on `linux-vm`
-   and `mac-vm` boxes.
+2. **Host VM → physical host:** a second hypervisor boundary on `linux-vm` boxes.
 3. **Job VM → network:** §14.4.
 4. **Job VM → cache:**
    - read-only to guests;
@@ -3522,7 +3512,7 @@ section.
 5. **The guest API token is readable in the guest,** by design (§13.3).
 6. **Nested virtualization isn't a supported Firecracker setup.** It's
    tested in production only on bare metal, and its docs allow nesting for
-   development only. `linux-vm` and `mac-vm` boxes trade that for not
+   development only. `linux-vm` boxes trade that for not
    needing a dedicated machine. `linux-metal` is the hardened option, and
    repos can be pinned to it (`allowed_boxes`).
 7. **The vz driver's network isolation is Crew's own code:** the userspace
@@ -3646,7 +3636,7 @@ A tag `vX.Y.Z` builds everything.
 5. **guest:** guest images for x86_64 and aarch64 (§13.1).
    - The conformance suite runs against `firecracker` on the x86_64 runner
      (S10).
-   - The aarch64 conformance runs before release on the M3 (`mac-vm`)
+   - The aarch64 conformance runs before release on an Apple silicon `mac-vz` box
      through `e2e/release-check.sh`, and its result is attached to the
      release.
 6. **sign:** `mix crew.sign` (copy `mix foreman_agent.sign`) signs each
@@ -3824,7 +3814,7 @@ jobs(id, repo_id, run_attempt_id null, github_id unique, github_run_id, run_atte
      peak_mem_mib, peak_cpu_pct, avg_cpu_pct, peak_disk_mib, net_bytes, oom bool)
 job_events(id, job_id, source enum(webhook, api, guest, scheduler), kind, payload map, at)
 
-boxes(id, name unique, type enum(linux-metal, linux-vm, mac-vm, mac-vz), driver,
+boxes(id, name unique, type enum(linux-metal, linux-vm, mac-vz), driver,
       guest_arch, public_key, key_fingerprint, agent_version, protocol_version,
       capabilities map, pinned_capabilities map, needs_approval bool,
       allocatable_vcpus_override null, allocatable_memory_mib_override null,
@@ -3961,8 +3951,8 @@ Run these first. They decide details, not the architecture.
 
 | # | Question | How | If it fails |
 |---|---|---|---|
-| S1 | Does Firecracker (arm64) run, with Docker inside, in a Flatcar VM under VZ nested virtualization on the M3 Max? Third parties report a working `/dev/kvm` in such guests; nobody documents Firecracker there. Does the guest kernel need arguments to bring KVM up at virtual EL2? | `mac-vm.sh` (vfkit `--nested`), Flatcar arm64 (its kernel has `CONFIG_KVM=y`), `/dev/kvm`, a microVM running `docker run hello-world`. Measure boot time and a CPU-bound benchmark against the same job under native vz. | The M3 becomes a `mac-vz` box like the M1. Nothing else changes. |
-| S2 | **Resolved** by ntodd/foreman#132: Flatcar arm64 boots under vfkit's EFI bootloader on an M4 Max, and the prep boot of §12.3 stages the Ignition. Its e2e run covers enrollment, reboots, a killed VM, sleep and a real Flatcar update. | What's left is folded into S1 (nested, on the M3) and S3 (as a LaunchDaemon) | None needed |
+| S1 | Retired nested Apple silicon workers in issue #162. | New Mac workers use the native vz driver. | Existing workers drain while operators migrate. |
+| S2 | **Resolved** by ntodd/foreman#132: Flatcar arm64 boots under vfkit's EFI bootloader on an M4 Max, and the prep boot of §12.3 stages the Ignition. Its e2e run covers enrollment, reboots, a killed VM, sleep and a real Flatcar update. | S3 covers operation as a LaunchDaemon | None needed |
 | S3 | Under launchd, with nobody logged in, after a reboot: does VZ work from a LaunchDaemon as `_crewvm`? Does the `sandbox-exec` profile work? Can the helper reach the cache VM (local network privacy)? Does vfkit, with NAT networking, work from a LaunchDaemon (Foreman's runs as a LaunchAgent), and as `_crewvm`? | Install, reboot, test | LaunchAgents can't be the fallback (local network privacy, and nobody is logged in). Run vfkit as root and document it. For `mac-vz`, run unsandboxed as `_crewvm`, documented in security.md. |
 | S4 | Is the `crew-vz` netstack isolated and fast enough? | Conformance 5 plus `iperf3` and `docker pull` (≥ 1 Gbit/s) | First, `VZVmnetNetworkDeviceAttachment` with one vmnet network per VM (macOS 26+), if conformance 5 passes (Apple doesn't document isolation between networks). Second, VZ NAT plus a pf ruleset (needs root). |
 | S5 | Do page capture and worker-log parsing work at the pinned runner version (naming, timestamps, read-after-delete, step records)? **Are pages masked?** | A job with a secret, `::add-mask::`, nested groups and a 20 MB step | Unmasked pages: no live log (§16.2). Worker log won't parse: steps from the API while watched, and page order otherwise. |
