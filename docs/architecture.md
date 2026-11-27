@@ -942,14 +942,17 @@ The other spikes are recorded here as they run.
   `0.0.0.0` and publishes 4000 and 4001 on the host's loopback only, so
   §6.2's `127.0.0.1:4001` holds on the host.
 - **Client addresses in the container:** Docker's proxy hands the app
-  connections from the bridge's gateway, not loopback, so
-  `CrewWeb.ClientIP` doesn't trust `X-Forwarded-For` there and rate
-  limits key on the gateway: every client shares one budget each for
-  unsigned webhooks (60 a minute), sign-ins (20 a minute) and failed
-  enrollments. That's stricter, not looser, but someone on the tailnet
-  sending bad join tokens could hold up a real enrollment for the
-  window. Foreman's image has the same property. Trusting the gateway
-  would need a configured proxy list; not done.
+  connections from the bridge's gateway, not loopback. Untrusted, every
+  client would share one rate-limit budget each for unsigned webhooks
+  (60 a minute, and the webhook listener is on Funnel), sign-ins (20 a
+  minute) and failed enrollments, so anyone who could reach them could
+  hold them up for everyone. `CREW_TRUSTED_PROXIES` (comma-separated
+  CIDRs, and `gateway`, checked at boot) names peers whose last
+  `X-Forwarded-For` entry is believed as loopback's is. compose sets it
+  to `gateway`: the container's default gateway from `/proc/net/route`,
+  as a /32, which is where Docker's port publishing connects from.
+  Another container on the network connects from its own address, so it
+  can't claim one.
 - **`crew-update`** (`docker/crew-update`) is Foreman's `foreman-update`
   with Crew's names (`/var/lib/crew-update`, `/etc/crew/update.conf`,
   `CREW_IMAGE` in compose's `.env`, the `crew` service), and:

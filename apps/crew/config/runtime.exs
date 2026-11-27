@@ -238,6 +238,9 @@ if config_env() == :prod do
   # publishes both ports on the host's loopback.
   config :crew,
     hook_ip: ip,
+    # Proxies besides loopback whose X-Forwarded-For is believed
+    # (CrewWeb.ClientIP): docker/compose.yml's bridge, say.
+    trusted_proxies: System.get_env("CREW_TRUSTED_PROXIES", ""),
     force_ssl: System.get_env("CREW_FORCE_SSL", "true") == "true",
     secure_cookies: System.get_env("CREW_SECURE_COOKIES", "true") == "true"
 

@@ -147,7 +147,10 @@ own code (see Known gaps).
   makes its own ed25519 keypair; only the public key leaves the box.
 - Every socket connect is signed (agent id, time, nonce); bad
   signatures, clocks off by more than the allowed skew, and nonces seen
-  before are refused, and failures are rate-limited per client.
+  before are refused, and failures are counted per client (past the
+  limit, only the log lines stop). A client is its peer, or the last
+  `X-Forwarded-For` entry from loopback or a `CREW_TRUSTED_PROXIES` range
+  (compose's bridge gateway).
 - A fixed command and event vocabulary, validated by `CrewProtocol` on
   both sides. An agent reports only on its own box's VMs and operations.
 - Capabilities are pinned at enrollment, and an admin accepts them before

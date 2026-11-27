@@ -12,6 +12,13 @@ carries, and boxes then follow its agent.
 Jobs keep running through it. VMs don't depend on the control plane
 being up, and boxes reconnect when it's back.
 
+An upgrade keeps the host's `compose.yml`. When a release changes it,
+its notes say so: take the new one from the release's checkout and
+`sudo docker compose up -d` to recreate the container with it. One that
+adds `CREW_TRUSTED_PROXIES: ${CREW_TRUSTED_PROXIES-gateway}` makes rate
+limits key on each client again rather than the Docker bridge; until
+then they share one, as before.
+
 ## From the Deployment page
 
 The control plane checks `CREW_UPDATE_REPO`'s releases (default
