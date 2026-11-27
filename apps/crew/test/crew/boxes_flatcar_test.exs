@@ -166,6 +166,30 @@ defmodule Crew.BoxesFlatcarTest do
       assert Repo.one(from t in JoinToken, select: t.tailscale_auth_key) == nil
     end
 
+    test "a token cancelled while its key is minted is refused, not a crash", %{admin: admin} do
+      Application.put_env(:crew, :tailscale, %{
+        client_id: "kXYZ",
+        client_secret: "tskey-client-s",
+        tailnet: "-"
+      })
+
+      on_exit(fn -> Application.delete_env(:crew, :tailscale) end)
+      raw = token(admin, %{})
+
+      Req.Test.stub(Crew.Tailscale, fn conn ->
+        case conn.request_path do
+          "/api/v2/oauth/token" ->
+            Req.Test.json(conn, %{"access_token" => "tok", "expires_in" => 3600})
+
+          "/api/v2/tailnet/-/keys" ->
+            :ok = Boxes.cancel_join_token(admin, raw)
+            Req.Test.json(conn, %{"key" => "tskey-auth-late", "id" => "k1"})
+        end
+      end)
+
+      assert {:error, :invalid_token} = Boxes.flatcar_ignition(raw, %{"arch" => "arm64"})
+    end
+
     test "is minted once with the OAuth client, and forgotten at enrollment", %{admin: admin} do
       Application.put_env(:crew, :tailscale, %{
         client_id: "kXYZ",
