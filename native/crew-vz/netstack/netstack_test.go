@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -60,6 +62,10 @@ type fakeGuest struct {
 	s      *stack.Stack
 	ch     *channel.Endpoint
 	cancel context.CancelFunc
+	// silent drops every frame in both directions, as a guest whose
+	// network has wedged would; deaf only the guest's own frames (its
+	// ACKs are lost, but it still hears the helper).
+	silent, deaf atomic.Bool
 }
 
 func startGuest(t testing.TB, conn *net.UnixConn) *fakeGuest {
@@ -92,7 +98,7 @@ func startGuest(t testing.TB, conn *net.UnixConn) *fakeGuest {
 				return
 			}
 			v := pkt.ToView()
-			for {
+			for !g.silent.Load() && !g.deaf.Load() {
 				_, err := conn.Write(v.AsSlice())
 				if !errors.Is(err, syscall.ENOBUFS) {
 					break
@@ -109,6 +115,9 @@ func startGuest(t testing.TB, conn *net.UnixConn) *fakeGuest {
 			n, err := conn.Read(buf)
 			if err != nil {
 				return
+			}
+			if g.silent.Load() {
+				continue
 			}
 			pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{Payload: buffer.MakeWithData(buf[:n])})
 			ch.InjectInbound(0, pkt)
@@ -138,9 +147,11 @@ type harness struct {
 }
 
 type harnessOpts struct {
-	maxConns   int
-	dialDirect DialFunc
-	dnsUp      netip.AddrPort
+	maxConns     int
+	dialDirect   DialFunc
+	dnsUp        netip.AddrPort
+	stallTimeout time.Duration
+	logger       *slog.Logger
 }
 
 func newHarness(t testing.TB, o harnessOpts) *harness {
@@ -159,6 +170,7 @@ func newHarness(t testing.TB, o harnessOpts) *harness {
 	ns, err := New(Options{
 		Policy: p, Limiter: lim, GuestMAC: guestMAC, MTU: 1500,
 		GuestSocket: h.guestSock, DialDirect: o.dialDirect,
+		StallTimeout: o.stallTimeout, Logger: o.logger,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -537,5 +549,343 @@ func BenchmarkDownloadViaGuestSocket(b *testing.B) {
 		if err != nil || n != size {
 			b.Fatalf("got %d bytes, %v", n, err)
 		}
+	}
+}
+
+// logBuffer collects the netstack's JSON log lines.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func newLog() (*slog.Logger, *logBuffer) {
+	b := &logBuffer{}
+	return slog.New(slog.NewJSONHandler(b, &slog.HandlerOptions{Level: slog.LevelDebug})), b
+}
+
+// raceEnabled is set under -race (race_test.go), which slows two gVisor
+// stacks to tens of KB/s: the bulk transfers below can't finish in time.
+var raceEnabled bool
+
+func skipUnderRace(t *testing.T) {
+	t.Helper()
+	if raceEnabled {
+		t.Skip("bulk transfer: too slow under the race detector")
+	}
+}
+
+func waitStalled(t *testing.T, h *harness, want int64, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for h.ns.Stats().StalledFlows < want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := h.ns.Stats().StalledFlows; got != want {
+		t.Fatalf("stalled_flows = %d, want %d", got, want)
+	}
+}
+
+// A download whose guest stops answering mid-transfer: the helper can't
+// hand the guest another byte, so after the stall timeout the flow is
+// reset, and the far side hears about it instead of waiting forever.
+func TestDownloadToSilentGuestIsReset(t *testing.T) {
+	log, logs := newLog()
+	h := newHarness(t, harnessOpts{stallTimeout: 300 * time.Millisecond, logger: log})
+	serverErr := make(chan error, 1)
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		chunk := bytes.Repeat([]byte{0x5a}, 64<<10)
+		for {
+			if _, err := c.Write(chunk); err != nil {
+				serverErr <- err
+				return
+			}
+		}
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := io.CopyN(io.Discard, c, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	h.guest.silent.Store(true)
+	select {
+	case <-serverErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the far side was never told; the flow is still open")
+	}
+	waitStalled(t, h, 1, time.Second)
+	out := logs.String()
+	for _, want := range []string{`"msg":"tcp flow stalled; resetting it"`, `"dst":"10.199.0.1:7777"`, `"guest_tcp_state":`, `"rto_timeouts_during_stall":`, `"retransmits_during_stall":`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %s:\n%s", want, out)
+		}
+	}
+}
+
+// The last bytes of a response, sent after the guest went silent, fit in
+// the send buffer, so no write blocks: they still wait, unacknowledged,
+// and the flow is reset.
+func TestUnackedBytesToSilentGuestAreReset(t *testing.T) {
+	h := newHarness(t, harnessOpts{stallTimeout: 300 * time.Millisecond})
+	established, silenced := make(chan struct{}), make(chan struct{})
+	closed := make(chan error, 1)
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		buf := make([]byte, 1)
+		if _, err := io.ReadFull(c, buf); err != nil {
+			closed <- err
+			return
+		}
+		close(established) // the guest's byte made it: the handshake is done
+		<-silenced
+		c.Write([]byte("the end of a response"))
+		_, err := c.Read(buf) // the guest says nothing more
+		closed <- err
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.Write([]byte("?"))
+	select {
+	case <-established:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the guest's first byte never arrived")
+	}
+	h.guest.silent.Store(true)
+	close(silenced)
+	select {
+	case err := <-closed:
+		if err == nil {
+			t.Fatal("read data from the guest after it went silent")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the flow is still open")
+	}
+	waitStalled(t, h, 1, time.Second)
+}
+
+// A remote that stops reading an upload for a while is backpressure, not
+// a wedge: the macOS kernel deals with a dead peer, and a live one is left
+// to take its time.
+func TestRemoteBackpressureIsNotReset(t *testing.T) {
+	skipUnderRace(t)
+	h := newHarness(t, harnessOpts{stallTimeout: 300 * time.Millisecond})
+	const size = 4 << 20
+	got := make(chan int64, 1)
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		time.Sleep(time.Second) // accepts, then reads nothing for a while
+		n, _ := io.Copy(io.Discard, c)
+		got <- n
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Write(make([]byte, size)); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	c.CloseWrite()
+	select {
+	case n := <-got:
+		if n != size {
+			t.Fatalf("remote got %d of %d bytes", n, size)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("upload never finished")
+	}
+	if st := h.ns.Stats().StalledFlows; st != 0 {
+		t.Fatalf("stalled_flows = %d for a remote applying backpressure", st)
+	}
+}
+
+// A guest that stops reading for a while (curl | psql through a long
+// CREATE INDEX) closes its window but answers the helper's probes: it's
+// alive, and the flow is left alone.
+func TestGuestBackpressureIsNotReset(t *testing.T) {
+	skipUnderRace(t)
+	h := newHarness(t, harnessOpts{stallTimeout: 600 * time.Millisecond})
+	const size = 16 << 20
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		c.Write(bytes.Repeat([]byte{0x44}, size))
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := io.CopyN(io.Discard, c, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(3 * time.Second) // 5x the stall timeout, reading nothing
+	c.SetReadDeadline(time.Now().Add(30 * time.Second))
+	n, err := io.Copy(io.Discard, c)
+	if err != nil || n != size-1<<20 {
+		t.Fatalf("after the pause: %d bytes, %v", n, err)
+	}
+	if st := h.ns.Stats().StalledFlows; st != 0 {
+		t.Fatalf("stalled_flows = %d for a guest applying backpressure", st)
+	}
+}
+
+// A guest whose ACKs are lost, but which still hears the helper, is told
+// the flow is gone: the reset reaches it, where gVisor giving up on its
+// own sends nothing and leaves the guest waiting.
+func TestOneWayWedgeResetsTheGuest(t *testing.T) {
+	h := newHarness(t, harnessOpts{stallTimeout: 300 * time.Millisecond})
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		c.Write(bytes.Repeat([]byte{0x77}, 8<<20))
+		time.Sleep(10 * time.Second)
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := io.CopyN(io.Discard, c, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	h.guest.deaf.Store(true)
+	c.SetReadDeadline(time.Now().Add(8 * time.Second))
+	_, err = io.Copy(io.Discard, c)
+	if err == nil || !strings.Contains(err.Error(), "reset") {
+		t.Fatalf("the guest's read ended with %v, want a reset", err)
+	}
+	waitStalled(t, h, 1, time.Second)
+}
+
+// A guest that reads slowly but keeps reading is never reset, however
+// long a write takes to drain.
+func TestSlowReaderIsNotReset(t *testing.T) {
+	skipUnderRace(t)
+	h := newHarness(t, harnessOpts{stallTimeout: 300 * time.Millisecond})
+	const size = 1 << 20
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		c.Write(bytes.Repeat([]byte{0x33}, size))
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	got := 0
+	buf := make([]byte, 16<<10)
+	c.SetReadDeadline(time.Now().Add(30 * time.Second))
+	for got < size {
+		n, err := io.ReadFull(c, buf[:min(len(buf), size-got)])
+		got += n
+		if err != nil {
+			t.Fatalf("after %d bytes: %v", got, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if st := h.ns.Stats().StalledFlows; st != 0 {
+		t.Fatalf("stalled_flows = %d for a slow reader", st)
+	}
+}
+
+// Nothing to deliver isn't a stall: an idle flow stays open.
+func TestIdleFlowIsNotReset(t *testing.T) {
+	h := newHarness(t, harnessOpts{stallTimeout: 200 * time.Millisecond})
+	h.serveGuestSocket(t, func(c net.Conn) { io.Copy(c, c); c.Close() })
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	buf := make([]byte, 1)
+	for _, b := range []byte("ab") {
+		if _, err := c.Write([]byte{b}); err != nil {
+			t.Fatal(err)
+		}
+		c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.ReadFull(c, buf); err != nil || buf[0] != b {
+			t.Fatalf("echo %q, %v", buf, err)
+		}
+		time.Sleep(time.Second)
+	}
+	if st := h.ns.Stats().StalledFlows; st != 0 {
+		t.Fatalf("stalled_flows = %d for an idle flow", st)
+	}
+}
+
+// Flows still open when the VM goes are logged, with how far each got,
+// so a job that hung leaves a record of what it was waiting on.
+func TestOpenFlowsAreLoggedAtClose(t *testing.T) {
+	log, logs := newLog()
+	h := newHarness(t, harnessOpts{logger: log})
+	h.serveGuestSocket(t, func(c net.Conn) {
+		c.Write(bytes.Repeat([]byte{1}, 5000))
+		time.Sleep(10 * time.Second)
+		c.Close()
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := io.CopyN(io.Discard, c, 5000); err != nil {
+		t.Fatal(err)
+	}
+	h.ns.Close()
+	out := logs.String()
+	for _, want := range []string{`"msg":"tcp flow open at close"`, `"dst":"10.199.0.1:7777"`, `"bytes_to_guest":5000`, `"bytes_to_remote":0`, `"idle_from_remote_s":`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %s:\n%s", want, out)
+		}
+	}
+}
+
+// A guest that goes quiet for a moment mid-transfer, then carries on, is
+// healthy however long the transfer runs afterwards.
+func TestBriefGuestSilenceIsNotReset(t *testing.T) {
+	skipUnderRace(t)
+	h := newHarness(t, harnessOpts{stallTimeout: time.Second})
+	const size = 64 << 20
+	h.serveGuestSocket(t, func(c net.Conn) {
+		defer c.Close()
+		c.Write(bytes.Repeat([]byte{0x11}, size))
+	})
+	c, err := h.guest.dialTCP(ctxT(t, 5*time.Second), "10.199.0.1:7777")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := io.CopyN(io.Discard, c, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	h.guest.silent.Store(true)
+	time.Sleep(350 * time.Millisecond)
+	h.guest.silent.Store(false)
+	c.SetReadDeadline(time.Now().Add(60 * time.Second))
+	start := time.Now()
+	n, err := io.Copy(io.Discard, c)
+	if err != nil || n != size-1<<20 {
+		t.Fatalf("after the blip: %d bytes, %v", n, err)
+	}
+	t.Logf("rest of the transfer took %v", time.Since(start))
+	if st := h.ns.Stats().StalledFlows; st != 0 {
+		t.Fatalf("stalled_flows = %d after a brief silence", st)
 	}
 }

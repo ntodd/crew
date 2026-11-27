@@ -1,6 +1,6 @@
 // Package exitrec reads and writes exited.json, the record a VM's helper
 // leaves when it's done: {"code", "reason", "at"} plus an optional
-// "detail". Its presence means the VM's disk has been used, so a helper
+// "detail", and "net", the VM network's final counters. Its presence means the VM's disk has been used, so a helper
 // never starts a VM whose exited.json exists, and the first record written
 // is never replaced.
 package exitrec
@@ -51,19 +51,23 @@ type Record struct {
 	Reason string
 	At     time.Time
 	Detail string
+	// Net is the helper's netstack.Stats, as JSON. crew-vzd's own
+	// records (a helper that died) have none.
+	Net json.RawMessage
 }
 
 type wire struct {
-	Code   int    `json:"code"`
-	Reason string `json:"reason"`
-	At     string `json:"at"`
-	Detail string `json:"detail,omitempty"`
+	Code   int             `json:"code"`
+	Reason string          `json:"reason"`
+	At     string          `json:"at"`
+	Detail string          `json:"detail,omitempty"`
+	Net    json.RawMessage `json:"net,omitempty"`
 }
 
 const timeFormat = "2006-01-02T15:04:05.000Z07:00"
 
 func (r Record) MarshalJSON() ([]byte, error) {
-	return json.Marshal(wire{Code: r.Code, Reason: r.Reason, At: r.At.UTC().Format(timeFormat), Detail: r.Detail})
+	return json.Marshal(wire{Code: r.Code, Reason: r.Reason, At: r.At.UTC().Format(timeFormat), Detail: r.Detail, Net: r.Net})
 }
 
 func (r *Record) UnmarshalJSON(b []byte) error {
@@ -75,7 +79,7 @@ func (r *Record) UnmarshalJSON(b []byte) error {
 	if err != nil {
 		return fmt.Errorf("exited.json at: %w", err)
 	}
-	*r = Record{Code: w.Code, Reason: w.Reason, At: at, Detail: w.Detail}
+	*r = Record{Code: w.Code, Reason: w.Reason, At: at, Detail: w.Detail, Net: w.Net}
 	return nil
 }
 

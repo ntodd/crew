@@ -2545,6 +2545,16 @@ VMs don't use it. Instead, each `crew-vz` helper:
   - the destination is in `blocked4`, or in the `site4` list (pushed by the
     agent), **checked on the actual address dialled**; or
   - the VM already has 2048 connections open.
+- **Resets a TCP flow whose guest goes silent:** once bytes to the guest
+  are waiting on an acknowledgement (or its window is closed) and the
+  guest sends nothing on the flow for two minutes, the helper resets it
+  with a RST, so the client sees an error instead of waiting until the
+  job's timeout. Idle flows, and guests that aren't reading but answer
+  window probes, are left alone; the remote side is the macOS kernel's.
+  The retransmission timeout toward the guest is capped at 10 s and
+  gVisor's own give-up, which sends no RST, is pushed past the reset. Each
+  reset is counted (`stalled_flows`) and logged with the guest's TCP
+  state; the final counters go into `vz-exited.json`.
 - **Performance:** spike S4 sets the floor at ≥ 1 Gbit/s for `docker pull`.
 - **This is the vz driver's isolation boundary** (§19.4 #7), and
   conformance item 5 is its acceptance test.

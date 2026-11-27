@@ -11,6 +11,7 @@
 //	       (requestStop) and power off.
 //	flood  write crewtest.flood_mib MiB to the console and power off.
 //	cache  download from 10.199.0.1:80 (the cache VM route) and report.
+//	soak   download for a while, reporting flows that stop: see soak.go.
 //	crew   (the default when crew.api is set) the guest API, as a job VM
 //	       does: see crew.go.
 //
@@ -74,6 +75,8 @@ func main() {
 		err = floodMode()
 	case "cache":
 		err = cacheMode()
+	case "soak":
+		err = soakMode()
 	default:
 		err = netMode()
 	}
@@ -155,6 +158,7 @@ type report struct {
 	CacheDownload   map[string]float64 `json:"cache_download_mbps,omitempty"`
 	InternetDL      map[string]float64 `json:"internet_download_mbps,omitempty"`
 	InternetDLError string             `json:"internet_download_error,omitempty"`
+	Soak            *soakReport        `json:"soak,omitempty"`
 }
 
 func timed(target string, fn func() error) probe {

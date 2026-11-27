@@ -87,3 +87,26 @@ func TestCodes(t *testing.T) {
 		t.Fatal("exit codes differ from §11.4")
 	}
 }
+
+// The helper's network counters ride along, verbatim, so they outlive
+// the VM.
+func TestNetIsKeptVerbatim(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "exited.json")
+	net := json.RawMessage(`{"frames_in":12,"stalled_flows":1}`)
+	if err := Write(p, Record{Code: CodeClean, Reason: ReasonGuestStopped, At: time.Now(), Net: net}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Net) != string(net) {
+		t.Fatalf("net = %s, want %s", got.Net, net)
+	}
+	raw, _ := os.ReadFile(p)
+	var m map[string]json.RawMessage
+	json.Unmarshal(raw, &m)
+	if string(m["net"]) != string(net) {
+		t.Fatalf("wire format: %s", raw)
+	}
+}

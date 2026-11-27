@@ -156,8 +156,26 @@ Response: `{"ok": true, ...}` or `{"ok": false, "error": "<code>", "detail": "<t
  "console_bytes": 18233,
  "net": {"conns_open": 3, "conns_refused_cap": 0, "policy_refused": 7, "dial_failed": 0,
          "frames_in": 1200, "frames_out": 1150, "frames_out_lost": 0,
-         "drops": {"ipv6": 9, "arp": 3}}}
+         "stalled_flows": 0, "drops": {"ipv6": 9, "arp": 3}}}
 ```
+
+`stalled_flows` counts TCP flows the helper reset because the guest went
+silent on them while it owed an answer: gVisor's retransmission timer had
+fired (bytes to the guest unacknowledged, or its window closed), and the
+guest then sent nothing on the flow for two minutes. The reset sends the
+guest a RST, so its client sees an error and can retry. An idle flow arms
+no timer, and a guest that isn't reading still answers window probes, so
+neither is ever reset. The remote side is left to the macOS kernel. The
+retransmission timeout toward the guest is capped at 10 s, so a live guest
+is heard from several times per window, and gVisor's own give-up (which
+sends nothing) comes minutes after the reset would. Each reset is a
+`tcp flow stalled; resetting it` line in `vz.log`, with the flow's byte
+counts and idle times, the guest endpoint's TCP state (`cc_state`,
+`rto_ms`), and what gVisor and the link did while the guest was silent
+(`retransmits_during_stall`, `rto_timeouts_during_stall`,
+`link_frames_lost_during_stall`). When the VM stops, every flow still
+open is logged (`tcp flow open at close`, the 32 quietest), then the
+totals (`network totals`).
 
 - `exited`: the VM's helper is gone; `exited` holds `vz-exited.json`.
 - `not_started`: the VM dir exists but was never launched.
@@ -211,8 +229,10 @@ crew-vzd runs this; it can also be run by hand. The helper:
 `{"op":"stop","force":bool}`. Graceful is VZ `requestStop` (the power
 button); force is VZ `stop`.
 
-**Exit codes and `vz-exited.json`:** `{"code", "reason", "at", "detail"?}`, with
-`at` in RFC 3339 UTC with milliseconds.
+**Exit codes and `vz-exited.json`:** `{"code", "reason", "at", "detail"?, "net"?}`,
+with `at` in RFC 3339 UTC with milliseconds. `net` is the helper's final
+network counters (the `status` `net` object); crew-vzd's own records have
+none. The agent logs a warning when `stalled_flows` is above zero.
 
 | Code | Reason | When |
 |---|---|---|
@@ -326,7 +346,14 @@ LaunchDaemon running as `_crewvm` after a reboot; that needs root.
   - `CREW_VZ_DL_URL=<url>`: also download from the internet in the guest;
   - `CREW_VZ_SANDBOX=1`: also boot under `sandbox.sb`;
   - `CREW_VZ_MTUS=1500,9000,65535`: the MTUs for the cache-path throughput
-    test.
+    test;
+  - `CREW_VZ_SOAK_S=<seconds>`: run `TestSoakDownloads`, which hunts for
+    wedged flows. `CREW_VZ_SOAK_VMS` VMs (default 1) each run
+    `CREW_VZ_SOAK_WORKERS` (default 4) downloads at a time through the
+    cache route, plus `CREW_VZ_DL_URL` every 60 s on a fresh connection. A
+    download with no new byte for 30 s fails the test, with what the guest
+    saw (resumed, reset by the helper, or still stuck after 4 minutes), the
+    helper's counters then, and its `vz.log` lines for the VM.
 
   It boots real VMs through crew-vzd and checks:
   - internet TCP and DNS work;

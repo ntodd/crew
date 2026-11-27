@@ -249,6 +249,29 @@ defmodule CrewAgent.Driver.VZTest do
     end
   end
 
+  test "a VM whose helper reset stalled flows says so in the agent's log", ctx do
+    spec = spec(ctx.config)
+    record = %{code: 0, reason: "guest_stopped", at: "x"}
+    path = Path.join(spec.vm_dir, "vz-exited.json")
+
+    File.write!(
+      path,
+      Jason.encode!(Map.put(record, :net, %{stalled_flows: 2, frames_out_lost: 7, frames_in: 9}))
+    )
+
+    log = ExUnit.CaptureLog.capture_log(fn -> assert {:ok, _} = VZ.exit_status(spec.vm_id) end)
+    assert log =~ "reset 2 stalled TCP flows"
+    assert log =~ "frames_out_lost 7"
+    assert log =~ spec.vm_id
+
+    File.write!(
+      path,
+      Jason.encode!(Map.put(record, :net, %{stalled_flows: 0, frames_out_lost: 7}))
+    )
+
+    assert ExUnit.CaptureLog.capture_log(fn -> VZ.exit_status(spec.vm_id) end) == ""
+  end
+
   test "cleanup removes the disk but keeps vz.pid, so the VM is never relaunched", ctx do
     vzd(ctx, fn _ -> %{"ok" => false, "error" => "not_found", "detail" => ""} end)
     spec = spec(ctx.config)

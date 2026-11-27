@@ -111,6 +111,21 @@ func Run(ctx context.Context, o Options) int {
 	r := &runner{o: o, cfg: cfg, log: log, stopReq: make(chan stopReq), exiting: make(chan struct{})}
 	code, reason, detail := r.run(ctx)
 	rec := exitrec.Record{Code: code, Reason: reason, At: time.Now(), Detail: detail}
+	// The network's counters die with this process otherwise: keep them
+	// in the record and the log.
+	r.mu.Lock()
+	ns := r.ns
+	r.mu.Unlock()
+	if ns != nil {
+		st := ns.Stats()
+		if b, err := json.Marshal(st); err == nil {
+			rec.Net = b
+		}
+		log.Info("network totals", "frames_in", st.FramesIn, "frames_out", st.FramesOut,
+			"frames_out_lost", st.FramesOutLost, "stalled_flows", st.StalledFlows,
+			"dial_failed", st.DialFailed, "policy_refused", st.PolicyRefused,
+			"conns_refused_cap", st.ConnsRefused, "drops", st.Drops)
+	}
 	if err := exitrec.Write(cfg.ExitedPath, rec); err != nil {
 		log.Error("writing exited.json", "err", err)
 	}
