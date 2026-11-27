@@ -229,8 +229,10 @@ crew-vzd runs this; it can also be run by hand. The helper:
 `{"op":"stop","force":bool}`. Graceful is VZ `requestStop` (the power
 button); force is VZ `stop`.
 
-**Exit codes and `vz-exited.json`:** `{"code", "reason", "at", "detail"?}`, with
-`at` in RFC 3339 UTC with milliseconds.
+**Exit codes and `vz-exited.json`:** `{"code", "reason", "at", "detail"?, "net"?}`,
+with `at` in RFC 3339 UTC with milliseconds. `net` is the helper's final
+network counters (the `status` `net` object); crew-vzd's own records have
+none. The agent logs a warning when `stalled_flows` is above zero.
 
 | Code | Reason | When |
 |---|---|---|

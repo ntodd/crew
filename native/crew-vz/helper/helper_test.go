@@ -216,6 +216,25 @@ func TestCleanGuestStop(t *testing.T) {
 	}
 }
 
+// The network's final counters go into the exit record, which the
+// agent reads after the helper (and its ctl.sock) are gone.
+func TestExitRecordKeepsNetworkCounters(t *testing.T) {
+	e := newEnv(t)
+	r := startRun(t, e, future(), nil)
+	r.waitCtl(t)
+	r.machine.set(StateStopped)
+	r.wait(t)
+	var net map[string]any
+	if err := json.Unmarshal(readExited(t, e).Net, &net); err != nil {
+		t.Fatalf("exit record net: %v", err)
+	}
+	for _, k := range []string{"frames_in", "frames_out_lost", "stalled_flows"} {
+		if _, ok := net[k]; !ok {
+			t.Errorf("exit record net lacks %s: %v", k, net)
+		}
+	}
+}
+
 func TestForceStop(t *testing.T) {
 	e := newEnv(t)
 	r := startRun(t, e, future(), nil)

@@ -16,6 +16,8 @@ defmodule CrewAgent.Driver.VZ do
   """
   @behaviour CrewAgent.Driver
 
+  require Logger
+
   alias CrewAgent.{Config, Images, Site}
   alias CrewAgent.Driver.VZ.Daemon
 
@@ -291,11 +293,24 @@ defmodule CrewAgent.Driver.VZ do
 
     with {:ok, body} <- File.read(path),
          {:ok, %{"code" => code} = record} <- Jason.decode(body) do
+      log_stalls(vm_id, record["net"])
       {:ok, %{code: code, reason: reason(record["reason"])}}
     else
       _ -> :unknown
     end
   end
+
+  # The helper resets a TCP flow whose bytes wait untaken past its stall
+  # timeout (native/crew-vz/netstack/flow.go). Each one is a job that
+  # would have hung; the VM's vz.log, kept for an hour, has the detail.
+  defp log_stalls(vm_id, %{"stalled_flows" => n} = net) when is_integer(n) and n > 0 do
+    Logger.warning(
+      "VM #{vm_id}: crew-vz reset #{n} stalled TCP flows " <>
+        "(frames_out_lost #{net["frames_out_lost"] || 0}); each is logged in its vz.log"
+    )
+  end
+
+  defp log_stalls(_vm_id, _net), do: :ok
 
   defp reason("deadline"), do: "killed_deadline"
   defp reason("killed"), do: "killed_stop"
