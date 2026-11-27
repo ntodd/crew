@@ -10,7 +10,7 @@ import { spawn } from "node:child_process"
 import { existsSync, mkdirSync, rmSync } from "node:fs"
 import { resolve } from "node:path"
 import { expect, test } from "@playwright/test"
-import { addBox, fake, fakePost, fakeState, shot, signIn, startAgent, stopAgent } from "./helpers.js"
+import { addBox, approveBox, fake, fakePost, fakeState, shot, signIn, startAgent, stopAgent } from "./helpers.js"
 
 const layer = "06-vz-driver"
 const root = resolve(import.meta.dirname, "../..")
@@ -63,6 +63,7 @@ test("a job runs on a real VM", async ({ page, request }) => {
   await card.click()
   await expect(page.locator("#capabilities")).toContainText("vz")
   await expect(page.locator("#capabilities")).toContainText("Firewall verified")
+  await approveBox(page, "m4-vz")
 
   const { run, jobs } = await fakePost(request, "/__fake/runs", {
     repo: "mona/vz",

@@ -8,7 +8,7 @@
 import {expect, test} from "@playwright/test"
 import {randomBytes} from "node:crypto"
 import {readFileSync} from "node:fs"
-import {connected, shot, signIn} from "./helpers.js"
+import {connected, joinToken, shot, signIn} from "./helpers.js"
 
 const layer = "12-flatcar"
 const breakGlass = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBreakGlassE2E admin@laptop"
@@ -70,7 +70,10 @@ test("linux-vm: the launcher's one command, and the Ignition it fetches", async 
 
   await page.getByRole("button", {name: "Create join token"}).click()
   const command = await page.locator("#join-command").innerText()
-  expect(command).toMatch(/^curl -fsSL http:\/\/localhost:4100\/agent\/linux-vm\.sh \| sudo sh -s -- --token cj_/)
+  // The token isn't in it: the launcher asks for it.
+  expect(command).toMatch(/^curl -fsSL http:\/\/localhost:4100\/agent\/linux-vm\.sh \| sudo sh -s/)
+  expect(command).not.toContain("cj_")
+  await expect(page.locator("#join-token")).toContainText("cj_")
   await expect(page.locator("#join-instructions")).toContainText("--data GiB")
   await shot(page, layer, "linux-vm-command")
 
@@ -81,7 +84,7 @@ test("linux-vm: the launcher's one command, and the Ignition it fetches", async 
   expect(script).toMatch(/FLATCAR_IMAGE_SHA512_AMD64="[0-9a-f]{128}"/)
 
   // What the launcher asks for first: the box's Ignition, for the token.
-  const token = command.match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  const token = (await page.locator("#join-token").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
   const resp = await request.post("/agent/flatcar/ignition", {
     form: {join_token: token, arch: "amd64", "ssh_keys[]": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILauncherE2E crew-box@host"},
   })
@@ -191,7 +194,7 @@ test("linux-metal: one disk by default, then the Ignition to download", async ({
 
   // Enrolled, its box page reinstalls Flatcar over the same OS disk and
   // keeps partition 10.
-  const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  const token = await joinToken(page)
   const enroll = await request.post("/api/agents/enroll", {
     data: {join_token: token, public_key: randomBytes(32).toString("base64")},
   })
@@ -230,7 +233,7 @@ test("linux-metal: a separate data disk", async ({page, request}) => {
   await expect(page.locator("#flatcar-install")).toContainText(`flatcar-install -d ${osDisk} -i crew-rack3.ign`)
   await expect(page.locator("#join-instructions")).toContainText("(not the data disk)")
 
-  const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  const token = await joinToken(page)
   const resp = await request.post("/agent/flatcar/ignition", {form: {join_token: token, arch: "amd64"}})
   expect(resp.status()).toBe(200)
   const ign = await resp.json()
@@ -244,7 +247,7 @@ test("the box page's reprovision Ignition", async ({page, request}) => {
   await signIn(page)
   await startAdding(page, "studio2", "linux-vm")
   await page.getByRole("button", {name: "Create join token"}).click()
-  const token = (await page.locator("#join-command").innerText()).match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  const token = await joinToken(page)
 
   // The agent's own enrollment spends the token (with a made-up key).
   const enroll = await request.post("/api/agents/enroll", {

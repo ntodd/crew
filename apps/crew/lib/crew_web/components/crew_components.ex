@@ -58,7 +58,7 @@ defmodule CrewWeb.CrewComponents do
          firewall_hint(box)}
 
   def box_issue(:needs_approval, _box),
-    do: {"Needs approval", "Its capabilities changed: no jobs until an admin accepts them."}
+    do: {"Needs approval", "No jobs until an admin accepts its capabilities."}
 
   def box_issue(:quarantined, box),
     do:

@@ -50,6 +50,43 @@ defmodule Crew.BoxesTest do
       assert Boxes.public_key(box.id) == {:ok, box.public_key}
     end
 
+    test "a join token can't name a box that's already enrolled", %{admin: admin} do
+      box = box_fixture(name: "m1ultra")
+
+      assert {:error, cs} =
+               Boxes.create_join_token(admin, %{"box_name" => box.name, "box_type" => "mac-vz"})
+
+      assert errors_on(cs)[:box_name] |> Enum.any?(&(&1 =~ "already enrolled"))
+    end
+
+    test "a second token for one name can't take over the box the first enrolled", %{
+      admin: admin
+    } do
+      attrs = %{"box_name" => "m1ultra", "box_type" => "mac-vz"}
+      {:ok, first} = Boxes.create_join_token(admin, attrs)
+      {:ok, second} = Boxes.create_join_token(admin, attrs)
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, box} = Boxes.enroll(first, enroll_attrs(key))
+
+      {other, _} = CrewProtocol.Auth.generate_keypair()
+      assert {:error, :invalid_token} = Boxes.enroll(second, enroll_attrs(other))
+      assert Boxes.public_key(box.id) == {:ok, key}
+    end
+
+    test "enrolling spends the other tokens made for its name", %{admin: admin} do
+      attrs = %{"box_name" => "fc1", "box_type" => "linux-vm"}
+      {:ok, first} = Boxes.create_join_token(admin, attrs)
+      {:ok, second} = Boxes.create_join_token(admin, attrs)
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, _} = Boxes.enroll(first, enroll_attrs(key))
+
+      assert {:error, :invalid_token} = Boxes.flatcar_ignition(second, %{"arch" => "amd64"})
+
+      refute Repo.exists?(
+               from t in Crew.Boxes.JoinToken, where: t.box_name == "fc1" and is_nil(t.used_at)
+             )
+    end
+
     test "a token enrolls a box once, and only its hash is stored", %{admin: admin} do
       {:ok, raw} =
         Boxes.create_join_token(admin, %{"box_name" => "m1ultra", "box_type" => "mac-vz"})
@@ -143,11 +180,15 @@ defmodule Crew.BoxesTest do
     end
 
     test "a revoked box's name can't be enrolled again", %{admin: admin} do
+      attrs = %{"box_name" => "gone", "box_type" => "mac-vz"}
+      {:ok, early} = Boxes.create_join_token(admin, attrs)
       box = box_fixture(name: "gone")
       {:ok, _} = Boxes.revoke(admin, box)
-      {:ok, raw} = Boxes.create_join_token(admin, %{"box_name" => "gone", "box_type" => "mac-vz"})
+
+      assert {:error, cs} = Boxes.create_join_token(admin, attrs)
+      assert errors_on(cs)[:box_name] |> Enum.any?(&(&1 =~ "revoked"))
       {public, _} = CrewProtocol.Auth.generate_keypair()
-      assert {:error, :invalid_token} = Boxes.enroll(raw, enroll_attrs(public))
+      assert {:error, :invalid_token} = Boxes.enroll(early, enroll_attrs(public))
     end
   end
 
@@ -165,13 +206,48 @@ defmodule Crew.BoxesTest do
   end
 
   describe "capabilities are pinned at enrollment (§8.3)" do
-    test "the first report is pinned" do
+    test "the first report is pinned, and waits for an admin", %{admin: admin} do
       box = box_fixture(capabilities: nil, pinned_capabilities: nil)
       {:ok, box} = Boxes.report_capabilities(box, capabilities())
       assert box.pinned_capabilities["vcpus"] == 18
-      refute box.needs_approval
+      assert box.needs_approval
       assert box.driver == "vz"
       assert box.guest_arch == "arm64"
+      assert :needs_approval in Boxes.issues(box, true)
+
+      # It waits however often it reports.
+      {:ok, box} = Boxes.report_capabilities(box, capabilities())
+      assert box.needs_approval
+
+      {:ok, box} = Boxes.approve_capabilities(admin, box, Boxes.report_digest(box))
+      refute box.needs_approval
+      {:ok, box} = Boxes.report_capabilities(box, capabilities())
+      refute box.needs_approval
+    end
+
+    test "a report read before an approval still needs its own", %{admin: admin} do
+      box = box_fixture(capabilities: nil, pinned_capabilities: nil)
+      {:ok, box} = Boxes.report_capabilities(box, capabilities())
+      # What the agent's handler read, before the admin accepted.
+      stale = Boxes.get!(box.id)
+      {:ok, _} = Boxes.approve_capabilities(admin, box, Boxes.report_digest(box))
+
+      {:ok, _} = Boxes.report_capabilities(stale, capabilities(guest_arch: "x64"))
+      assert Boxes.get!(box.id).needs_approval
+    end
+
+    test "an admin accepts the report they saw, not a newer one", %{admin: admin} do
+      box = box_fixture(capabilities: nil, pinned_capabilities: nil)
+      {:ok, seen} = Boxes.report_capabilities(box, capabilities())
+      {:ok, newer} = Boxes.report_capabilities(seen, capabilities(vcpus: 4096))
+
+      assert {:error, :stale} =
+               Boxes.approve_capabilities(admin, newer, Boxes.report_digest(seen))
+
+      assert Boxes.get!(box.id).needs_approval
+
+      assert {:ok, box} = Boxes.approve_capabilities(admin, newer, Boxes.report_digest(newer))
+      assert box.pinned_capabilities["vcpus"] == 4096
     end
 
     test "small changes are reported but don't move the pinned baseline" do
@@ -217,7 +293,7 @@ defmodule Crew.BoxesTest do
     test "an admin accepts the change, and it's audited", %{admin: admin} do
       box = box_fixture()
       {:ok, box} = Boxes.report_capabilities(box, capabilities(vcpus: 64, max_vcpus_per_vm: 64))
-      {:ok, box} = Boxes.approve_capabilities(admin, box)
+      {:ok, box} = Boxes.approve_capabilities(admin, box, Boxes.report_digest(box))
       refute box.needs_approval
       assert box.pinned_capabilities["vcpus"] == 64
       assert Enum.any?(Crew.Audit.recent(), &(&1.action == "box.capabilities_approved"))

@@ -71,6 +71,27 @@ unq=$(grep -n "'xattr' '-dr' 'com.apple.quarantine'" "$out/log" | cut -d: -f1)
 start=$(grep -n "'launchctl' 'bootstrap'" "$out/log" | head -n 1 | cut -d: -f1)
 [ "$copy" -lt "$unq" ] && [ "$unq" -lt "$start" ] || fail "quarantine must be cleared after the copy, before the services start"
 
+# --token-file - reads the token from stdin, so it's on no command line.
+rm -f "$out/env"
+printf 'cj_piped\n' | CREW_DRY_RUN_OUT="$out" "$here/install-macos.sh" --dry-run --token-file - \
+  --url wss://crew.example.ts.net/agent/websocket --name m4-pipe > "$out/log-pipe" 2>&1
+has "$out/env" "CREW_JOIN_TOKEN='cj_piped'"
+grep -q cj_piped "$out/log-pipe" && fail "the dry run printed the join token"
+
+# Without a token it asks on the terminal (CREW_INSTALL_TTY stands in).
+rm -f "$out/env"
+printf 'cj_asked\n' > "$out/tty"
+CREW_INSTALL_TTY="$out/tty" CREW_DRY_RUN_OUT="$out" "$here/install-macos.sh" --dry-run \
+  --url wss://crew.example.ts.net/agent/websocket --name m4-ask > "$out/log-ask" 2>&1
+has "$out/env" "CREW_JOIN_TOKEN='cj_asked'"
+has "$out/log-ask" "Join token"
+grep -q cj_asked "$out/log-ask" && fail "the dry run printed the join token"
+# With no terminal either, it says how to give one.
+CREW_INSTALL_TTY="$out/no-tty" "$here/install-macos.sh" --dry-run \
+  --url wss://crew.example.ts.net/agent/websocket --name m4-none > "$out/log-none" 2>&1 &&
+  fail "it installed without a token"
+has "$out/log-none" "--token-file"
+
 # A key that isn't one is refused.
 "$here/install-macos.sh" --dry-run --url wss://x --token cj_t --name m4 --release-key nope > /dev/null 2>&1 &&
   fail "a bad release key was accepted"
@@ -111,7 +132,9 @@ CREW_HOSTVM_DIR="$hostvm" CREW_DRY_RUN_OUT="$out" "$here/install-macos.sh" --dry
   --url wss://crew.example.ts.net/agent/websocket --token cj_test --name m1ultra > "$out/log4"
 has "$out/log4" "'curl' '-fsSL' '-o'"
 has "$out/log4" "'https://crew.example.ts.net/agent/mac-cache-vm.sh'"
-has "$out/log4" "'--role' 'cache' '--token' 'cj_test'"
+has "$out/log4" "'--role' 'cache' '--token-file'"
+# The token goes to the cache VM launcher in a file, not on its command line.
+grep "'--role' 'cache'" "$out/log4" | grep -q cj_test && fail "the cache VM launcher got the join token as an argument"
 run_line=$(grep -n "'--role' 'cache'" "$out/log4" | cut -d: -f1)
 agent_line=$(grep -n "bootstrap' 'system' '/Library/LaunchDaemons/com.crew.agent.plist'" "$out/log4" | cut -d: -f1)
 [ "$run_line" -lt "$agent_line" ] || fail "the cache VM must be up before the agent starts"

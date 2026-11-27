@@ -13,7 +13,7 @@ import {spawn} from "node:child_process"
 import {existsSync, mkdirSync, rmSync} from "node:fs"
 import {resolve} from "node:path"
 import {expect, test} from "@playwright/test"
-import {addBox, fakePost, fakeState, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, approveBox, fakePost, fakeState, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "09-guest-image"
 const root = resolve(import.meta.dirname, "../..")
@@ -59,6 +59,7 @@ test("a box prepares the real image and boots a job VM from it", async ({page, r
 
   await page.goto("/boxes")
   await expect(page.locator("[id^=box-]", {hasText: "m4-img"})).toContainText("Online", {timeout: 180_000})
+  await approveBox(page, "m4-img")
 
   // Download (734 MB from the control plane), verify, decompress (4 GiB).
   await page.goto("/admin/images")

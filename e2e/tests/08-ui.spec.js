@@ -3,7 +3,7 @@
 // view, a run's actions and jobs table, a box's controls, and Sizes &
 // labels. No page may trip the CSP.
 import {expect, test} from "@playwright/test"
-import {addBox, cellOverflows, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, approveBox, cellOverflows, connected, fakePost, fakeState, setTheme, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "08-ui"
 let agent
@@ -32,6 +32,7 @@ test("the dashboard, with a box and work", async ({page, request}) => {
   agent = startAgent(token, {name: "null-ui"})
   await page.goto("/boxes")
   await expect(page.locator("[id^=box-]", {hasText: "null-ui"})).toContainText("Online", {timeout: 180_000})
+  await approveBox(page, "null-ui")
 
   // Some finished work, and a job that waits (a size no box can hold).
   const first = await fakePost(request, "/__fake/runs", {repo: "mona/ui", workflow: "Build", branch: "feat/one", sha: "a".repeat(40), jobs: [{name: "unit", labels: ["crew-s"], seconds: 2}]})

@@ -18,7 +18,7 @@ defmodule Crew.BoxesEnrollRaceTest do
     setup do
       name = "race#{System.unique_integer([:positive])}"
 
-      {scope, box} =
+      scope =
         unboxed(fn ->
           user =
             Repo.insert!(%Crew.Accounts.User{
@@ -28,16 +28,11 @@ defmodule Crew.BoxesEnrollRaceTest do
               role: "admin"
             })
 
-          scope = Crew.Scope.for_user(user)
-          # A box that's enrolled once already: a second token for it
-          # re-enrolls, which replaces its key.
-          {:ok, first} = token(scope, name)
-          {:ok, box} = Boxes.enroll(first, %{"public_key" => key()})
-          {scope, box}
+          Crew.Scope.for_user(user)
         end)
 
       on_exit(fn -> unboxed(fn -> cleanup(name, scope.user.id) end) end)
-      %{scope: scope, box: box, name: name}
+      %{scope: scope, name: name}
     end
 
     test "only one of several enrollments racing for a token gets the box", ctx do
@@ -66,8 +61,29 @@ defmodule Crew.BoxesEnrollRaceTest do
 
       # The box has the one winner's key.
       winner = Enum.find_index(results, &match?({:ok, _}, &1))
-      stored = unboxed(fn -> Repo.get!(Box, ctx.box.id).public_key end)
+      stored = unboxed(fn -> Repo.get_by!(Box, name: ctx.name).public_key end)
       assert stored == Base.decode64!(Enum.at(keys, winner))
+    end
+
+    test "of several tokens for one name racing, one enrolls and the rest are refused", ctx do
+      raws = for _ <- 1..8, do: elem(unboxed(fn -> token(ctx.scope, ctx.name) end), 1)
+      parent = self()
+
+      tasks =
+        for raw <- raws do
+          Task.async(fn ->
+            send(parent, {:ready, self()})
+            receive do: (:go -> :ok)
+            unboxed(fn -> Boxes.enroll(raw, %{"public_key" => key()}) end)
+          end)
+        end
+
+      for _ <- tasks, do: assert_receive({:ready, _}, 5_000)
+      for t <- tasks, do: send(t.pid, :go)
+      results = Task.await_many(tasks, 30_000)
+
+      assert Enum.count(results, &match?({:ok, _}, &1)) == 1
+      assert Enum.count(results, &(&1 == {:error, :invalid_token})) == 7
     end
 
     test "a token that's been used is refused, and stays used", ctx do

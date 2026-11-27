@@ -1,3 +1,4 @@
+import { expect } from "@playwright/test"
 import { mkdirSync } from "node:fs"
 import { resolve } from "node:path"
 
@@ -112,8 +113,35 @@ export async function addBox(page, name, type = "mac-vz") {
   await page.getByLabel("Name").fill(name)
   await page.locator(`input[name="box[box_type]"][value="${type}"]`).check()
   await page.getByRole("button", { name: "Create join token" }).click()
-  const text = await page.locator("#dev-join-command, #join-command").first().innerText()
-  return text.match(/(cj_[A-Za-z0-9_-]+)/)[1]
+  return joinToken(page)
+}
+
+// The join token on the Add box page: in the command, or beside it for a
+// launcher that asks for it.
+export async function joinToken(page) {
+  await page.locator("#join-command, #dev-join-command").first().waitFor()
+  for (const id of ["#join-token", "#join-command", "#dev-join-command"]) {
+    const el = page.locator(id)
+    if (await el.count()) {
+      const m = (await el.innerText()).match(/(cj_[A-Za-z0-9_-]+)/)
+      if (m) return m[1]
+    }
+  }
+  throw new Error("no join token on the page")
+}
+
+// A box's first capabilities wait for an admin (§8.6) before it gets
+// jobs: accept them, once the agent has reported. Nothing to do for a box
+// that's been accepted already.
+export async function approveBox(page, name) {
+  await page.goto("/boxes")
+  await page.locator("[id^=box-]", { hasText: name }).click()
+  // Once the agent has reported: before that there's nothing to accept.
+  await expect(page.locator("#capabilities")).not.toContainText("hasn't reported", { timeout: 180_000 })
+  if (!(await page.locator("#approve-capabilities").count())) return
+  page.once("dialog", d => d.accept())
+  await page.locator("#approve-capabilities").click()
+  await expect(page.locator("#needs-approval")).toHaveCount(0)
 }
 
 // Content that spills out of its table cell (a status running into the

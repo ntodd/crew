@@ -74,6 +74,22 @@ defmodule CrewWeb.BoxLive.Show do
   defp default_arch(%{guest_arch: "arm64"}), do: "arm64"
   defp default_arch(_), do: "amd64"
 
+  # Everything an approval would pin (Boxes.approve_capabilities/3).
+  defp proposed(caps) when is_map(caps) do
+    [
+      caps["driver"],
+      caps["guest_arch"],
+      "#{caps["vcpus"]} vCPUs",
+      "#{caps["memory_mib"]} MiB",
+      "#{caps["vm_area_mib"]} MiB vm area",
+      "at most #{caps["max_vcpus_per_vm"]} vCPUs and #{caps["max_memory_mib_per_vm"]} MiB a VM",
+      "#{caps["vmm_overhead_mib"]} MiB VMM overhead a VM"
+    ]
+    |> Enum.join(", ")
+  end
+
+  defp proposed(_), do: "nothing yet"
+
   defp load(socket, box) do
     assign(socket,
       box: box,
@@ -178,10 +194,20 @@ defmodule CrewWeb.BoxLive.Show do
     {:noreply, socket |> assign(:reprovision_arch, arch) |> assign_reprovision_disks(params)}
   end
 
-  def handle_event("approve", _params, socket) do
-    case Boxes.approve_capabilities(socket.assigns.current_scope, socket.assigns.box) do
+  def handle_event("approve", params, socket) do
+    case Boxes.approve_capabilities(
+           socket.assigns.current_scope,
+           socket.assigns.box,
+           params["digest"]
+         ) do
       {:ok, box} ->
-        {:noreply, socket |> load(box) |> put_flash(:info, "Accepted the new capabilities.")}
+        {:noreply, socket |> load(box) |> put_flash(:info, "Accepted the capabilities.")}
+
+      {:error, :stale} ->
+        {:noreply,
+         socket
+         |> load(Boxes.get!(socket.assigns.box.id))
+         |> put_flash(:error, "The box reported again meanwhile. Check what it reports now.")}
 
       {:error, :unauthorized} ->
         {:noreply, put_flash(socket, :error, "Only admins can do that.")}
@@ -411,18 +437,19 @@ defmodule CrewWeb.BoxLive.Show do
         kind="warning"
         icon="hero-exclamation-triangle"
       >
-        The agent reports capabilities that differ from the ones pinned at enrollment
-        ({(@box.capabilities || %{})["vcpus"]} vCPUs, {(@box.capabilities || %{})["memory_mib"]} MiB, {(@box.capabilities ||
-                                                                                                          %{})[
-          "guest_arch"
-        ]}).
-        It gets no jobs until an admin accepts them.
+        <%= if @box.capabilities == @box.pinned_capabilities do %>
+          The agent reports what this box has:
+        <% else %>
+          The agent reports capabilities that differ from the ones accepted:
+        <% end %>
+        {proposed(@box.capabilities)}. It gets no jobs until an admin accepts them.
         <:actions :if={Scope.admin?(@current_scope)}>
           <.button
             id="approve-capabilities"
             size="sm"
             phx-click="approve"
-            data-confirm="Accept the box's new capabilities?"
+            phx-value-digest={Boxes.report_digest(@box)}
+            data-confirm="Accept the box's capabilities?"
           >
             Accept
           </.button>
