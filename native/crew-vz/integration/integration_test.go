@@ -11,6 +11,10 @@
 //	CREW_VZ_DL_URL      an internet URL the guest downloads to measure
 //	                    real-world throughput (default: none)
 //	CREW_VZ_SANDBOX=1   also run the boot test under sandbox.sb
+//	CREW_VZ_SOAK_S      run TestSoakDownloads for this many seconds;
+//	                    CREW_VZ_SOAK_VMS (default 1) VMs at once, each with
+//	                    CREW_VZ_SOAK_WORKERS (default 4) cache downloads at
+//	                    a time, plus CREW_VZ_DL_URL every 60 s when set
 package integration
 
 import (
@@ -21,6 +25,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,6 +237,7 @@ type guestAPI struct {
 	ready    chan time.Time
 	reports  chan json.RawMessage
 	statusAt json.RawMessage // helper status captured when the report came in
+	stalls   []string        // STALL lines, with the helper's counters then
 	vm       *vm
 }
 
@@ -290,6 +296,16 @@ func (g *guestAPI) serve(c net.Conn) {
 		if got, _ := io.CopyN(io.Discard, rd, n); got == n {
 			fmt.Fprintf(c, "OK\n")
 		}
+	case "STALL":
+		line := arg
+		resp, err := ctlproto.Call(context.Background(), filepath.Join(g.vm.dir, "ctl.sock"), ctlproto.Request{Op: "status"})
+		if err == nil && resp.VM != nil {
+			line += " helper net " + string(resp.VM.Net)
+		}
+		g.mu.Lock()
+		g.stalls = append(g.stalls, line)
+		g.mu.Unlock()
+		fmt.Fprintf(c, "OK\n")
 	case "REPORT":
 		resp, err := ctlproto.Call(context.Background(), filepath.Join(g.vm.dir, "ctl.sock"), ctlproto.Request{Op: "status"})
 		if err == nil && resp.VM != nil {
@@ -340,6 +356,18 @@ type report struct {
 	CacheDownload   map[string]float64 `json:"cache_download_mbps"`
 	InternetDL      map[string]float64 `json:"internet_download_mbps"`
 	InternetDLError string             `json:"internet_download_error"`
+	Soak            *struct {
+		Downloads int      `json:"downloads"`
+		Bytes     int64    `json:"bytes"`
+		Errors    []string `json:"errors"`
+		Stalls    []struct {
+			URL     string `json:"url"`
+			Worker  int    `json:"worker"`
+			Bytes   int64  `json:"bytes"`
+			Of      int64  `json:"of"`
+			Outcome string `json:"outcome"`
+		} `json:"stalls"`
+	} `json:"soak"`
 }
 
 // lanIP is the Mac's outbound IPv4 address.
@@ -545,6 +573,82 @@ func TestCachePathThroughput(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestSoakDownloads hunts for flows that wedge (ntodd/crew hung jobs):
+// VMs download through the cache route, and from CREW_VZ_DL_URL, for
+// CREW_VZ_SOAK_S seconds, and every download that stops is an error, with
+// what the guest saw, the helper's counters at the time, and the helper's
+// own log of stalled and still-open flows.
+func TestSoakDownloads(t *testing.T) {
+	secs, _ := strconv.Atoi(os.Getenv("CREW_VZ_SOAK_S"))
+	if secs <= 0 {
+		t.Skip("CREW_VZ_SOAK_S not set")
+	}
+	cache := serveFakeCache(t)
+	if cache == "" {
+		t.Skip("no fake cache")
+	}
+	vms, _ := strconv.Atoi(os.Getenv("CREW_VZ_SOAK_VMS"))
+	vms = max(vms, 1)
+	extra := fmt.Sprintf("crewtest.soak_s=%d", secs)
+	if w := os.Getenv("CREW_VZ_SOAK_WORKERS"); w != "" {
+		extra += " crewtest.soak_workers=" + w
+	}
+	if u := os.Getenv("CREW_VZ_DL_URL"); u != "" {
+		extra += " crewtest.dl=" + u
+		if pu, err := url.Parse(u); err == nil {
+			if ips, err := net.LookupIP(pu.Hostname()); err == nil {
+				for _, ip := range ips {
+					if ip.To4() != nil {
+						extra += " crewtest.dl_ip=" + ip.String()
+						break
+					}
+				}
+			}
+		}
+	}
+	b := newBox(t)
+	b.startDaemon()
+	var wg sync.WaitGroup
+	for i := 0; i < vms; i++ {
+		v := b.addVM(fmt.Sprintf("soak%d", i), vmOpts{mode: "soak", extra: extra, cacheIP: cache, vcpus: 4, memMiB: 2048})
+		if resp, _ := v.start(time.Duration(secs)*time.Second + 15*time.Minute); !resp.OK {
+			t.Fatalf("start %s: %+v", v.id, resp)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			raw := waitFor(t, v.guestAPI.reports, time.Duration(secs)*time.Second+10*time.Minute, "REPORT", v)
+			v.waitExited(30 * time.Second)
+			var r report
+			json.Unmarshal(raw, &r)
+			if r.Soak == nil {
+				t.Errorf("%s: no soak report; console:\n%s", v.id, v.console())
+				return
+			}
+			t.Logf("%s: %d downloads, %.1f GiB, %d errors", v.id, r.Soak.Downloads, float64(r.Soak.Bytes)/(1<<30), len(r.Soak.Errors))
+			for _, e := range r.Soak.Errors {
+				t.Logf("%s: error: %s", v.id, e)
+			}
+			for _, st := range r.Soak.Stalls {
+				t.Errorf("%s: worker %d stalled at %d of %d bytes of %s: %s", v.id, st.Worker, st.Bytes, st.Of, st.URL, st.Outcome)
+			}
+			v.guestAPI.mu.Lock()
+			for _, l := range v.guestAPI.stalls {
+				t.Logf("%s: STALL %s", v.id, l)
+			}
+			v.guestAPI.mu.Unlock()
+			if log, err := os.ReadFile(filepath.Join(v.dir, "vz.log")); err == nil {
+				for _, l := range strings.Split(string(log), "\n") {
+					if strings.Contains(l, "stalled") || strings.Contains(l, "open at close") || strings.Contains(l, "network totals") {
+						t.Logf("%s: helper: %s", v.id, l)
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestSandboxedBoot(t *testing.T) {

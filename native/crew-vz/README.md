@@ -346,7 +346,14 @@ LaunchDaemon running as `_crewvm` after a reboot; that needs root.
   - `CREW_VZ_DL_URL=<url>`: also download from the internet in the guest;
   - `CREW_VZ_SANDBOX=1`: also boot under `sandbox.sb`;
   - `CREW_VZ_MTUS=1500,9000,65535`: the MTUs for the cache-path throughput
-    test.
+    test;
+  - `CREW_VZ_SOAK_S=<seconds>`: run `TestSoakDownloads`, which hunts for
+    wedged flows. `CREW_VZ_SOAK_VMS` VMs (default 1) each run
+    `CREW_VZ_SOAK_WORKERS` (default 4) downloads at a time through the
+    cache route, plus `CREW_VZ_DL_URL` every 60 s on a fresh connection. A
+    download with no new byte for 30 s fails the test, with what the guest
+    saw (resumed, reset by the helper, or still stuck after 4 minutes), the
+    helper's counters then, and its `vz.log` lines for the VM.
 
   It boots real VMs through crew-vzd and checks:
   - internet TCP and DNS work;
