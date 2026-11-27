@@ -42,6 +42,12 @@ defmodule Crew.VMs.Server do
     deadline_retry: 60_000
   }
 
+  # Gone before GitHub named its job, and holding its share until its
+  # runner is (Crew.VMs.Machine).
+  defguardp unlinked?(vm)
+            when is_map_key(vm, :fail_reason) and
+                   :erlang.map_get(:fail_reason, vm) in ["unlinked", "unlinked_cleanup"]
+
   defp ms(name),
     do: Map.get(Application.get_env(:crew, :vm_timers_ms, %{}), name, Map.fetch!(@timers, name))
 
@@ -121,6 +127,24 @@ defmodule Crew.VMs.Server do
     # vm.start may have reached the agent: the runner is deleted first,
     # and a 422 means it took a job, so the VM is busy (§8.6).
     {:noreply, effect(state, {:delete_runner_then, "cp_restart"}, :boot)}
+  end
+
+  # Asked again, within the give-up it had: counted from when it finished,
+  # so restarts can't hold its share for ever.
+  def handle_continue(:boot, %{vm: %VM{state: "finished"} = vm} = state) when unlinked?(vm) do
+    # One whose cleanup is outstanding asks the box again, as any
+    # finished VM does (rearm/1).
+    state = if vm.fail_reason == "unlinked_cleanup", do: rearm(state), else: state
+    state = effect(state, {:delete_runner_then, "unlinked"}, :boot)
+    held = DateTime.diff(DateTime.utc_now(), vm.finished_at || DateTime.utc_now(), :millisecond)
+
+    case state.delete_attempt do
+      %{since: since} = attempt ->
+        {:noreply, %{state | delete_attempt: %{attempt | since: since - max(held, 0)}}}
+
+      nil ->
+        {:noreply, state}
+    end
   end
 
   def handle_continue(:boot, state), do: {:noreply, rearm(state)}
@@ -272,6 +296,11 @@ defmodule Crew.VMs.Server do
         %{delete_attempt: %{ref: ref, reason: reason} = attempt} = state
       ) do
     case result do
+      # The runner of a VM that's gone is on a job somewhere: it's still
+      # registered, so it's asked again until it isn't.
+      {:ok, :busy} when reason == "unlinked" ->
+        retry_delete(state, attempt, :busy)
+
       {:ok, outcome} ->
         {:noreply,
          %{state | delete_attempt: nil} |> apply_transition({:runner_deleted, outcome, reason})}
@@ -280,20 +309,7 @@ defmodule Crew.VMs.Server do
         {:noreply, %{state | delete_attempt: nil}}
 
       {:error, error} ->
-        since = attempt.since
-        limit = (Application.get_env(:crew, :idle_max_s, 600) + 300) * 1000
-
-        if System.monotonic_time(:millisecond) - since > limit do
-          # Past CREW_IDLE_MAX + 300 s: stop anyway, and leave the
-          # runner to garbage collection (§6.3).
-          Logger.warning("giving up deleting #{state.vm.name}'s runner: #{inspect(error)}")
-
-          {:noreply,
-           %{state | delete_attempt: nil} |> apply_transition({:runner_deleted, :gone, reason})}
-        else
-          Process.send_after(self(), {:retry_delete, ref}, ms(:delete_retry))
-          {:noreply, state}
-        end
+        retry_delete(state, attempt, error)
     end
   end
 
@@ -430,8 +446,10 @@ defmodule Crew.VMs.Server do
       {:ok, next, effects} ->
         next = override_reason(next, opts)
 
+        # A VM waiting on its runner's delete keeps the attempt while
+        # GitHub names its job.
         state =
-          if next.state in ~w(busy finished failed destroyed),
+          if next.state in ~w(busy finished failed destroyed) and not unlinked?(next),
             do: %{state | delete_attempt: nil},
             else: state
 
@@ -448,6 +466,8 @@ defmodule Crew.VMs.Server do
   # that's gone doesn't hold its allocation through the timers. A cleanup
   # that failed keeps it.
   @pre_job ~w(requested starting booted idle)
+  defp carry_on(%{vm: vm} = state, "busy", "finished", _event) when unlinked?(vm), do: state
+
   defp carry_on(state, from, to, event)
        when ((from == "busy" and to == "finished") or (from in @pre_job and to == "failed")) and
               (event == :inventory_missing or elem(event, 0) == :exited),
@@ -554,6 +574,22 @@ defmodule Crew.VMs.Server do
       end
 
     state
+  end
+
+  defp retry_delete(state, %{ref: ref, reason: reason, since: since}, why) do
+    limit = (Application.get_env(:crew, :idle_max_s, 600) + 300) * 1000
+
+    if System.monotonic_time(:millisecond) - since > limit do
+      # Past CREW_IDLE_MAX + 300 s: stop anyway, and leave the
+      # runner to garbage collection (§6.3).
+      Logger.warning("giving up deleting #{state.vm.name}'s runner: #{inspect(why)}")
+
+      {:noreply,
+       %{state | delete_attempt: nil} |> apply_transition({:runner_deleted, :gone, reason})}
+    else
+      Process.send_after(self(), {:retry_delete, ref}, ms(:delete_retry))
+      {:noreply, state}
+    end
   end
 
   # -- effects --------------------------------------------------------------------------

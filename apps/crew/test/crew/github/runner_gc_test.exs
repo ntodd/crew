@@ -24,7 +24,7 @@ defmodule Crew.GitHub.RunnerGCTest do
     })
   end
 
-  test "deletes this deployment's runners with no VM, or a failed or destroyed one; nothing else",
+  test "deletes this deployment's runners with no VM, or a finished, failed or destroyed one; nothing else",
        %{box: box, repo: repo} do
     Repo.update!(
       Ecto.Changeset.change(Crew.Repos.get!(repo.id), last_activity_at: DateTime.utc_now())
@@ -35,6 +35,8 @@ defmodule Crew.GitHub.RunnerGCTest do
     failed = vm_row(box, repo, "failed")
     destroyed = vm_row(box, repo, "destroyed")
     requested = vm_row(box, repo, "requested")
+    # Its runner's delete gave up while the box's cleanup is outstanding.
+    finished = vm_row(box, repo, "finished")
 
     runners = [
       %{"id" => 1, "name" => idle.name, "status" => "online", "busy" => false},
@@ -43,7 +45,8 @@ defmodule Crew.GitHub.RunnerGCTest do
       %{"id" => 4, "name" => "crew-#{dep}-m4-0123456789", "status" => "offline", "busy" => false},
       %{"id" => 5, "name" => "crew-zz99-m4-0123456789", "status" => "offline", "busy" => false},
       %{"id" => 6, "name" => "my-own-runner", "status" => "online", "busy" => false},
-      %{"id" => 7, "name" => requested.name, "status" => "offline", "busy" => false}
+      %{"id" => 7, "name" => requested.name, "status" => "offline", "busy" => false},
+      %{"id" => 8, "name" => finished.name, "status" => "online", "busy" => false}
     ]
 
     test = self()
@@ -60,8 +63,8 @@ defmodule Crew.GitHub.RunnerGCTest do
     )
 
     assert :ok = perform_job(RunnerGC, %{})
-    deleted = for _ <- 1..3, do: assert_receive({:deleted, id}) && id
-    assert Enum.sort(deleted) == [2, 3, 4]
+    deleted = for _ <- 1..4, do: assert_receive({:deleted, id}) && id
+    assert Enum.sort(deleted) == [2, 3, 4, 8]
     refute_received {:deleted, _}
   end
 

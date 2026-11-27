@@ -95,8 +95,44 @@ defmodule Crew.VMs.Machine do
   def transition(%{state: s} = vm, {:exited, _reason, _cleanup}) when s in ["booted", "idle"],
     do: fail(vm, "crashed", [:delete_runner])
 
+  # Busy only on the guest's word, with no job GitHub named: the runner
+  # may never have run one, and its JIT config is still good to whoever
+  # holds it. The VM keeps its share of the box until GitHub says the
+  # runner is gone (404 if it ran a job and removed itself), so a box
+  # can't hold more runners than it has room for. `unlinked_cleanup` is
+  # the same while the box hasn't cleaned the VM up yet either: both have
+  # to settle, in either order.
+  def transition(%{state: "busy", job_id: nil} = vm, {:exited, _reason, :ok}), do: unlinked(vm)
+
+  def transition(%{state: "busy", job_id: nil} = vm, {:exited, _reason, :error}),
+    do:
+      {:ok, %{vm | state: "finished", alive: false, fail_reason: "unlinked_cleanup"},
+       [{:delete_runner_then, "unlinked"}, :cleanup_failed, :arm_finished]}
+
+  def transition(%{state: "finished", fail_reason: "unlinked_cleanup"} = vm, event)
+      when event == :inventory_missing or
+             (is_tuple(event) and elem(event, 0) == :exited and elem(event, 2) == :ok),
+      do: {:ok, %{vm | alive: false, fail_reason: "unlinked"}, []}
+
   def transition(%{state: "busy"} = vm, {:exited, _reason, _cleanup}),
     do: {:ok, %{vm | state: "finished", alive: false}, [:arm_finished]}
+
+  # Listed alive again, and now exited with its cleanup failed.
+  def transition(
+        %{state: "finished", fail_reason: "unlinked_cleanup", alive: true} = vm,
+        {:exited, _reason, :error}
+      ),
+      do: {:ok, %{vm | alive: false}, [:cleanup_failed]}
+
+  # A later report that the cleanup failed after all: both again.
+  def transition(%{state: "finished", fail_reason: "unlinked"} = vm, {:exited, _reason, :error}),
+    do: {:ok, %{vm | fail_reason: "unlinked_cleanup"}, [:arm_finished]}
+
+  # Already gone, and waiting on GitHub: only the delete's answer ends it.
+  def transition(%{state: "finished", fail_reason: r}, event)
+      when r in ["unlinked", "unlinked_cleanup"] and
+             (event == :inventory_missing or (is_tuple(event) and elem(event, 0) == :exited)),
+      do: :ignored
 
   def transition(%{state: s} = vm, {:exited, _reason, :ok}) when s in ["finished", "failed"],
     do: {:ok, %{vm | state: "destroyed", alive: false}, []}
@@ -114,17 +150,32 @@ defmodule Crew.VMs.Machine do
   def transition(%{state: s} = vm, :box_revoked) when s in @pre_job,
     do: {:ok, %{vm | state: "destroyed", alive: false}, [:delete_runner]}
 
+  def transition(%{state: "busy", job_id: nil} = vm, :box_revoked),
+    do: {:ok, %{vm | state: "destroyed", alive: false}, [:delete_runner]}
+
+  def transition(%{state: "finished", fail_reason: r} = vm, :box_revoked)
+      when r in ["unlinked", "unlinked_cleanup"],
+      do: {:ok, %{vm | state: "destroyed", alive: false}, [:delete_runner]}
+
   def transition(vm, :box_revoked), do: {:ok, %{vm | state: "destroyed", alive: false}, []}
 
   # The join inventory (§10.6).
   def transition(%{state: s} = vm, :inventory_missing) when s in @pre_job,
     do: fail(vm, "lost", [:delete_runner])
 
+  def transition(%{state: "busy", job_id: nil} = vm, :inventory_missing), do: unlinked(vm)
+
   def transition(%{state: "busy"} = vm, :inventory_missing),
     do: {:ok, %{vm | state: "finished", alive: false}, [:arm_finished]}
 
   def transition(%{state: s} = vm, :inventory_missing) when s in ["finished", "failed"],
     do: {:ok, %{vm | state: "destroyed", alive: false}, []}
+
+  def transition(%{state: "finished", fail_reason: r} = vm, :inventory_alive)
+      when r in ["unlinked", "unlinked_cleanup"],
+      do:
+        {:ok, %{vm | alive: true, fail_reason: "unlinked_cleanup"},
+         [{:stop, true}, :arm_finished]}
 
   def transition(%{state: s} = vm, :inventory_alive) when s in ["finished", "failed"],
     do: {:ok, %{vm | alive: true}, [{:stop, true}]}
@@ -150,6 +201,20 @@ defmodule Crew.VMs.Machine do
   def transition(%{state: s} = vm, {:runner_deleted, :busy, _reason}) when s in @pre_job,
     do: {:ok, %{vm | state: "busy", fail_reason: nil}, [:fetch_job]}
 
+  def transition(
+        %{state: "finished", fail_reason: "unlinked"} = vm,
+        {:runner_deleted, :gone, "unlinked"}
+      ),
+      do: {:ok, %{vm | state: "destroyed", alive: false, fail_reason: nil}, []}
+
+  # The runner's gone, the cleanup isn't: a finished VM like any other
+  # whose cleanup failed, kept until the box says it's done.
+  def transition(
+        %{state: "finished", fail_reason: "unlinked_cleanup"} = vm,
+        {:runner_deleted, :gone, "unlinked"}
+      ),
+      do: {:ok, %{vm | fail_reason: nil}, []}
+
   def transition(%{state: "finished"} = vm, {:finished_timer, :grace}),
     do: {:ok, vm, [{:stop, false}]}
 
@@ -163,6 +228,11 @@ defmodule Crew.VMs.Machine do
   def transition(%{state: "busy"} = vm, :deadline), do: {:ok, vm, [{:stop, true}]}
 
   def transition(_vm, _event), do: :ignored
+
+  defp unlinked(vm),
+    do:
+      {:ok, %{vm | state: "finished", alive: false, fail_reason: "unlinked"},
+       [{:delete_runner_then, "unlinked"}]}
 
   defp to(vm, state, effects \\ []), do: {:ok, %{vm | state: state}, effects}
   defp fail(vm, reason, effects), do: {:ok, %{vm | state: "failed", fail_reason: reason}, effects}

@@ -3,10 +3,11 @@ defmodule Crew.GitHub.RunnerGC do
   Runner garbage collection (§6.3), every 10 minutes. For each repo with
   Crew activity in the past 24 hours, its runners are listed, and every
   runner named `crew-<this deployment id>-*` is deleted when it has no VM
-  row, or a VM row in `failed` or `destroyed`, online or not.
+  row, or a VM row in `finished`, `failed` or `destroyed`, online or not.
 
   It catches what a runner delete gave up on (a GitHub outage past the
-  retry window) and JIT runners whose VM never came up. Runners of other
+  retry window, including one for a finished VM whose box is still
+  cleaning it up) and JIT runners whose VM never came up. Runners of other
   deployments, and anyone else's, are never touched. A runner with a job
   answers 422 and is left: JIT runners go once their job is done.
   """
@@ -22,7 +23,7 @@ defmodule Crew.GitHub.RunnerGC do
   alias Crew.VMs.VM
 
   @window_s 86_400
-  @collect ~w(failed destroyed)
+  @collect ~w(finished failed destroyed)
 
   @impl true
   def perform(_job) do

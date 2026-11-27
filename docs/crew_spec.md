@@ -383,7 +383,7 @@ personal account, so it's never missing there.
   each repo with Crew activity in the past 24 hours, list its runners. Then
   delete every runner named `crew-<this deployment id>-*` that has:
   - no VM row, or
-  - a VM row in `failed` or `destroyed`, whether the runner shows online or
+  - a VM row in `finished`, `failed` or `destroyed`, whether the runner shows online or
     offline.
 
   Runners of other deployments, such as an e2e test deployment, are never
@@ -1075,11 +1075,26 @@ recorded in `vm_events` and ignored):
 | `vm.state runner_listening` | → idle | → idle | → idle | | | | |
 | `workflow_job.in_progress` names this VM | → busy | → busy | → busy | → busy | | | → busy (see "failed but alive") |
 | `workflow_job.completed` names this VM | → finished | → finished | → finished | → finished | → finished | | → finished |
-| `vm.exited` | → failed (`boot_failed`) | → failed (`boot_failed`/`crashed`) | → failed (`crashed`) | → failed (`crashed`), delete runner | → finished | → destroyed (if cleanup ok) | → destroyed (if cleanup ok) |
+| `vm.exited` | → failed (`boot_failed`) | → failed (`boot_failed`/`crashed`) | → failed (`crashed`) | → failed (`crashed`), delete runner | → finished; with no job linked, `unlinked` until its runner is gone | → destroyed (if cleanup ok) | → destroyed (if cleanup ok) |
 | box disconnects | delete runner (none yet: → failed (`lost`) at once): 204/404 → failed (`lost`); 422 → busy | same | same | same | stays busy | stays | stays |
-| box revoked | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed | → destroyed | → destroyed |
-| join inventory doesn't list the VM | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → finished | → destroyed | → destroyed |
+| box revoked | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed, delete runner | → destroyed; delete the runner if no job is linked | → destroyed | → destroyed |
+| join inventory doesn't list the VM | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → failed (`lost`) | → finished; with no job linked, `unlinked` until its runner is gone | → destroyed | → destroyed |
 | join inventory lists the VM as alive | | | | | | sends `vm.stop force` | sends `vm.stop force` |
+
+A `busy` VM with no linked job went busy on the guest's own word (its
+`job_started` hook). When it's gone before GitHub names a job, its JIT
+config may never have been used, and the box still holds it. The VM
+goes `finished` with reason `unlinked` and keeps its share of the box
+while Crew deletes the runner: 204 or 404 (it ran a job and removed
+itself) destroys it, and 422 (it's on a job somewhere) is asked again
+until the runner is gone, giving up after `CREW_IDLE_MAX` + 300 s as
+other deletes do. So a box never holds more runners than it has room
+for. A job GitHub names meanwhile is linked as usual. With a failed
+cleanup, or when the box's inventory lists it alive again (it's sent
+`vm.stop force`), it's `unlinked_cleanup`: the runner's delete and the
+box's cleanup both have to settle, in either order. After a control
+plane restart the delete is asked again, within the give-up counted from
+when the VM finished.
 
 **Timeouts.** A timeout first deletes the VM's runner (when one exists).
 Then:

@@ -187,7 +187,9 @@ defmodule Crew.VMs.MachineTest do
     assert {:ok, %{state: "failed", fail_reason: "crashed"}, [:delete_runner]} =
              t("idle", {:exited, "poweroff", :ok})
 
-    assert {:ok, %{state: "finished"}, [:arm_finished]} = t("busy", {:exited, "poweroff", :ok})
+    assert {:ok, %{state: "finished"}, [:arm_finished]} =
+             t("busy", {:exited, "poweroff", :ok}, %{job_id: 7})
+
     assert {:ok, %{state: "destroyed"}, []} = t("finished", {:exited, "poweroff", :ok})
     assert {:ok, %{state: "destroyed"}, []} = t("failed", {:exited, "crashed", :ok})
     # Cleanup that failed keeps the row, so its allocation stays counted.
@@ -196,6 +198,74 @@ defmodule Crew.VMs.MachineTest do
 
     assert {:ok, %{state: "failed", alive: false}, [:cleanup_failed]} =
              t("failed", {:exited, "crashed", :error})
+  end
+
+  test "a VM busy only on the guest's word holds its share until its runner is gone" do
+    # Exited or missing: finished, and the runner is deleted first.
+    for event <- [{:exited, "poweroff", :ok}, :inventory_missing] do
+      assert {:ok, %{state: "finished", alive: false, fail_reason: "unlinked"},
+              [{:delete_runner_then, "unlinked"}]} = t("busy", event)
+    end
+
+    # Cleanup failed: the runner's delete and the cleanup both have to
+    # settle, in either order.
+    assert {:ok, %{state: "finished", alive: false, fail_reason: "unlinked_cleanup"},
+            [{:delete_runner_then, "unlinked"}, :cleanup_failed, :arm_finished]} =
+             t("busy", {:exited, "poweroff", :error})
+
+    # A later report that the cleanup failed after all puts it back.
+    assert {:ok, %{state: "finished", fail_reason: "unlinked_cleanup"}, [:arm_finished]} =
+             t("finished", {:exited, "poweroff", :error}, %{alive: false, fail_reason: "unlinked"})
+
+    dirty = %{alive: false, fail_reason: "unlinked_cleanup"}
+
+    assert {:ok, %{state: "finished", fail_reason: "unlinked"}, []} =
+             t("finished", {:exited, "poweroff", :ok}, dirty)
+
+    assert {:ok, %{state: "finished", fail_reason: "unlinked"}, []} =
+             t("finished", :inventory_missing, dirty)
+
+    assert t("finished", {:exited, "poweroff", :error}, dirty) == :ignored
+
+    # Listed alive, then exited with its cleanup failed: no longer alive.
+    assert {:ok, %{alive: false, fail_reason: "unlinked_cleanup"}, [:cleanup_failed]} =
+             t("finished", {:exited, "poweroff", :error}, %{dirty | alive: true})
+
+    assert t("finished", {:exited, "poweroff", :error}, %{fail_reason: "unlinked"}) != :ignored
+
+    assert {:ok, %{state: "finished", fail_reason: nil, alive: false}, []} =
+             t("finished", {:runner_deleted, :gone, "unlinked"}, dirty)
+
+    # Listed alive again: it's stopped, and has to exit before it's gone.
+    assert {:ok, %{state: "finished", alive: true, fail_reason: "unlinked_cleanup"},
+            [{:stop, true}, :arm_finished]} =
+             t("finished", :inventory_alive, %{alive: false, fail_reason: "unlinked"})
+
+    assert {:ok, %{state: "destroyed"}, [:delete_runner]} = t("busy", :box_revoked)
+
+    unlinked = %{alive: false, fail_reason: "unlinked"}
+
+    assert {:ok, %{state: "destroyed", fail_reason: nil}, []} =
+             t("finished", {:runner_deleted, :gone, "unlinked"}, unlinked)
+
+    # GitHub names its job meanwhile: linked, and the delete still decides.
+    assert {:ok, %{state: "finished", job_id: 7, fail_reason: "unlinked"}, [{:link_job, 7}]} =
+             t("finished", {:job_completed, 7}, unlinked)
+
+    assert {:ok, %{state: "destroyed"}, [:delete_runner]} =
+             t("finished", :box_revoked, unlinked)
+
+    assert {:ok, %{state: "destroyed"}, [:delete_runner]} =
+             t("finished", :box_revoked, dirty)
+
+    # A job GitHub named is the runner's to finish: it removes itself.
+    assert {:ok, %{state: "finished"}, [:arm_finished]} =
+             t("busy", {:exited, "poweroff", :ok}, %{job_id: 7})
+
+    assert {:ok, %{state: "finished"}, [:arm_finished]} =
+             t("busy", :inventory_missing, %{job_id: 7})
+
+    assert {:ok, %{state: "destroyed"}, []} = t("busy", :box_revoked, %{job_id: 7})
   end
 
   test "a reaped VM's exit is the end of it" do
@@ -222,7 +292,9 @@ defmodule Crew.VMs.MachineTest do
               t(s, :inventory_missing)
           )
 
-    assert {:ok, %{state: "finished"}, [:arm_finished]} = t("busy", :inventory_missing)
+    assert {:ok, %{state: "finished"}, [:arm_finished]} =
+             t("busy", :inventory_missing, %{job_id: 7})
+
     assert {:ok, %{state: "destroyed"}, []} = t("finished", :inventory_missing)
     assert {:ok, %{state: "destroyed"}, []} = t("failed", :inventory_missing)
   end
