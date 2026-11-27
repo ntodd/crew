@@ -14,7 +14,10 @@ defmodule Crew.Logs.Stream do
   that restarts picks up where it was. It stops a minute after its last
   batch, and starts again with the next.
   """
-  use GenServer, restart: :transient
+  # Temporary: a stream that crashes isn't restarted, and so can't spend
+  # the supervisor's restart budget for every other VM's. The next batch
+  # opens it again where the database left off (deliver/2).
+  use GenServer, restart: :temporary
 
   import Ecto.Query, only: [from: 2]
 
@@ -39,7 +42,7 @@ defmodule Crew.Logs.Stream do
       )
 
   def child_spec(vm_id),
-    do: %{id: {__MODULE__, vm_id}, start: {__MODULE__, :start_link, [vm_id]}, restart: :transient}
+    do: %{id: {__MODULE__, vm_id}, start: {__MODULE__, :start_link, [vm_id]}, restart: :temporary}
 
   @doc "Hands an agent's log event to the VM's stream, starting it if need be."
   def deliver(vm_id, message) do

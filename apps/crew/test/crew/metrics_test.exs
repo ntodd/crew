@@ -92,6 +92,30 @@ defmodule Crew.MetricsTest do
 
     defp at(seconds), do: DateTime.to_unix(@start) + seconds
 
+    test "network bytes too big for the column are left out, not the whole summary", %{vm: vm} do
+      for s <- [5, 10, 15],
+          do:
+            vm_metric_fixture(vm, at(s),
+              mem_used_mib: 3000,
+              net_rx_bps: 9.0e18,
+              net_tx_bps: 9.0e18
+            )
+
+      assert %{net_bytes: nil, peak_mem_mib: 3000} = Metrics.job_summary(vm, @start, @finish)
+    end
+
+    test "so are rates an older agent sent that overflow a float", %{vm: vm} do
+      for s <- [5, 10, 15],
+          do:
+            vm_metric_fixture(vm, at(s),
+              mem_used_mib: 3000,
+              net_rx_bps: 1.0e308,
+              net_tx_bps: 1.0e308
+            )
+
+      assert %{net_bytes: nil, peak_mem_mib: 3000} = Metrics.job_summary(vm, @start, @finish)
+    end
+
     test "counts only the samples from the job's start to its finish", %{vm: vm} do
       # Booting and waiting for the job: idle, with a little memory.
       for s <- [-30, -25, -20, -15, -10, -5],

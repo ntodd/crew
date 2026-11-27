@@ -112,6 +112,30 @@ defmodule Crew.LogsTest do
     await_texts(id, ["line 1", "line 2", "[3 lines lost]", "line 6", "line 7"])
   end
 
+  test "a stream that keeps crashing doesn't take the other streams with it", %{
+    box: box,
+    vm_id: id
+  } do
+    sup = Process.whereis(Crew.Logs.Supervisor)
+
+    for n <- 1..10 do
+      log(box, id, n, lines(n..n))
+      [{pid, _}] = Registry.lookup(Crew.Registry, {:log_stream, id})
+      # Past the batch, and the database write with it, before it dies.
+      :sys.get_state(pid)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+    end
+
+    assert Process.whereis(Crew.Logs.Supervisor) == sup
+
+    # The next batch opens the stream again where the database left off.
+    log(box, id, 11, lines(11..11))
+    await_texts(id, Enum.map(1..11, &"line #{&1}"))
+    assert Process.whereis(Crew.Logs.Supervisor) == sup
+  end
+
   test "vm.log.gone marks the lost lines at once", %{box: box, vm_id: id} do
     log(box, id, 1, lines(1..2))
     log(box, id, 4, lines(9..9))
@@ -186,6 +210,27 @@ defmodule Crew.LogsTest do
     await_texts(id, ["line 1", "line 2", "line 3"])
     assert Enum.map(stored(id), & &1.n) == [1, 2, 3]
     assert File.stat!(Logs.path(:vm, id)).size > committed
+  end
+
+  test "a write the row didn't record isn't read before the stream opens again", %{
+    box: box,
+    vm_id: id
+  } do
+    log(box, id, 1, lines(1..2))
+    await_texts(id, ["line 1", "line 2"])
+    eventually(fn -> VMs.get!(id).last_log_seq == 1 end)
+    stop_stream(id)
+
+    File.write!(Logs.path(:vm, id), ~s({"n":3,"t":1,"step_ref":"s1","text":"line 3"}\n), [:append])
+
+    assert Logs.raw(:vm, id) |> Enum.join() == "line 1\nline 2\n"
+    assert {:ok, [1, 2]} = Logs.search(:vm, id, "line")
+    assert Logs.lines(:vm, id, 1, 3) |> Enum.map(& &1.n) == [1, 2]
+
+    # A row from before log_bytes existed: its line count is the bound.
+    Repo.update_all(from(v in Crew.VMs.VM, where: v.id == ^id), set: [log_bytes: 0])
+    assert Logs.raw(:vm, id) |> Enum.join() == "line 1\nline 2\n"
+    assert {:ok, [1, 2]} = Logs.search(:vm, id, "line")
   end
 
   test "a torn record at the end of the file is cut off at restart", %{box: box, vm_id: id} do

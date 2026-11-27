@@ -41,6 +41,42 @@ defmodule CrewProtocol.EventTest do
     assert {:error, _} = Event.new("box.reboot", %{reboot | "packages" => packages})
   end
 
+  describe "integers" do
+    test "fit a signed 64-bit column, so a bigger one is refused" do
+      exited = Examples.event("vm.exited")
+
+      assert {:error, [{"uptime_ms", _}]} =
+               Event.new("vm.exited", Map.put(exited, "uptime_ms", 2 ** 63))
+
+      assert {:ok, _} = Event.new("vm.exited", Map.put(exited, "uptime_ms", 2 ** 63 - 1))
+
+      assert {:error, [{"exit_status", _}]} =
+               Event.new("vm.exited", Map.put(exited, "exit_status", -(2 ** 63) - 1))
+
+      metrics = Examples.event("vm.metrics")
+
+      assert {:error, [{"net_rx_bps", _}]} =
+               Event.new("vm.metrics", Map.put(metrics, "net_rx_bps", 2 ** 70))
+    end
+
+    test "stored in 32-bit columns are held to 32 bits" do
+      max = 2 ** 31 - 1
+      log = Examples.event("vm.log")
+      assert {:error, [{"seq", _}]} = Event.new("vm.log", %{log | "seq" => max + 1})
+      assert {:ok, _} = Event.new("vm.log", %{log | "seq" => max})
+
+      gone = Examples.event("vm.log.gone")
+
+      assert {:error, [{"up_to_seq", _}]} =
+               Event.new("vm.log.gone", %{gone | "up_to_seq" => max + 1})
+
+      host = Examples.event("box.metrics")
+
+      assert {:error, [{"mem_used_mib", _}]} =
+               Event.new("box.metrics", %{host | "mem_used_mib" => max + 1})
+    end
+  end
+
   describe "vm.log" do
     test "a line's text is at most 64 KiB" do
       log = Examples.event("vm.log")

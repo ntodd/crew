@@ -164,12 +164,23 @@ defmodule Crew.Metrics do
 
   defp while_running(samples, _from, _until), do: {samples, List.first(samples)}
 
-  defp summarize(samples, before, vm, started_at, completed_at) do
+  # A rate the guest made up can multiply past what a float or the column
+  # holds; the rest of the summary is still worth keeping.
+  @max_bigint 9_223_372_036_854_775_807
+  defp net_bytes(samples) do
     net =
       samples
       |> Enum.chunk_every(2, 1, :discard)
       |> Enum.map(fn [a, b] -> (a.net_rx_bps + a.net_tx_bps) / 8 * max(b.t - a.t, 0) end)
       |> Enum.sum()
+
+    if net <= @max_bigint, do: round(net)
+  rescue
+    ArithmeticError -> nil
+  end
+
+  defp summarize(samples, before, vm, started_at, completed_at) do
+    net = net_bytes(samples)
 
     %{
       peak_mem_mib:
@@ -177,7 +188,7 @@ defmodule Crew.Metrics do
       peak_cpu_pct: Enum.max_by(samples, & &1.cpu_pct).cpu_pct,
       avg_cpu_pct: Float.round(Enum.sum_by(samples, & &1.cpu_pct) / length(samples), 1),
       peak_disk_mib: Enum.max_by(samples, & &1.disk_used_mib).disk_used_mib,
-      net_bytes: round(net),
+      net_bytes: net,
       vcpus: vm.vcpus,
       memory_mib: vm.memory_mib,
       oom: oom?(samples, before),

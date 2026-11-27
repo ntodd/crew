@@ -294,6 +294,8 @@ defmodule Crew.Logs do
   def lines(source, owner_id, from, to) do
     from = max(from, 1)
     to = min(to, from + @max_lines - 1)
+    # A VM's lines go only as far as its row committed (committed/3).
+    to = if source == :vm, do: min(to, last_n(:vm, owner_id) || 0), else: to
     path = path(source, owner_id)
 
     if to < from or not File.exists?(path) do
@@ -349,6 +351,7 @@ defmodule Crew.Logs do
         |> File.stream!(:line)
         |> Stream.map(&decode/1)
         |> Stream.reject(&is_nil/1)
+        |> committed(source, owner_id)
         |> Stream.map(&[&1.text, ?\n]),
       else: []
   end
@@ -363,7 +366,7 @@ defmodule Crew.Logs do
   """
   def search(source, owner_id, q, opts \\ []) do
     with {:ok, match?} <- matcher(q, opts) do
-      task = Task.async(fn -> scan(path(source, owner_id), match?) end)
+      task = Task.async(fn -> scan(source, owner_id, match?) end)
 
       case Task.yield(task, @search_ms) || Task.shutdown(task, :brutal_kill) do
         {:ok, hits} -> {:ok, hits}
@@ -404,12 +407,15 @@ defmodule Crew.Logs do
 
   # sobelow_skip ["Traversal.FileModule"]
   # Paths are built under CREW_LOG_DIR from ids (UUIDs) in our own rows.
-  defp scan(path, match?) do
+  defp scan(source, owner_id, match?) do
+    path = path(source, owner_id)
+
     if File.exists?(path) do
       path
       |> File.stream!(:line, read_ahead: 256 * 1024)
       |> Stream.map(&decode/1)
       |> Stream.reject(&is_nil/1)
+      |> committed(source, owner_id)
       |> Stream.filter(&match?.(strip_ansi(&1.text)))
       |> Stream.map(& &1.n)
       |> Enum.take(@max_hits)
@@ -417,6 +423,15 @@ defmodule Crew.Logs do
       []
     end
   end
+
+  # A VM's live log is read only as far as its row committed: past that
+  # is a write whose update failed, cut off when the stream opens again.
+  defp committed(lines, :vm, vm_id) do
+    last = Repo.one(from v in VM, where: v.id == ^vm_id, select: v.last_log_n) || 0
+    Stream.take_while(lines, &(&1.n <= last))
+  end
+
+  defp committed(lines, _source, _owner_id), do: lines
 
   @ansi ~r/\e(?:\[[0-?]*[ -\/]*[@-~]|\][^\a\e]*(?:\a|\e\\)|[@-Z\\-_])/
 
