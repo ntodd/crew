@@ -22,7 +22,7 @@ defmodule Crew.Usage do
   alias Crew.Jobs.Job
   alias Crew.Metrics.BoxMetric
   alias Crew.Sizes.Size
-  alias Crew.Usage.{BoxDay, Day, RolledDay, Tally}
+  alias Crew.Usage.{BoxDay, Day, GitHubSpend, RolledDay, Tally}
 
   # Closed days every run recomputes: a job that finished just before
   # midnight on GitHub's clock can arrive after it.
@@ -255,6 +255,7 @@ defmodule Crew.Usage do
   Usage from `from` to `to` (UTC days, both included; never past today)
   for `scope`: `totals`, a `series` with every day, and breakdowns by
   box, repo and shape, each with `vm_s` (the four phases added up).
+  `github_spend` prices the same rounded job minutes on comparable hosted VMs.
 
   Closed days come from the stored tables; today, and a closed day the
   rollup hasn't stored yet within its last 2, are computed live and
@@ -285,6 +286,9 @@ defmodule Crew.Usage do
       load(days, Date.utc_today(), Keyword.take(opts, [:box_id, :repo_id]))
 
     sizes = Sizes.list()
+    repos = Map.new(Repos.list_all(), &{&1.id, &1})
+    boxes = by_box(rows, box_days)
+    arch_by_box = for %{box: %Box{} = box} <- boxes, into: %{}, do: {box.id, box.guest_arch}
 
     %{
       from: from,
@@ -292,8 +296,9 @@ defmodule Crew.Usage do
       pending: pending,
       totals: total(rows),
       series: series(days, rows),
-      boxes: by_box(rows, box_days),
-      repos: by_repo(rows, Repos.readable_ids(scope), opts),
+      boxes: boxes,
+      github_spend: GitHubSpend.estimate(rows, arch_by_box, repos),
+      repos: by_repo(rows, repos, Repos.readable_ids(scope), opts),
       shapes: by_shape(rows, sizes)
     }
   end
@@ -446,8 +451,7 @@ defmodule Crew.Usage do
     if den > 0, do: num / den
   end
 
-  defp by_repo(rows, readable, opts) do
-    repos = Map.new(Repos.list_all(), &{&1.id, &1})
+  defp by_repo(rows, repos, readable, opts) do
     {mine, others} = Enum.split_with(rows, &(readable == :all or &1.repo_id in readable))
     order = if opts[:sort] == :vm_s, do: &{-&1.vm_s, -&1.job_s}, else: &{-&1.job_s, -&1.vm_s}
 

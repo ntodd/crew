@@ -130,6 +130,8 @@ defmodule CrewWeb.UsageLive do
           </.stat_card>
         </section>
 
+        <.github_spend estimate={@summary.github_spend} />
+
         <div class="card-grid grid-cols-1 @4xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
           <U.chart id="usage-chart" summary={@summary} />
           <.panel id="usage-phases" title="VM time by phase">
@@ -253,6 +255,63 @@ defmodule CrewWeb.UsageLive do
         </div>
       </div>
     </Layouts.app>
+    """
+  end
+
+  attr :estimate, :map, required: true
+
+  defp github_spend(assigns) do
+    ~H"""
+    <details
+      id="usage-github-spend"
+      phx-mounted={JS.ignore_attributes(["open"])}
+      class="group rounded-xl border border-line bg-raised shadow-xs"
+    >
+      <summary class="flex cursor-pointer list-none items-center gap-3 px-5 py-4 [&::-webkit-details-marker]:hidden">
+        <span class="min-w-0 flex-1">
+          <span class="block text-sm font-semibold text-ink">GitHub Actions equivalent spend</span>
+          <span class="block text-xs text-ink-2">Estimated runner cost in USD before plan allowances</span>
+          <span :if={@estimate.unmatched_minutes > 0} class="mt-1 block text-xs text-ink-2">
+            {U.delimit(@estimate.unmatched_minutes)} job {if @estimate.unmatched_minutes == 1,
+              do: "minute",
+              else: "minutes"} excluded without a matching runner
+          </span>
+        </span>
+        <span id="usage-github-amount" class="text-xl font-semibold tabular-nums text-ink">
+          {if @estimate.runners == [] and @estimate.unmatched_minutes > 0,
+            do: "Unavailable",
+            else: U.usd(@estimate.mills)}
+        </span>
+        <.icon
+          name="hero-chevron-down-micro"
+          class="size-4 shrink-0 text-ink-3 group-open:rotate-180"
+        />
+      </summary>
+      <div class="space-y-3 border-t border-line px-5 py-4">
+        <p class="text-sm text-ink-2">
+          Crew rounds each finished job’s runtime up to a whole minute and prices it on the smallest
+          Linux VM that matches its CPU architecture and has enough vCPUs and memory.
+          Standard VMs are free for public repos. The estimate uses each box’s current guest
+          architecture and each repo’s current visibility. It excludes storage charges.
+          <.gh_link
+            href="https://docs.github.com/en/billing/reference/actions-runner-pricing"
+            class="text-accent-ink underline"
+          >GitHub rates as of {Calendar.strftime(@estimate.rates_as_of, "%b %-d, %Y")}</.gh_link>
+        </p>
+        <.table :if={@estimate.runners != []} id="usage-github-runners" rows={@estimate.runners}>
+          <:col :let={r} label="Linux VM">{r.cores}-core {r.arch}</:col>
+          <:col :let={r} label="Job min" align="right" class="tabular-nums">
+            {U.delimit(r.minutes)}
+          </:col>
+          <:col :let={r} label="USD/min" align="right" class="tabular-nums">
+            {if r.rate_mills == 0, do: "Free", else: U.usd(r.rate_mills, 3)}
+          </:col>
+          <:col :let={r} label="Est. cost" align="right" class="tabular-nums">
+            {U.usd(r.mills)}
+          </:col>
+        </.table>
+      </div>
+    </details>
     """
   end
 end

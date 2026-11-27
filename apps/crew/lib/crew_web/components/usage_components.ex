@@ -26,6 +26,14 @@ defmodule CrewWeb.UsageComponents do
     |> String.reverse()
   end
 
+  @doc "US dollars from integer mills, to the cent for totals or the mill for rates."
+  def usd(mills, places \\ 2) when places in [2, 3] do
+    units = if places == 2, do: div(mills + 5, 10), else: mills
+    scale = Integer.pow(10, places)
+    fraction = units |> rem(scale) |> Integer.to_string() |> String.pad_leading(places, "0")
+    "$#{delimit(div(units, scale))}.#{fraction}"
+  end
+
   @doc "A share as a whole percent, capped at 100, or a dash."
   def pct(nil), do: "–"
   def pct(x), do: "#{round(min(x, 1.0) * 100)}%"

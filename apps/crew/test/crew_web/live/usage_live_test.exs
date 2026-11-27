@@ -26,6 +26,9 @@ defmodule CrewWeb.UsageLiveTest do
     assert has_element?(view, "header", "UTC")
     assert has_element?(view, "#usage-job-minutes", "11")
     assert has_element?(view, "#usage-totals", "12 rounded up per job, as GitHub bills")
+    assert has_element?(view, "#usage-github-amount", "$0.10")
+    assert has_element?(view, "#usage-github-runners td", "$0.008")
+    assert has_element?(view, "#usage-github-runners td:last-child", "$0.10")
     assert has_element?(view, "#usage-vm-minutes", "13")
     assert has_element?(view, "#usage-overhead", "17%")
     assert has_element?(view, "#usage-phases li", "11 min · 83%")
@@ -53,10 +56,12 @@ defmodule CrewWeb.UsageLiveTest do
     {:ok, view, _} = live(conn, ~p"/usage")
     assert has_element?(view, ~s(#range-30[aria-current="true"]))
     assert has_element?(view, "#usage-job-minutes", "10")
+    assert has_element?(view, "#usage-github-amount", "$0.08")
 
     view |> element("#range-7") |> render_click()
     assert_patched(view, ~p"/usage?days=7")
     assert has_element?(view, "#usage-empty")
+    refute has_element?(view, "#usage-github-amount", "$0.08")
 
     {:ok, view, _} = live(conn, ~p"/usage?days=90")
     assert has_element?(view, ~s(#range-90[aria-current="true"]))
@@ -69,6 +74,24 @@ defmodule CrewWeb.UsageLiveTest do
     {:ok, view, _} = live(conn, ~p"/usage")
     assert has_element?(view, "#usage-empty")
     refute has_element?(view, "#usage-boxes")
+  end
+
+  test "unmatched minutes are visible even when none of the jobs can be priced", %{
+    conn: conn,
+    repo: repo,
+    box: box
+  } do
+    day = yesterday()
+    started = DateTime.new!(day, ~T[01:00:00.000000], "Etc/UTC")
+    job_row_fixture(repo, started_at: started, completed_at: DateTime.add(started, 120))
+    {:ok, view, _} = live(conn, ~p"/usage")
+    assert has_element?(view, "#usage-github-amount", "Unavailable")
+    assert has_element?(view, "#usage-github-spend", "2 job minutes excluded")
+
+    ran_fixture(box, repo, day, 600)
+    send(view.pid, :refresh)
+    assert has_element?(view, "#usage-github-amount", "$0.08")
+    assert has_element?(view, "#usage-github-spend", "2 job minutes excluded")
   end
 
   test "a member sees every box, and the repos they can't read as one row", %{
