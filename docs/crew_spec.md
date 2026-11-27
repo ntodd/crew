@@ -1138,10 +1138,19 @@ idempotent by `vm_id` (§10.3) all the same.
 - **Replacements:** a VM that fails before linking a job leaves its class's
   deficit open, so the next pass places a replacement.
 - **Box quarantine:** a box with 3 VM failures in a row before `idle`
-  (counting `boot_failed`, `boot_timeout`, `runner_timeout`, `crashed` and
-  `start_error`, but not `image_not_ready`, `lost` or `cp_restart`) is
+  (counting `boot_failed`, `boot_timeout`, `runner_timeout`, `crashed`,
+  `start_error` and `image_not_ready`, but not `lost` or `cp_restart`) is
   quarantined for 5 minutes, with an activity notice. One success clears
-  the count.
+  the count. `image_not_ready` also marks the image `failed` on that box,
+  so it isn't placed on again until the box prepares it (§13.1); a
+  `ready` the box reported after the VM was placed is left as it is. It
+  counts once for every VM placed before the strike: the rest of a batch,
+  or of VMs placed in earlier passes still waiting on their answer,
+  doesn't count again, so an honest box with a stale image takes one
+  strike. A VM placed after it counts again, whatever `ready` the box
+  reported in between. So a box refusing everything spends at most what
+  it has room for in JIT configs per strike, and three strikes
+  quarantine it.
 - **Class backoff:** a class with 5 failures in a row on any boxes backs off
   1, 2, 4… up to 300 s. The job page shows "Crew can't start runners for
   this class: <last error>".
