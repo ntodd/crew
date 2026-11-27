@@ -12,6 +12,9 @@
 //     process as the Mac, after blocked4/site4 checks on the socket address
 //     actually connected (net.Dialer.Control).
 //   - Refusals are RST for TCP and ICMP port unreachable for UDP.
+//   - A TCP flow with bytes queued for a guest that has sent nothing on
+//     it for StallTimeout is reset (flow.go), so a wedged flow fails and
+//     the client can retry, instead of a job hanging until its timeout.
 package netstack
 
 import (
@@ -55,6 +58,15 @@ const (
 	// read fills one (bulk transfers are fast).
 	copyBufSmall = 16 << 10
 	copyBufLarge = 128 << 10
+
+	// DefaultStallTimeout is how long a guest may say nothing on a flow
+	// with bytes queued for it before the flow is reset. The guest is
+	// microseconds away and, with guestMaxRTO, hears a retransmission or
+	// a window probe every few seconds, which a live guest answers even
+	// when it isn't reading: two minutes of nothing is a wedge.
+	DefaultStallTimeout = 2 * time.Minute
+	// maxClosingFlowLogs caps the flows logged when the network closes.
+	maxClosingFlowLogs = 32
 )
 
 // DialFunc dials a flow's target.
@@ -72,6 +84,11 @@ type Options struct {
 	// default checks Policy.CheckDialAddress in net.Dialer.Control.
 	DialDirect DialFunc
 
+	// StallTimeout is how long a TCP flow may have bytes queued for the
+	// guest while the guest sends nothing on it before it's reset. Zero
+	// means DefaultStallTimeout.
+	StallTimeout time.Duration
+
 	Logger *slog.Logger
 }
 
@@ -84,6 +101,7 @@ type Stats struct {
 	FramesIn      uint64            `json:"frames_in"`
 	FramesOut     uint64            `json:"frames_out"`
 	FramesOutLost uint64            `json:"frames_out_lost"`
+	StalledFlows  int64             `json:"stalled_flows"`
 	Drops         map[string]uint64 `json:"drops,omitempty"`
 }
 
@@ -103,12 +121,18 @@ type Netstack struct {
 	dialDirect  DialFunc
 	dialService DialFunc
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+
+	stall time.Duration
+	fmu   sync.Mutex
+	flows map[*flow]struct{}
 
 	policyRefused atomic.Int64
 	dialFailed    atomic.Int64
+	stalledFlows  atomic.Int64
 }
 
 // New builds the stack. Call Run with the helper's end of the socketpair.
@@ -122,6 +146,9 @@ func New(o Options) (*Netstack, error) {
 	if o.MTU == 0 {
 		o.MTU = 1500
 	}
+	if o.StallTimeout == 0 {
+		o.StallTimeout = DefaultStallTimeout
+	}
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
@@ -133,6 +160,8 @@ func New(o Options) (*Netstack, error) {
 		policy:     p,
 		dnsQueries: tokenBucket{rate: 100, burst: 100, tokens: 100, now: time.Now},
 		dnsTCP:     netpolicy.NewConnLimiter(16),
+		stall:      o.StallTimeout,
+		flows:      map[*flow]struct{}{},
 		l2: NewL2(L2Config{
 			GatewayMAC: GatewayMAC,
 			GuestMAC:   o.GuestMAC,
@@ -169,7 +198,7 @@ func New(o Options) (*Netstack, error) {
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 	n.stack = s
-	if err := tuneTCP(s); err != nil {
+	if err := tuneTCP(s, o.StallTimeout); err != nil {
 		return nil, err
 	}
 	if err := s.CreateNIC(nicID, n.link); err != nil {
@@ -192,11 +221,25 @@ func New(o Options) (*Netstack, error) {
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 	udpFwd := udp.NewForwarder(s, n.handleUDP)
 	s.SetTransportProtocolHandler(udp.ProtocolNumber, udpFwd.HandlePacket)
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		n.watch()
+	}()
 	return n, nil
 }
 
-func tuneTCP(s *stack.Stack) error {
+func tuneTCP(s *stack.Stack, stall time.Duration) error {
+	maxRTO := guestMaxRTO(stall)
 	opts := []tcpip.SettableTransportProtocolOption{
+		// A live guest is heard from within maxRTO (a probe or a
+		// retransmission is answered), so silence for the stall timeout
+		// means it's gone, not that it's slow.
+		ptr(tcpip.TCPMaxRTOOption(maxRTO)),
+		// gVisor gives up on its own after this many retransmissions,
+		// and sends the guest nothing when it does: keep that well past
+		// the stall timeout, whose reset does tell the guest.
+		ptr(tcpip.TCPMaxRetriesOption(15 + 2*int(stall/maxRTO))),
 		ptr(tcpip.TCPSACKEnabled(true)),
 		ptr(tcpip.TCPModerateReceiveBufferOption(true)),
 		// The guest is microseconds away, so small windows still fill the
@@ -216,6 +259,13 @@ func tuneTCP(s *stack.Stack) error {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// guestMaxRTO caps the retransmission timeout toward the guest at a
+// twelfth of the stall timeout, between gVisor's 200 ms minimum and 10 s.
+// The link is local, so the RFC's 120 s cap only slows recovery.
+func guestMaxRTO(stall time.Duration) time.Duration {
+	return min(max(stall/12, 200*time.Millisecond), 10*time.Second)
+}
 
 // Run attaches conn (the helper's end of the socketpair) and moves frames
 // from the guest into the stack until conn is closed or Close is called.
@@ -245,11 +295,15 @@ func (n *Netstack) Run(conn *net.UnixConn) error {
 	}
 }
 
-// Close tears down the stack and every proxied flow.
+// Close tears down the stack and every proxied flow, first logging the
+// flows still open. Safe to call more than once.
 func (n *Netstack) Close() {
-	n.cancel()
-	n.stack.Close()
-	n.wg.Wait()
+	n.closeOnce.Do(func() {
+		n.logOpenFlows()
+		n.cancel()
+		n.stack.Close()
+		n.wg.Wait()
+	})
 }
 
 // Stats returns the current counters.
@@ -262,6 +316,7 @@ func (n *Netstack) Stats() Stats {
 		FramesIn:      n.link.framesIn.Load(),
 		FramesOut:     n.link.framesOut.Load(),
 		FramesOutLost: n.link.framesLost.Load(),
+		StalledFlows:  n.stalledFlows.Load(),
 	}
 	for r, c := range n.l2.Drops() {
 		if st.Drops == nil {
@@ -336,11 +391,13 @@ func (n *Netstack) handleTCP(r *tcp.ForwarderRequest) {
 	r.Complete(false)
 	ep.SocketOptions().SetKeepAlive(true)
 	guest := gonet.NewTCPConn(&wq, ep)
+	f := n.track(&flow{dst: dst, started: time.Now(), ep: ep, guest: guest, remote: remote})
 	n.wg.Add(1)
 	go func() {
 		defer n.wg.Done()
 		defer release()
-		n.proxyTCP(guest, remote, ep, dns)
+		defer n.untrack(f)
+		n.proxyTCP(f, guest, remote, dns)
 	}()
 }
 
@@ -348,15 +405,20 @@ type closeWriter interface{ CloseWrite() error }
 
 // proxyTCP copies both ways with half-close. An error on either side
 // aborts both with a reset.
-func (n *Netstack) proxyTCP(guest *gonet.TCPConn, remote net.Conn, ep tcpip.Endpoint, dns bool) {
+func (n *Netstack) proxyTCP(f *flow, guest *gonet.TCPConn, remote net.Conn, dns bool) {
+	ep := f.ep
 	stop := context.AfterFunc(n.ctx, func() { abort(guest, remote, ep) })
 	defer stop()
 	var wg sync.WaitGroup
 	var aborted atomic.Bool
-	half := func(dst, src net.Conn) {
+	toRemote := &flowWriter{conn: remote, dir: &f.toRemote}
+	toGuest := &flowWriter{conn: guest, dir: &f.toGuest}
+	fromGuest := &flowReader{conn: guest, dir: &f.toRemote}
+	fromRemote := &flowReader{conn: remote, dir: &f.toGuest}
+	half := func(dst *flowWriter, src *flowReader) {
 		defer wg.Done()
 		var err error
-		if dns && src == guest {
+		if dns && src == fromGuest {
 			err = copyDNSQueries(dst, src, n.dnsQueries.take)
 		} else {
 			_, err = copyBuf(dst, src)
@@ -367,13 +429,13 @@ func (n *Netstack) proxyTCP(guest *gonet.TCPConn, remote net.Conn, ep tcpip.Endp
 			}
 			return
 		}
-		if cw, ok := dst.(closeWriter); ok {
+		if cw, ok := dst.conn.(closeWriter); ok {
 			cw.CloseWrite()
 		}
 	}
 	wg.Add(2)
-	go half(remote, guest)
-	go half(guest, remote)
+	go half(toRemote, fromGuest)
+	go half(toGuest, fromRemote)
 	wg.Wait()
 	guest.Close()
 	remote.Close()

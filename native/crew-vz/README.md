@@ -156,8 +156,26 @@ Response: `{"ok": true, ...}` or `{"ok": false, "error": "<code>", "detail": "<t
  "console_bytes": 18233,
  "net": {"conns_open": 3, "conns_refused_cap": 0, "policy_refused": 7, "dial_failed": 0,
          "frames_in": 1200, "frames_out": 1150, "frames_out_lost": 0,
-         "drops": {"ipv6": 9, "arp": 3}}}
+         "stalled_flows": 0, "drops": {"ipv6": 9, "arp": 3}}}
 ```
+
+`stalled_flows` counts TCP flows the helper reset because the guest went
+silent on them while it owed an answer: gVisor's retransmission timer had
+fired (bytes to the guest unacknowledged, or its window closed), and the
+guest then sent nothing on the flow for two minutes. The reset sends the
+guest a RST, so its client sees an error and can retry. An idle flow arms
+no timer, and a guest that isn't reading still answers window probes, so
+neither is ever reset. The remote side is left to the macOS kernel. The
+retransmission timeout toward the guest is capped at 10 s, so a live guest
+is heard from several times per window, and gVisor's own give-up (which
+sends nothing) comes minutes after the reset would. Each reset is a
+`tcp flow stalled; resetting it` line in `vz.log`, with the flow's byte
+counts and idle times, the guest endpoint's TCP state (`cc_state`,
+`rto_ms`), and what gVisor and the link did while the guest was silent
+(`retransmits_during_stall`, `rto_timeouts_during_stall`,
+`link_frames_lost_during_stall`). When the VM stops, every flow still
+open is logged (`tcp flow open at close`, the 32 quietest), then the
+totals (`network totals`).
 
 - `exited`: the VM's helper is gone; `exited` holds `vz-exited.json`.
 - `not_started`: the VM dir exists but was never launched.
