@@ -1345,6 +1345,16 @@ Copy Foreman's flow: an admin creates a single-use join token (32 random
 bytes, stored hashed, valid for one hour). The agent generates its keypair
 and registers the public key with the token.
 
+- **An unused token can be cancelled** from Add box, so one made by
+  mistake, or that may have leaked, can't enroll anything: the page lists
+  every token still waiting (name, type, a short fingerprint of its hash,
+  expiry, never the token), and shows a new token's fingerprint with it. Hourly, a token past its hour that never
+  enrolled a box is deleted, and one that did (kept for its box's disks)
+  loses its Tailscale key: none holds a key it can no longer hand out.
+- **Enrollment checks the key before the token**, so a bad key says
+  nothing about whether a token is still good; an `os` or
+  `agent_version` that isn't text is left out.
+
 - **Flatcar boxes:** the control plane renders the Ignition for a join
   token (§12.2). It embeds the join token, the Tailscale auth key, the
   release public key and its fingerprint, plus the GitHub release URLs

@@ -167,8 +167,10 @@ defmodule CrewWeb.AgentControllerTest do
       for _ <- 1..5,
           do:
             assert(
-              req.(~p"/api/agents/enroll", %{"join_token" => "cj_no", "public_key" => "x"}).status ==
-                401
+              req.(~p"/api/agents/enroll", %{
+                "join_token" => "cj_no",
+                "public_key" => Base.encode64(:crypto.strong_rand_bytes(32))
+              }).status == 401
             )
 
       assert req.("/agent/flatcar/ignition", %{"join_token" => "cj_no", "arch" => "arm64"}).status ==

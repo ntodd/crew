@@ -26,6 +26,8 @@ defmodule Crew.BoxesTest do
 
       {:ok, raw} = Boxes.create_join_token(admin, %{attrs | "box_type" => "linux-vm"})
       Repo.update_all(Crew.Boxes.JoinToken, set: [box_type: "mac-vm"])
+      # Not listed as one that can enroll a box, either.
+      assert Boxes.pending_join_tokens(admin) == []
       {public, _} = CrewProtocol.Auth.generate_keypair()
       assert {:error, :invalid_token} = Boxes.enroll(raw, enroll_attrs(public))
       assert {:error, _} = Boxes.flatcar_ignition(raw, %{"arch" => "arm64"})
@@ -85,6 +87,127 @@ defmodule Crew.BoxesTest do
       refute Repo.exists?(
                from t in Crew.Boxes.JoinToken, where: t.box_name == "fc1" and is_nil(t.used_at)
              )
+    end
+
+    test "tokens past their hour that never enrolled go, and none keeps its Tailscale key",
+         %{admin: admin} do
+      key_attrs = %{"box_type" => "linux-vm", "tailscale_auth_key" => "tskey-auth-pasted-1"}
+      {:ok, unused} = Boxes.create_join_token(admin, Map.put(key_attrs, "box_name", "idle1"))
+      {:ok, used} = Boxes.create_join_token(admin, Map.put(key_attrs, "box_name", "used1"))
+      {:ok, fresh} = Boxes.create_join_token(admin, Map.put(key_attrs, "box_name", "fresh1"))
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, box} = Boxes.enroll(used, enroll_attrs(key))
+
+      Repo.update_all(
+        from(t in Crew.Boxes.JoinToken, where: t.box_name in ["idle1", "used1"]),
+        set: [expires_at: DateTime.add(DateTime.utc_now(), -7200)]
+      )
+
+      # As if a key had been left on the row that enrolled the box.
+      Repo.get_by!(Crew.Boxes.JoinToken, box_name: "used1")
+      |> Ecto.Changeset.change(tailscale_auth_key: "tskey-auth-left")
+      |> Repo.update!()
+
+      Boxes.prune_join_tokens()
+
+      refute Repo.get_by(Crew.Boxes.JoinToken, box_name: "idle1")
+      enrolled = Repo.get_by!(Crew.Boxes.JoinToken, box_name: "used1")
+      assert enrolled.box_id == box.id
+      assert enrolled.tailscale_auth_key == nil
+      # One still in its hour is left as it is.
+      assert Repo.get_by!(Crew.Boxes.JoinToken, box_name: "fresh1").tailscale_auth_key
+      _ = {unused, fresh}
+    end
+
+    test "an admin can cancel a token that hasn't enrolled a box", %{admin: admin} do
+      {:ok, raw} =
+        Boxes.create_join_token(admin, %{"box_name" => "oops", "box_type" => "linux-vm"})
+
+      member = Crew.Scope.for_user(user_fixture(role: "member"))
+      assert {:error, :unauthorized} = Boxes.cancel_join_token(member, raw)
+
+      assert :ok = Boxes.cancel_join_token(admin, raw)
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      assert {:error, :invalid_token} = Boxes.enroll(raw, enroll_attrs(key))
+      assert {:error, :invalid_token} = Boxes.flatcar_ignition(raw, %{"arch" => "amd64"})
+      assert Enum.any?(Crew.Audit.recent(), &(&1.action == "box.join_token_cancelled"))
+      # The name's free for another.
+      assert {:ok, _} =
+               Boxes.create_join_token(admin, %{"box_name" => "oops", "box_type" => "linux-vm"})
+    end
+
+    test "an admin sees the tokens still waiting, and can cancel one by its row", %{admin: admin} do
+      {:ok, _} =
+        Boxes.create_join_token(admin, %{"box_name" => "wait1", "box_type" => "linux-vm"})
+
+      {:ok, used} =
+        Boxes.create_join_token(admin, %{"box_name" => "done1", "box_type" => "mac-vz"})
+
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, _} = Boxes.enroll(used, enroll_attrs(key))
+
+      assert [%{box_name: "wait1", box_type: "linux-vm", expires_at: %DateTime{}} = pending] =
+               Boxes.pending_join_tokens(admin)
+
+      member = Crew.Scope.for_user(user_fixture(role: "member"))
+      assert Boxes.pending_join_tokens(member) == []
+      assert {:error, :unauthorized} = Boxes.cancel_pending_token(member, pending.id)
+      assert :ok = Boxes.cancel_pending_token(admin, pending.id)
+      assert Boxes.pending_join_tokens(admin) == []
+    end
+
+    test "a bad key is refused whether or not the token is good", %{admin: admin} do
+      {:ok, raw} = Boxes.create_join_token(admin, %{"box_name" => "k1", "box_type" => "mac-vz"})
+      assert {:error, :bad_key} = Boxes.enroll(raw, %{"public_key" => "nope"})
+      assert {:error, :bad_key} = Boxes.enroll("cj_not-a-token", %{"public_key" => "nope"})
+    end
+
+    test "an os or agent version that isn't text is left out", %{admin: admin} do
+      {:ok, raw} = Boxes.create_join_token(admin, %{"box_name" => "odd", "box_type" => "mac-vz"})
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+
+      assert {:ok, box} =
+               Boxes.enroll(raw, %{
+                 "public_key" => Base.encode64(key),
+                 "os" => 5,
+                 "agent_version" => %{"x" => 1}
+               })
+
+      assert box.os == nil and box.agent_version == nil
+      enroll = Enum.find(Crew.Audit.recent(), &(&1.action == "box.enroll"))
+      assert enroll.metadata["agent_version"] == nil
+    end
+
+    test "an os is kept to what its column holds, in code points", %{admin: admin} do
+      {:ok, raw} = Boxes.create_join_token(admin, %{"box_name" => "long", "box_type" => "mac-vz"})
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      long = String.duplicate("e\u0301", 200)
+      {:ok, box} = Boxes.enroll(raw, %{"public_key" => Base.encode64(key), "os" => long})
+      assert length(String.to_charlist(box.os)) == 255
+    end
+
+    test "an os or agent version with a NUL in it is left out", %{admin: admin} do
+      {:ok, raw} = Boxes.create_join_token(admin, %{"box_name" => "nul", "box_type" => "mac-vz"})
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+
+      {:ok, box} =
+        Boxes.enroll(raw, %{
+          "public_key" => Base.encode64(key),
+          "os" => "darwin\0",
+          "agent_version" => "0.1\0"
+        })
+
+      assert box.os == nil and box.agent_version == nil
+    end
+
+    test "a token another one's enrollment spent can't be cancelled", %{admin: admin} do
+      attrs = %{"box_name" => "pair", "box_type" => "linux-vm"}
+      {:ok, first} = Boxes.create_join_token(admin, attrs)
+      {:ok, second} = Boxes.create_join_token(admin, attrs)
+      {key, _} = CrewProtocol.Auth.generate_keypair()
+      {:ok, _} = Boxes.enroll(first, enroll_attrs(key))
+      assert {:error, :not_found} = Boxes.cancel_join_token(admin, second)
+      refute Enum.any?(Crew.Audit.recent(), &(&1.action == "box.join_token_cancelled"))
     end
 
     test "a token enrolls a box once, and only its hash is stored", %{admin: admin} do

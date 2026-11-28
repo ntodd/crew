@@ -249,6 +249,76 @@ defmodule CrewWeb.BoxLiveTest do
       assert {:ok, _} = Boxes.enroll(token, %{"public_key" => Base.encode64(public)})
     end
 
+    test "a token still waiting can be cancelled later, from a fresh page", %{conn: conn} do
+      {:ok, raw} =
+        Boxes.create_join_token(Crew.Scope.for_user(user_fixture(role: "admin")), %{
+          "box_name" => "leaked",
+          "box_type" => "linux-vm"
+        })
+
+      {:ok, view, html} = live(conn, ~p"/boxes/new")
+      assert has_element?(view, "#pending-tokens", "leaked")
+      refute html =~ raw
+      view |> element("#pending-tokens button", "Cancel") |> render_click()
+      refute has_element?(view, "#pending-tokens", "leaked")
+      assert has_element?(view, "#flash-info", "Machines")
+      {public, _} = CrewProtocol.Auth.generate_keypair()
+
+      assert {:error, :invalid_token} =
+               Boxes.enroll(raw, %{"public_key" => Base.encode64(public)})
+    end
+
+    test "two tokens for one name are told apart by a fingerprint", %{conn: conn} do
+      admin = Crew.Scope.for_user(user_fixture(role: "admin"))
+      attrs = %{"box_name" => "twin", "box_type" => "linux-vm"}
+      {:ok, a} = Boxes.create_join_token(admin, attrs)
+      {:ok, b} = Boxes.create_join_token(admin, attrs)
+      {fa, fb} = {Boxes.token_fingerprint(a), Boxes.token_fingerprint(b)}
+      assert fa != fb
+
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      assert has_element?(view, "#pending-tokens li", fa)
+      row = Enum.find(Boxes.pending_join_tokens(admin), &(&1.fingerprint == fa))
+      view |> element("#pending-#{row.id} button") |> render_click()
+      refute has_element?(view, "#pending-tokens li", fa)
+      assert has_element?(view, "#pending-tokens li", fb)
+    end
+
+    test "a token made by mistake can be cancelled", %{conn: conn} do
+      {:ok, view, _} = live(conn, ~p"/boxes/new")
+      view |> form("#add-box", %{"box" => %{"box_type" => "linux-vm"}}) |> render_change()
+
+      params = %{
+        "box" => %{
+          "box_name" => "typo",
+          "box_type" => "linux-vm",
+          "tailscale_auth_key" => "tskey-auth-secret1"
+        }
+      }
+
+      # Typed in, then submitted.
+      view |> form("#add-box", params) |> render_change()
+      html = view |> form("#add-box", params) |> render_submit()
+
+      [_, token] = Regex.run(~r/id="join-token".*?(cj_[A-Za-z0-9_-]+)/s, html)
+      # The one on show has its own Cancel, not a second one in the list,
+      # and its fingerprint, to tell it apart there later.
+      refute has_element?(view, "#pending-tokens", "typo")
+      assert has_element?(view, "#join-fingerprint", Boxes.token_fingerprint(token))
+      view |> element("#cancel-token") |> render_click()
+      refute has_element?(view, "#join-instructions")
+      # A Flatcar box's first-boot config carries a Tailscale key of its own.
+      assert has_element?(view, "#flash-info", "Tailscale")
+      assert has_element?(view, "#flash-info", "Machines")
+      # The next token starts from nothing the cancelled one had.
+      refute has_element?(view, "#box_box_name[value=typo]")
+      refute render(view) =~ "tskey-auth-secret1"
+      {public, _} = CrewProtocol.Auth.generate_keypair()
+
+      assert {:error, :invalid_token} =
+               Boxes.enroll(token, %{"public_key" => Base.encode64(public)})
+    end
+
     # The agent checks its updates against it (§20.2).
     test "the mac-vz command gives the agent the release key", %{conn: conn} do
       key = Crew.ImageFixtures.keypair()

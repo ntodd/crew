@@ -230,6 +230,102 @@ defmodule Crew.Boxes do
     end)
   end
 
+  @doc """
+  An admin cancels a join token that hasn't enrolled a box: it's gone,
+  with its Tailscale key, and its name is free again. By the raw token
+  (the one Add box just showed) or by its row (`pending_join_tokens/1`).
+  """
+  def cancel_join_token(%Scope{} = scope, raw) when is_binary(raw),
+    do: cancel_where(scope, dynamic([t], t.token_hash == ^hash(raw)))
+
+  def cancel_pending_token(%Scope{} = scope, id) do
+    case Ecto.UUID.cast(id) do
+      {:ok, id} -> cancel_where(scope, dynamic([t], t.id == ^id))
+      :error -> {:error, :not_found}
+    end
+  end
+
+  defp cancel_where(scope, which) do
+    if Scope.admin?(scope) do
+      Repo.transact(fn ->
+        query = from(t in JoinToken, where: ^which, where: is_nil(t.used_at), select: t.box_name)
+
+        case Repo.delete_all(query) do
+          {1, [name]} ->
+            Audit.log(scope, "box.join_token_cancelled", {"Box", name}, %{})
+            {:ok, :ok}
+
+          _ ->
+            {:error, :not_found}
+        end
+      end)
+      |> case do
+        {:ok, :ok} -> :ok
+        error -> error
+      end
+    else
+      {:error, :unauthorized}
+    end
+  end
+
+  @doc """
+  A short fingerprint of a join token, from its hash: shown when it's
+  made and in `pending_join_tokens/2`, to tell two for one name apart.
+  """
+  def token_fingerprint(raw) when is_binary(raw), do: fingerprint(hash(raw))
+
+  defp fingerprint(hash), do: hash |> binary_part(0, 4) |> Base.encode16(case: :lower)
+
+  @doc """
+  For admins: tokens that can still enroll a box, newest first, without
+  the token itself. `except:` leaves out one by its raw value (the one a
+  page has on show).
+  """
+  def pending_join_tokens(%Scope{} = scope, opts \\ []) do
+    now = Keyword.get(opts, :now, DateTime.utc_now())
+    except = if raw = opts[:except], do: hash(raw), else: <<>>
+
+    if Scope.admin?(scope) do
+      Repo.all(
+        from t in JoinToken,
+          where: is_nil(t.used_at) and t.expires_at > ^now and t.token_hash != ^except,
+          # As valid_join_token_row/1 has it: a type that can still enroll,
+          # for a name no box has.
+          where: t.box_type in ^Box.types(),
+          where: t.box_name not in subquery(from(b in Box, select: b.name)),
+          order_by: [desc: t.inserted_at],
+          select: %{
+            id: t.id,
+            box_name: t.box_name,
+            box_type: t.box_type,
+            expires_at: t.expires_at,
+            hash: t.token_hash
+          }
+      )
+      |> Enum.map(fn t ->
+        t |> Map.put(:fingerprint, fingerprint(t.hash)) |> Map.delete(:hash)
+      end)
+    else
+      []
+    end
+  end
+
+  @doc """
+  Hourly: a token past its hour that never enrolled a box goes, and one
+  that did (kept for the box's disks, `disks/1`) loses its Tailscale key.
+  None holds a key it can no longer hand out.
+  """
+  def prune_join_tokens(now \\ DateTime.utc_now()) do
+    Repo.delete_all(from t in JoinToken, where: is_nil(t.box_id) and t.expires_at < ^now)
+
+    Repo.update_all(
+      from(t in JoinToken, where: t.expires_at < ^now and not is_nil(t.tailscale_auth_key)),
+      set: [tailscale_auth_key: nil]
+    )
+
+    :ok
+  end
+
   # SSH keys, given as a list or one per line.
   defp split_keys(keys) when is_list(keys),
     do: keys |> Enum.filter(&is_binary/1) |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
@@ -252,14 +348,15 @@ defmodule Crew.Boxes do
     now = DateTime.utc_now()
 
     Repo.transact(fn ->
-      with :ok <- lock_name(raw_token),
+      # The key first: a bad one says nothing about the token.
+      with {:ok, public_key} <- decode_key(attrs["public_key"]),
+           :ok <- lock_name(raw_token),
            {:ok, token} <- claim_token(raw_token, now),
-           {:ok, public_key} <- decode_key(attrs["public_key"]),
            {:ok, box} <- upsert_enrolled_box(token, public_key, attrs) do
         token |> Ecto.Changeset.change(box_id: box.id) |> Repo.update!()
         spend_siblings(token, now)
 
-        Audit.log(nil, "box.enroll", box, %{"agent_version" => attrs["agent_version"]})
+        Audit.log(nil, "box.enroll", box, %{"agent_version" => box.agent_version})
         disconnect(box)
         Activity.record("box_joined", "#{box.name} enrolled", box_id: box.id)
         {:ok, changed(box)}
@@ -412,7 +509,15 @@ defmodule Crew.Boxes do
 
   defp valid_join_token_row(_), do: nil
 
-  defp box_tailscale_key(%JoinToken{tailscale_auth_key: key}) when is_binary(key), do: {:ok, key}
+  # The row as it is now, not as the request read it before choosing the
+  # release: cancelled, spent or expired meanwhile, it hands out nothing.
+  defp box_tailscale_key(%JoinToken{tailscale_auth_key: key} = token) when is_binary(key) do
+    case valid_join_token_row(Repo.reload(token)) do
+      %JoinToken{tailscale_auth_key: key} when is_binary(key) -> {:ok, key}
+      %JoinToken{} = fresh -> box_tailscale_key(fresh)
+      nil -> {:error, :invalid_token}
+    end
+  end
 
   defp box_tailscale_key(token),
     do: if(Crew.Tailscale.configured?(), do: mint_box_key(token), else: {:ok, nil})
@@ -434,7 +539,7 @@ defmodule Crew.Boxes do
           set: [tailscale_auth_key: key]
         )
 
-        case valid_join_token_row(Repo.reload!(token)) do
+        case valid_join_token_row(Repo.reload(token)) do
           %JoinToken{tailscale_auth_key: stored} when is_binary(stored) -> {:ok, stored}
           _ -> {:error, :invalid_token}
         end
@@ -576,14 +681,23 @@ defmodule Crew.Boxes do
         type: token.box_type,
         public_key: public_key,
         key_fingerprint: CrewProtocol.Auth.fingerprint(public_key),
-        os: attrs["os"],
-        agent_version: attrs["agent_version"]
+        os: text(attrs["os"]),
+        agent_version: text(attrs["agent_version"])
       )
       # Two tokens for one name racing: the name's index takes one.
       |> Ecto.Changeset.unique_constraint(:name)
       |> Repo.insert()
     end
   end
+
+  # At most 255 code points, as the column holds; nothing that isn't text
+  # a column takes (Postgres refuses a NUL).
+  defp text(value) when is_binary(value) do
+    if String.valid?(value) and not String.contains?(value, <<0>>),
+      do: value |> String.to_charlist() |> Enum.take(255) |> List.to_string()
+  end
+
+  defp text(_), do: nil
 
   defp decode_key(key) when is_binary(key) do
     case Base.decode64(key) do

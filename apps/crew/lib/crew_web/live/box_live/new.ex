@@ -36,8 +36,18 @@ defmodule CrewWeb.BoxLive.New do
        os_disk: nil,
        data_disk: nil,
        disk_layout: nil
-     )}
+     )
+     |> load_pending()}
   end
+
+  # The token on show has its own Cancel, so it isn't listed again.
+  defp load_pending(socket),
+    do:
+      assign(
+        socket,
+        :pending,
+        Boxes.pending_join_tokens(socket.assigns.current_scope, except: socket.assigns[:token])
+      )
 
   @impl true
   def handle_event("change", %{"box" => params}, socket),
@@ -47,14 +57,16 @@ defmodule CrewWeb.BoxLive.New do
     case Boxes.create_join_token(socket.assigns.current_scope, params) do
       {:ok, token} ->
         {:noreply,
-         assign(socket,
+         socket
+         |> assign(
            token: token,
            box_name: params["box_name"],
            box_type: params["box_type"],
            os_disk: params["os_disk"],
            data_disk: if(params["disk_layout"] == "separate", do: params["data_disk"]),
            disk_layout: params["disk_layout"] || "one"
-         )}
+         )
+         |> load_pending()}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :form, to_form(changeset, as: :box))}
@@ -62,6 +74,63 @@ defmodule CrewWeb.BoxLive.New do
       {:error, :unauthorized} ->
         {:noreply, put_flash(socket, :error, "Only admins add boxes.")}
     end
+  end
+
+  def handle_event("cancel_token", _params, %{assigns: %{token: token}} = socket)
+      when is_binary(token) do
+    case Boxes.cancel_join_token(socket.assigns.current_scope, token) do
+      :ok ->
+        {:noreply,
+         socket
+         |> put_flash(:info, cancelled(socket.assigns.box_type))
+         |> back_to_form()}
+
+      {:error, :not_found} ->
+        {:noreply,
+         socket
+         |> back_to_form()
+         |> put_flash(:error, "That token has already enrolled its box, or gone.")}
+
+      {:error, :unauthorized} ->
+        {:noreply, put_flash(socket, :error, "Only admins add boxes.")}
+    end
+  end
+
+  def handle_event("cancel_pending", %{"id" => id}, socket) do
+    type = Enum.find_value(socket.assigns.pending, &(&1.id == id && &1.box_type))
+
+    {kind, text} =
+      case Boxes.cancel_pending_token(socket.assigns.current_scope, id) do
+        :ok -> {:info, cancelled(type)}
+        {:error, :not_found} -> {:error, "That token has already enrolled its box, or gone."}
+        {:error, :unauthorized} -> {:error, "Only admins add boxes."}
+      end
+
+    {:noreply, socket |> load_pending() |> put_flash(kind, text)}
+  end
+
+  # A Flatcar box's first-boot config, once downloaded, holds a Tailscale
+  # key that cancelling the token here doesn't revoke.
+  defp cancelled(type) when type in ["linux-vm", "linux-metal"],
+    do:
+      "Cancelled the join token. Nothing can enroll with it. If its first-boot config may " <>
+        "have been downloaded, revoke its Tailscale key in Tailscale's admin console, and " <>
+        "remove any machine it already joined to the tailnet (Machines)."
+
+  defp cancelled(_), do: "Cancelled the join token. Nothing can enroll with it."
+
+  # A fresh form: nothing the last one held, a pasted Tailscale key above
+  # all, goes into the next token.
+  defp back_to_form(socket) do
+    socket
+    |> assign(
+      token: nil,
+      box_name: nil,
+      box_type: nil,
+      form:
+        to_form(%{"box_name" => "", "box_type" => socket.assigns.box_type || "mac-vz"}, as: :box)
+    )
+    |> load_pending()
   end
 
   defp types, do: @types
@@ -278,6 +347,36 @@ defmodule CrewWeb.BoxLive.New do
         </.form>
       </.panel>
 
+      <.panel :if={@pending != []} id="pending-tokens" title="Join tokens still waiting">
+        <:subtitle>
+          Each enrolls one box until it expires. Cancel one that was made by mistake, or may have leaked.
+        </:subtitle>
+        <ul class="divide-y divide-line text-sm">
+          <li
+            :for={t <- @pending}
+            id={"pending-#{t.id}"}
+            class="flex items-center justify-between gap-3 py-2"
+          >
+            <span>
+              <span class="font-mono">{t.box_name}</span>
+              <span class="text-ink-3">
+                · {t.box_type} · <span class="font-mono">{t.fingerprint}</span>
+                · expires {Calendar.strftime(t.expires_at, "%H:%M UTC")}
+              </span>
+            </span>
+            <.button
+              size="sm"
+              variant="ghost"
+              phx-click="cancel_pending"
+              phx-value-id={t.id}
+              data-confirm={"Cancel #{t.box_name}'s join token #{t.fingerprint}? Nothing can enroll with it after."}
+            >
+              Cancel
+            </.button>
+          </li>
+        </ul>
+      </.panel>
+
       <.panel :if={@token} id="join-instructions" title={"Add #{@box_name}"}>
         <:subtitle>
           Compare the release key's fingerprint with the one in Crew's README and release notes first.
@@ -358,6 +457,24 @@ defmodule CrewWeb.BoxLive.New do
             </p>
             <.command id="join-token" command={@token} />
         <% end %>
+
+        <p id="join-fingerprint" class="mt-4 text-xs text-ink-3">
+          Its fingerprint, to tell it apart in the list of tokens still waiting:
+          <span class="font-mono">{Boxes.token_fingerprint(@token)}</span>
+        </p>
+
+        <div class="mt-6 border-t border-line pt-4">
+          <.button
+            id="cancel-token"
+            size="sm"
+            variant="ghost"
+            phx-click="cancel_token"
+            data-confirm="Cancel this join token? Nothing can enroll with it after."
+          >
+            Cancel this token
+          </.button>
+          <span class="ml-2 text-xs text-ink-3">If it was made by mistake. Unused, it expires in an hour anyway.</span>
+        </div>
 
         <div :if={Crew.Config.dev?()} id="dev-command" class="mt-6">
           <p class="mb-2 text-sm text-ink-2">Development: run an agent here with the null driver.</p>

@@ -65,6 +65,8 @@ config :crew, Oban,
        {"27 * * * *", Crew.Jobs.Prune},
        # §9.4: box, VM and cache samples, 7 days.
        {"47 * * * *", Crew.Metrics.Prune},
+       # §10.2: join tokens past their hour, and their Tailscale keys.
+       {"7 * * * *", Crew.Boxes.PruneTokens},
        # §16.6: closed days' usage, kept forever.
        {"53 * * * *", Crew.Usage.Rollup},
        # §13.1: actions/runner's releases, for the runner's freshness.
