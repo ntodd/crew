@@ -84,6 +84,37 @@ defmodule Crew.UsageSummaryTest do
       assert s.totals.busy_s >= 59
     end
 
+    test "GitHub spend matches Linux VM capacity and public repo pricing using rounded job minutes",
+         %{repo: private, box: arm} do
+      public = repo_fixture(private: false)
+      x64 = box_fixture(capabilities: capabilities(%{guest_arch: "x64"}))
+      day = Date.add(today(), -1)
+      scope = admin()
+
+      # Two short jobs bill two minutes even though their combined runtime is under one.
+      for _ <- 1..2, do: ran_fixture(arm, private, day, 20, vcpus: 2, memory_mib: 8192)
+      ran_fixture(x64, private, day, 61, vcpus: 2, memory_mib: 8192)
+      ran_fixture(x64, public, day, 600, vcpus: 4, memory_mib: 16_384)
+      # Memory alone can require a larger, paid VM even on a public repo.
+      ran_fixture(arm, public, day, 121, vcpus: 2, memory_mib: 16_385)
+      ran_fixture(arm, private, day, 61, vcpus: 64, memory_mib: 208 * 1024 + 1)
+      job_row_fixture(private, started_at: at(day, 0), completed_at: at(day, 60))
+
+      estimate = Usage.summary(scope, day, day).github_spend
+      assert estimate.mills == 2 * 5 + 2 * 6 + 3 * 14
+      assert estimate.unmatched_minutes == 3
+
+      assert estimate.runners == [
+               %{arch: "arm64", cores: 2, minutes: 2, rate_mills: 5, mills: 10},
+               %{arch: "arm64", cores: 8, minutes: 3, rate_mills: 14, mills: 42},
+               %{arch: "x64", cores: 2, minutes: 2, rate_mills: 6, mills: 12},
+               %{arch: "x64", cores: 4, minutes: 10, rate_mills: 0, mills: 0}
+             ]
+
+      Usage.roll_up()
+      assert Usage.summary(scope, day, day).github_spend == estimate
+    end
+
     test "older days not yet rolled up are pending, not zero", %{repo: repo, box: box} do
       ran_fixture(box, repo, Date.add(today(), -10), 600)
 
