@@ -1,7 +1,7 @@
 #!/bin/sh
 # Flatcar registry cache for mac-vz workers on Apple silicon (§12.3).
 # install-macos.sh --cache-vm uses the box's join token to provision it.
-#   curl -fsSL __CREW_URL__/agent/mac-cache-vm.sh | sudo sh -s -- --role cache --token cj_...
+#   curl -fsSL __CREW_URL__/agent/mac-cache-vm.sh | sudo sh -s -- --role cache --token-file F
 # An update (--role cache, without a token) preserves the sparse disks,
 # SSH key and management token. Defaults: 2 CPUs, 4 GiB RAM, 12 GiB OS
 # and 100 GiB data. crew-box manages the installed cache by name: cachevm.
@@ -339,6 +339,7 @@ esac
 # -- install or update ---------------------------------------------------------
 
 TOKEN=""
+TOKEN_FILE=""
 CPUS=""
 MEMORY=""
 DISK=12
@@ -348,7 +349,10 @@ ROLE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    # Anyone on this Mac can see an argument in ps: --token-file keeps it
+    # off the command line.
     --token) TOKEN="$2"; shift 2 ;;
+    --token-file) TOKEN_FILE="$2"; shift 2 ;;
     --cpus) CPUS="$2"; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
@@ -360,9 +364,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ -n "$TOKEN_FILE" ]; then
+  TOKEN=$(head -n 1 "$TOKEN_FILE" 2>/dev/null | tr -d '[:space:]')
+  [ -n "$TOKEN" ] || fail "can't read the join token from $TOKEN_FILE"
+fi
+
 [ "$(uname -s)" = Darwin ] || fail "this is for macOS; on Linux use linux-vm.sh"
 [ "$ROLE" = cache ] || fail "mac-vm workers are retired; choose mac-vz in Add box. For its cache VM use --role cache."
-[ "$(id -u)" -eq 0 ] || fail "run this as root: curl ... | sudo sh -s -- --token ..."
+[ "$(id -u)" -eq 0 ] || fail "run this as root: sudo sh mac-cache-vm.sh --role cache --token-file ..."
 for n in CPUS MEMORY DISK DATA; do
   eval "v=\${$n}"
   # shellcheck disable=SC2154
@@ -486,8 +495,10 @@ mac=$(od -An -N3 -tx1 /dev/urandom | tr -s ' ' ':' | sed 's/^/52:54:00/; s/:$//'
 # First, so a bad token fails before anything is downloaded.
 say "asking $CREW_URL for the cache VM's first-boot config"
 endpoint="$CREW_URL/agent/flatcar/cachevm/ignition"
+# Handed to curl as a file, not an argument.
+(umask 077 && printf '%s' "$TOKEN" >"$work/join-token")
 code=$(curl -sS -D "$work/headers" -o "$work/config.ign" -w '%{http_code}' \
-  -X POST "$endpoint" --data-urlencode "join_token=$TOKEN" \
+  -X POST "$endpoint" --data-urlencode "join_token@$work/join-token" \
   --data-urlencode "ssh_keys[]=$(cat "$work/id_ed25519.pub")" </dev/null) || fail "couldn't reach $CREW_URL"
 [ "$code" = 200 ] || fail "Crew said $code: $(cat "$work/config.ign")"
 # A response header's value (names are case-insensitive).

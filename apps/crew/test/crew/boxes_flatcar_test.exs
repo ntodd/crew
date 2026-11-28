@@ -139,6 +139,33 @@ defmodule Crew.BoxesFlatcarTest do
       assert file(config, "/etc/crew-box/tailscale-authkey") == "tskey-auth-pasted-1234"
     end
 
+    test "a key minted while the box enrolled isn't kept or handed out", %{admin: admin} do
+      Application.put_env(:crew, :tailscale, %{
+        client_id: "kXYZ",
+        client_secret: "tskey-client-s",
+        tailnet: "-"
+      })
+
+      on_exit(fn -> Application.delete_env(:crew, :tailscale) end)
+      raw = token(admin, %{})
+
+      Req.Test.stub(Crew.Tailscale, fn conn ->
+        case conn.request_path do
+          "/api/v2/oauth/token" ->
+            Req.Test.json(conn, %{"access_token" => "tok", "expires_in" => 3600})
+
+          "/api/v2/tailnet/-/keys" ->
+            # The box enrolls while Tailscale makes the key.
+            {public, _} = CrewProtocol.Auth.generate_keypair()
+            {:ok, _} = Boxes.enroll(raw, %{"public_key" => Base.encode64(public)})
+            Req.Test.json(conn, %{"key" => "tskey-auth-late", "id" => "k1"})
+        end
+      end)
+
+      assert {:error, :invalid_token} = Boxes.flatcar_ignition(raw, %{"arch" => "arm64"})
+      assert Repo.one(from t in JoinToken, select: t.tailscale_auth_key) == nil
+    end
+
     test "is minted once with the OAuth client, and forgotten at enrollment", %{admin: admin} do
       Application.put_env(:crew, :tailscale, %{
         client_id: "kXYZ",
@@ -416,9 +443,9 @@ defmodule Crew.BoxesFlatcarTest do
     end
   end
 
-  # The token that enrolled the box last says how it's laid out, whichever
-  # was made first: two made within the hour, the older one used later.
-  test "a box's disks are the last-used token's", %{admin: admin} do
+  # The token that enrolled the box says how it's laid out. Another made
+  # for the same name meanwhile can't enroll it again with its own layout.
+  test "a box's disks are the token's that enrolled it", %{admin: admin} do
     first =
       token(admin, %{"box_name" => "metal", "box_type" => "linux-metal", "os_disk" => @os_disk})
 
@@ -431,8 +458,11 @@ defmodule Crew.BoxesFlatcarTest do
         "data_disk" => "/dev/sdb"
       })
 
-    enroll(second)
     box = enroll(first)
+    {public, _} = CrewProtocol.Auth.generate_keypair()
+
+    assert {:error, :invalid_token} =
+             Boxes.enroll(second, %{"public_key" => Base.encode64(public)})
 
     assert Boxes.disks(box).disk_layout == "one"
   end

@@ -150,9 +150,14 @@ own code (see Known gaps).
   before are refused, and failures are rate-limited per client.
 - A fixed command and event vocabulary, validated by `CrewProtocol` on
   both sides. An agent reports only on its own box's VMs and operations.
-- Capabilities are pinned at enrollment; a later report that grows
-  past them needs an admin's approval, so a stolen key can't claim a huge
-  box and draw in the fleet's jobs.
+- Capabilities are pinned at enrollment, and an admin accepts them before
+  the box gets jobs; a later report that grows past them needs an admin's
+  approval again. So neither whoever spends a join token nor a stolen key
+  can claim a huge box and draw in the fleet's jobs.
+- A join token only makes a new box: it can't re-key one that's enrolled,
+  which would keep that box's repos' trust (`allowed_boxes`).
+- Launchers never put the join token on a command line (`ps`): they ask
+  for it on the terminal or read a file.
 - No distributed Erlang anywhere (`RELEASE_DISTRIBUTION=none`).
 
 ### Webhooks

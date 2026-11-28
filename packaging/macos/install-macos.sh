@@ -1,8 +1,13 @@
 #!/bin/sh
 # Installs a mac-vz box (§10.2, §11.4) and enrolls it with Crew.
 #
-#   sudo ./install-macos.sh --url wss://crew.example.ts.net/agent/websocket --token cj_... \
+#   sudo ./install-macos.sh --url wss://crew.example.ts.net/agent/websocket \
 #     --release-key <base64>
+#
+# It asks for the join token on the terminal, so the token is on no
+# command line anyone on the Mac could read in ps, or in the shell's
+# history. --token-file reads it from a file instead (stdin for -).
+# (--token still works, for older instructions.)
 #
 # Run from the unpacked darwin release (packaging/release/build-darwin.sh):
 # the agent's release, with bin/crew-vz, bin/crew-launch, share/sandbox.sb,
@@ -55,6 +60,11 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --url) URL="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
+    --token-file)
+      if [ "$2" = - ]; then TOKEN=$(head -n 1 | tr -d '[:space:]')
+      else TOKEN=$(head -n 1 "$2" 2>/dev/null | tr -d '[:space:]'); fi
+      [ -n "$TOKEN" ] || { echo "no join token in $2" >&2; exit 64; }
+      shift 2 ;;
     --name) NAME="$2"; shift 2 ;;
     --release-key) KEY="$2"; shift 2 ;;
     --data-dir) DATA="$2"; shift 2 ;;
@@ -71,6 +81,28 @@ done
 fail() { echo "crew: $*" >&2; exit 1; }
 say() { echo "crew: $*"; }
 
+# Reads the join token from the terminal, with echo off, and puts the
+# terminal back however the read ends. Without a terminal, TOKEN stays
+# empty. CREW_INSTALL_TTY stands in for /dev/tty in the tests.
+ask_token() {
+  tty="${CREW_INSTALL_TTY:-/dev/tty}"
+  (: <"$tty") 2>/dev/null || return 0
+  saved=""
+  if [ -c "$tty" ]; then
+    saved=$(stty -g <"$tty") || fail "can't read the terminal's settings"
+    trap 'stty "$saved" <"$tty" 2>/dev/null; exit 130' INT TERM HUP
+    stty -echo <"$tty" || fail "can't turn the terminal's echo off for the token"
+  fi
+  printf 'Join token (from Add box in Crew): ' >&2
+  IFS= read -r TOKEN <"$tty" || true
+  if [ -n "$saved" ]; then
+    stty "$saved" <"$tty"
+    trap - INT TERM HUP
+  fi
+  printf '\n' >&2
+  TOKEN=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+}
+
 # Every change goes through run, so --dry-run shows it instead.
 run() {
   if [ -n "$DRY" ]; then
@@ -85,11 +117,12 @@ put() {
   path="$1"; mode="$2"; owner="$3"
   if [ -n "$DRY" ]; then
     # CREW_DRY_RUN_OUT keeps what would be written, for the installer's test.
+    # The join token isn't shown: a dry run doesn't spend it.
     if [ -n "${CREW_DRY_RUN_OUT:-}" ]; then
-      tee "$CREW_DRY_RUN_OUT/$(basename "$path")" | sed "s|^|    |; 1i\\
+      tee "$CREW_DRY_RUN_OUT/$(basename "$path")" | sed "s|^CREW_JOIN_TOKEN=.*|CREW_JOIN_TOKEN=(not shown)|; s|^|    |; 1i\\
 + write $path ($mode $owner):"
     else
-      echo "+ write $path ($mode $owner):"; sed 's/^/    /'
+      echo "+ write $path ($mode $owner):"; sed "s|^CREW_JOIN_TOKEN=.*|CREW_JOIN_TOKEN=(not shown)|; s|^|    |"
     fi
   else
     tmp="$path.tmp.$$"
@@ -150,7 +183,8 @@ identity="$DATA/agent/identity.json"
 enroll=1
 if [ -s "$identity" ] && [ -z "$REENROLL" ]; then enroll=""; fi
 if [ -n "$enroll" ]; then
-  [ -n "$TOKEN" ] || fail "--token is required (Add box on Crew's Boxes page makes one)"
+  [ -n "$TOKEN" ] || ask_token
+  [ -n "$TOKEN" ] || fail "a join token is required (Add box on Crew's Boxes page makes one): run this on a terminal to be asked for it, or pass --token-file"
   [ -n "$URL" ] || fail "--url is required"
   case "$URL" in wss://*) ;; *) fail "--url must be wss:// (the agent only talks TLS)" ;; esac
 fi
@@ -253,8 +287,14 @@ if [ -n "$CACHE_VM" ] && [ ! -f "$cache_conf" ]; then
   launcher=$(mktemp)
   say "making the cache VM (mac-cache-vm.sh --role cache from $base)"
   run curl -fsSL -o "$launcher" "$base/agent/mac-cache-vm.sh"
-  run sh "$launcher" --role cache --token "$TOKEN"
-  run rm -f "$launcher"
+  # In a file (mktemp's are 0600), not an argument anyone on the Mac could
+  # read in ps while the cache VM boots; gone however the launcher ends.
+  token_file=$(mktemp)
+  trap 'rm -f "$token_file"' EXIT
+  trap 'exit 130' INT TERM HUP
+  [ -n "$DRY" ] || printf '%s' "$TOKEN" > "$token_file"
+  run sh "$launcher" --role cache --token-file "$token_file"
+  run rm -f "$launcher" "$token_file"
 fi
 cache_mac=""
 cache_token=""

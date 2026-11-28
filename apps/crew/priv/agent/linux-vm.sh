@@ -5,8 +5,13 @@
 # plane; Flatcar keeps itself up to date after that, and the box's job VMs
 # run inside it, apart from this machine.
 #
-#   curl -fsSL __CREW_URL__/agent/linux-vm.sh | sudo sh -s -- --token cj_...
+#   curl -fsSL __CREW_URL__/agent/linux-vm.sh | sudo sh -s
 #
+# It asks for the box's join token (Add box in Crew makes one) on the
+# terminal, so the token never goes on a command line, where anyone on
+# this machine could read it while the box boots.
+#
+#   --token-file F  read the join token from F instead (no terminal)
 #   --cpus N        virtual CPUs (default: half this machine's)
 #   --memory GiB    memory (default: half this machine's, at most 16)
 #   --disk GiB      the OS disk (default 12)
@@ -55,6 +60,30 @@ fail() { echo "crew-box: $*" >&2; exit 1; }
 trap 'exit 130' INT TERM HUP
 
 conf() { sed -n "s/^$1=//p" "$DIR/box.conf" 2>/dev/null | tail -1; }
+
+# Reads the join token from the terminal, with echo off, and puts the
+# terminal back however the read ends. Without a terminal, TOKEN stays
+# empty. (The probe is a subshell: dash exits on a failed redirection of
+# a builtin.)
+ask_token() {
+  tty="$ROOT/dev/tty"
+  (: <"$tty") 2>/dev/null || return 0
+  saved=""
+  if [ -c "$tty" ]; then
+    saved=$(stty -g <"$tty") || fail "can't read the terminal's settings"
+    trap 'stty "$saved" <"$tty" 2>/dev/null; exit 130' INT TERM HUP
+    stty -echo <"$tty" || fail "can't turn the terminal's echo off for the token"
+  fi
+  # Only once the echo is off, so a quick paste doesn't show.
+  printf 'Join token (from Add box in Crew): ' >&2
+  IFS= read -r TOKEN <"$tty" || true
+  if [ -n "$saved" ]; then
+    stty "$saved" <"$tty"
+    trap 'exit 130' INT TERM HUP
+  fi
+  printf '\n' >&2
+  TOKEN=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+}
 
 # Prints the box's `crew-box: ` lines from its serial console as they
 # come, until one matches the pattern, for up to 10 minutes.
@@ -257,6 +286,7 @@ esac
 # -- install or update ---------------------------------------------------------
 
 TOKEN=""
+TOKEN_FILE=""
 CPUS=""
 MEMORY=""
 DISK=12
@@ -265,7 +295,9 @@ SSH_PORT=2222
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    # Still taken, for older instructions; anyone here can see it in ps.
     --token) TOKEN="$2"; shift 2 ;;
+    --token-file) TOKEN_FILE="$2"; shift 2 ;;
     --cpus) CPUS="$2"; shift 2 ;;
     --memory) MEMORY="$2"; shift 2 ;;
     --disk) DISK="$2"; shift 2 ;;
@@ -350,7 +382,15 @@ cleanup() {
 trap cleanup EXIT
 
 if [ -n "$new" ]; then
-  [ -n "$TOKEN" ] || fail "--token is required (Add box in Crew makes one)"
+  if [ -n "$TOKEN_FILE" ]; then
+    TOKEN=$(head -n 1 "$TOKEN_FILE" 2>/dev/null | tr -d '[:space:]') ||
+      fail "can't read the join token from $TOKEN_FILE"
+  elif [ -z "$TOKEN" ]; then
+    ask_token
+  fi
+  [ -n "$TOKEN" ] || fail "a join token is required (Add box in Crew makes one): run this on a terminal to be asked for it, or pass --token-file"
+  # Kept to this run, and handed to curl as a file, not an argument.
+  (umask 077 && printf '%s' "$TOKEN" >"$work/join-token")
 
   cores=$(nproc)
   mem_gib=$(($(sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' "$ROOT/proc/meminfo") / 1048576))
@@ -374,7 +414,7 @@ if [ -n "$new" ]; then
   say "asking $CREW_URL for the box's first-boot config"
   code=$(curl -sS -D "$work/headers" -o "$work/config.ign" -w '%{http_code}' \
     -X POST "$CREW_URL/agent/flatcar/ignition" \
-    --data-urlencode "join_token=$TOKEN" --data-urlencode "arch=$arch" \
+    --data-urlencode "join_token@$work/join-token" --data-urlencode "arch=$arch" \
     --data-urlencode "ssh_keys[]=$(cat "$work/id_ed25519.pub")" </dev/null) || fail "couldn't reach $CREW_URL"
   [ "$code" = 200 ] || fail "Crew said $code: $(cat "$work/config.ign")"
   name=$(tr -d '\r' < "$work/headers" | sed -n 's/^[Xx]-[Cc]rew-[Bb]ox: *//p' | tail -1)

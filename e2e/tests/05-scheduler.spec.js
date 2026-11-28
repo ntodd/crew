@@ -4,7 +4,7 @@
 // fake guest runs it and powers off. Every job must succeed, on a Crew
 // VM, with no VM left behind.
 import { expect, test } from "@playwright/test"
-import { addBox, fakePost, fakeState, shot, signIn, startAgent, stopAgent } from "./helpers.js"
+import { addBox, approveBox, fakePost, fakeState, shot, signIn, startAgent, stopAgent } from "./helpers.js"
 
 const layer = "05-scheduler"
 const repo = "mona/sched"
@@ -18,6 +18,7 @@ async function onlineBox(page, name) {
   agents.push(startAgent(token, { name }))
   await page.goto("/boxes")
   await expect(page.locator("[id^=box-]", { hasText: name })).toContainText("Online", { timeout: 180_000 })
+  await approveBox(page, name)
 }
 
 async function openBox(page, name) {

@@ -16,7 +16,7 @@ defmodule Crew.Boxes.LauncherTest do
       assert script =~ ~s(CREW_URL="#{@url}")
       assert script =~ ~s(FLATCAR_VERSION="#{Flatcar.pins()["FLATCAR_VERSION"]}")
 
-      assert script =~ "curl -fsSL #{@url}/agent/#{unquote(type)}.sh | sudo sh -s --"
+      assert script =~ "curl -fsSL #{@url}/agent/#{unquote(type)}.sh | sudo sh -s"
 
       path =
         Path.join(

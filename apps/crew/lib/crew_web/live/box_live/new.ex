@@ -124,7 +124,7 @@ defmodule CrewWeb.BoxLive.New do
     </p>
     <.command
       id={@fetch_id}
-      command={"(umask 077; f=crew-#{@box_name}.ign; rm -f \"$f.new\" && curl -fsSL -X POST -d join_token=#{@token} -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o \"$f.new\" && mv -f \"$f.new\" \"$f\")"}
+      command={"(umask 077; f=crew-#{@box_name}.ign; s=$(stty -g 2>/dev/null); trap 'stty \"$s\" 2>/dev/null' EXIT; trap 'exit 130' INT; stty -echo 2>/dev/null; printf 'Join token: '; read -r t; stty \"$s\" 2>/dev/null; echo; rm -f \"$f.new\" && printf %s \"$t\" | curl -fsSL -X POST --data-urlencode join_token@- -d arch=amd64 #{Crew.Config.base_url()}/agent/flatcar/ignition -o \"$f.new\" && mv -f \"$f.new\" \"$f\")"}
     />
     <p class="mb-2 mt-4 text-sm text-ink-2">
       Then, from Flatcar's live image, install it to the OS disk{if @data_disk?,
@@ -300,8 +300,12 @@ defmodule CrewWeb.BoxLive.New do
             </ol>
             <.command
               id="join-command"
-              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --token #{@token} --name #{@box_name}#{release_key_option()} --cache-vm"}
+              command={"sudo ./install-macos.sh --url #{agent_url()}/agent/websocket --name #{@box_name}#{release_key_option()} --cache-vm"}
             />
+            <p class="mt-3 mb-2 text-sm text-ink-2">
+              When it asks, paste the join token. It goes on no command line on the Mac, or in its shell's history.
+            </p>
+            <.command id="join-token" command={@token} />
             <p id="cache-vm-note" class="mt-3 text-xs text-ink-3">
               <span class="font-mono">--cache-vm</span>
               first makes the box's registry cache: a small Flatcar VM on the same Mac (2 CPUs, 4 GiB, a 100 GiB sparse data disk) that its job VMs pull images through.
@@ -312,10 +316,15 @@ defmodule CrewWeb.BoxLive.New do
             <p class="mb-2 text-sm text-ink-2">On the host, run:</p>
             <.command
               id="join-command"
-              command={"curl -fsSL #{Crew.Config.base_url()}/agent/linux-vm.sh | sudo sh -s -- --token #{@token}"}
+              command={"curl -fsSL #{Crew.Config.base_url()}/agent/linux-vm.sh | sudo sh -s"}
             />
+            <p class="mt-3 mb-2 text-sm text-ink-2">
+              When it asks, paste the join token. It never goes on the host's command line, where anyone on it could read it.
+            </p>
+            <.command id="join-token" command={@token} />
             <p class="mt-3 text-xs text-ink-3">
-              It takes <span class="font-mono">--cpus N</span>,
+              It takes <span class="font-mono">--token-file FILE</span>
+              (no terminal), <span class="font-mono">--cpus N</span>,
               <span class="font-mono">--memory GiB</span>
               and <span class="font-mono">--data GiB</span>
               (the data disk, 200 by default, at least 100). It prints the box's progress until it has enrolled.
@@ -344,6 +353,10 @@ defmodule CrewWeb.BoxLive.New do
               data_disk?={@disk_layout == "separate"}
               data_disk={@data_disk}
             />
+            <p class="mt-3 mb-2 text-sm text-ink-2">
+              The join token, for the fetch when it asks:
+            </p>
+            <.command id="join-token" command={@token} />
         <% end %>
 
         <div :if={Crew.Config.dev?()} id="dev-command" class="mt-6">

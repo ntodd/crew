@@ -54,7 +54,9 @@ defmodule Crew.Boxes.LauncherInstallTest do
         -D) hdr=$2; shift 2 ;;
         -w) fmt=$2; shift 2 ;;
         -X | -H | --max-time | --retry | --retry-delay | --unix-socket) shift 2 ;;
-        --data-urlencode) echo "data $2" >> "#{ctx.state}/curl.log"; shift 2 ;;
+        --data-urlencode)
+          case "$2" in *@*) cp "${2#*@}" "#{ctx.state}/sent.${2%%@*}" ;; esac
+          echo "data $2" >> "#{ctx.state}/curl.log"; shift 2 ;;
         -*) shift ;;
         *) url=$1; shift ;;
       esac
@@ -182,6 +184,27 @@ defmodule Crew.Boxes.LauncherInstallTest do
           [{"PATH", ctx.bin <> ":" <> System.get_env("PATH")}, {"CREW_BOX_ROOT", ctx.root}] ++ env,
         stderr_to_stdout: true
       )
+    end
+
+    test "the cache VM's join token stays off curl's command line, and can come from a file",
+         ctx do
+      file = Path.join(ctx.state, "token")
+      File.write!(file, "cj_test\n")
+
+      {out, status} =
+        System.cmd("sh", [ctx.launcher, "--role", "cache", "--token-file", file],
+          env: [
+            {"PATH", ctx.bin <> ":" <> System.get_env("PATH")},
+            {"CREW_BOX_ROOT", ctx.root},
+            {"STUB_CHIP", "Apple M1 Ultra"}
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, out
+      log = File.read!(Path.join(ctx.state, "curl.log"))
+      assert log =~ ~r/data join_token@\S+/
+      refute log =~ "cj_test"
     end
 
     test "--role cache makes a mac-vz box's cache VM, on any Apple silicon", ctx do
@@ -446,6 +469,72 @@ defmodule Crew.Boxes.LauncherInstallTest do
       assert File.read!(Path.join(ctx.state, "curl.log")) =~ "data arch=amd64"
       # Spent: the token and the Tailscale key.
       refute File.exists?(Path.join(ctx.box, "config.ign"))
+    end
+
+    test "the join token stays off every command line", ctx do
+      {out, status} = linux_install(ctx)
+      assert status == 0, out
+      log = File.read!(Path.join(ctx.state, "curl.log"))
+      assert log =~ ~r/data join_token@\S+/
+      refute log =~ "cj_test"
+      assert File.read!(Path.join(ctx.state, "sent.join_token")) == "cj_test"
+    end
+
+    test "--token-file reads the token from a file", ctx do
+      file = Path.join(ctx.state, "token")
+      File.write!(file, "cj_test\n")
+
+      {out, status} =
+        System.cmd("sh", [ctx.launcher, "--token-file", file, "--data", "100"],
+          env: [
+            {"PATH", ctx.bin <> ":" <> System.get_env("PATH")},
+            {"CREW_BOX_ROOT", ctx.root},
+            {"STUB_BOX_DIR", ctx.box}
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, out
+      assert out =~ "done: devbox"
+      assert File.read!(Path.join(ctx.state, "sent.join_token")) == "cj_test"
+    end
+
+    test "without --token it asks for it on the terminal", ctx do
+      File.mkdir_p!(Path.join(ctx.root, "dev"))
+      File.write!(Path.join(ctx.root, "dev/tty"), "cj_test\n")
+
+      {out, status} =
+        System.cmd("sh", [ctx.launcher, "--data", "100"],
+          env: [
+            {"PATH", ctx.bin <> ":" <> System.get_env("PATH")},
+            {"CREW_BOX_ROOT", ctx.root},
+            {"STUB_BOX_DIR", ctx.box}
+          ],
+          stderr_to_stdout: true
+        )
+
+      assert status == 0, out
+      assert out =~ "Join token"
+      assert out =~ "done: devbox"
+      refute File.read!(Path.join(ctx.state, "curl.log")) =~ "cj_test"
+      assert File.read!(Path.join(ctx.state, "sent.join_token")) == "cj_test"
+    end
+
+    for shell <- ["sh", "dash"] do
+      test "with no token and nowhere to ask for one, #{shell} says how to give it", ctx do
+        {out, status} =
+          System.cmd(unquote(shell), [ctx.launcher, "--data", "100"],
+            env: [
+              {"PATH", ctx.bin <> ":" <> System.get_env("PATH")},
+              {"CREW_BOX_ROOT", ctx.root},
+              {"STUB_BOX_DIR", ctx.box}
+            ],
+            stderr_to_stdout: true
+          )
+
+        assert status == 1
+        assert out =~ "--token-file"
+      end
     end
 
     test "a bad token fails before anything is downloaded, and leaves nothing", ctx do

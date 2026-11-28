@@ -3,7 +3,7 @@
 // online with its capabilities and live metrics.
 import { generateKeyPairSync } from "node:crypto"
 import { expect, test } from "@playwright/test"
-import { addBox, shot, signIn, startAgent, stopAgent } from "./helpers.js"
+import { addBox, approveBox, shot, signIn, startAgent, stopAgent } from "./helpers.js"
 
 const layer = "04-agent"
 let agent
@@ -42,6 +42,11 @@ test("a box enrolls, joins and reports", async ({ page }) => {
   await expect(page.locator("#metrics")).toContainText("VMs running", { timeout: 20_000 })
   await expect(page.locator("#inventory")).toContainText("No VMs or images")
   await shot(page, layer, "box")
+
+  // Its first capabilities wait for an admin before it gets jobs.
+  await expect(page.locator("#needs-approval")).toContainText("The agent reports what this box has")
+  await shot(page, layer, "box-needs-approval")
+  await approveBox(page, "devnull")
 })
 
 test("the join token was single use", async ({ request }) => {

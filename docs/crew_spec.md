@@ -984,10 +984,14 @@ with 16 GiB free (largest free: 12 GiB on m3max)".
 | `max_vms` | unset |
 | `spare_pct` | unset (50): the share spare jobs may use (above) |
 
-- **Capabilities are pinned at enrollment** (§19.2 #6). A later report that
-  changes `guest_arch` or `driver`, or moves `vcpus`, `memory_mib` or
-  `vm_area_mib` by more than 10%, puts the box in `needs_approval` (no
-  placements) until an admin accepts it on the box page (audit-logged).
+- **Capabilities are pinned at enrollment** (§19.2 #6). The first report is
+  pinned and puts the box in `needs_approval` (no placements) until an
+  admin accepts it on the box page (audit-logged), so whoever spends a join
+  token can't claim a huge box and draw in the fleet's jobs. So does a
+  later report that changes `guest_arch` or `driver`, or moves `vcpus`,
+  `memory_mib` or `vm_area_mib` by more than 10%. The box page lists
+  everything the report would pin, and Accept is for that report: one
+  the box sent while the admin looked isn't accepted.
 
 **Worked example** (a fixed test in `Crew.Scheduler.PlanTest`): 30 queued
 `crew-m` jobs (4 vCPU, 8 GiB, 60 GiB) from one repo.
@@ -1352,8 +1356,17 @@ and registers the public key with the token.
 - **`mac-vz` boxes:** the Add box page shows the steps (§20.2):
   1. download the darwin tarball from the GitHub release;
   2. verify it with the published key fingerprint;
-  3. run `sudo ./install-macos.sh --url … --token …`.
-- **Capabilities are pinned at enrollment** (§8.3).
+  3. run `sudo ./install-macos.sh --url …`, which asks for the join token
+     (so it's on no command line, or in the shell's history, on the Mac).
+- **Capabilities are pinned at enrollment** (§8.3), and the first report
+  waits for an admin before the box gets jobs.
+- **A join token only makes a new box.** Add box refuses a name that
+  belongs to a box already enrolled (or revoked, or retired), and
+  enrollment refuses a token whose name a box took meanwhile (and spends
+  the name's other tokens, so none fetches a first-boot config): a second
+  token would otherwise replace a box's key, and the new key would keep
+  its repos' trust (`allowed_boxes`) and its capacity. A box that's
+  reinstalled from scratch is revoked and enrolled under a new name.
 
 ### 10.3 Commands (control plane → agent)
 
@@ -2024,9 +2037,19 @@ M4 Max. The control plane serves them at `/agent/linux-vm.sh` and
 Flatcar version and its digests filled in. Each is one command:
 
 ```sh
-curl -fsSL https://crew.<tailnet>.ts.net/agent/linux-vm.sh | sudo sh -s -- --token cj_...
-curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-cache-vm.sh   | sudo sh -s -- --role cache --token cj_...
+curl -fsSL https://crew.<tailnet>.ts.net/agent/linux-vm.sh | sudo sh -s
+curl -fsSL https://crew.<tailnet>.ts.net/agent/mac-cache-vm.sh   | sudo sh -s -- --role cache --token-file F
 ```
+
+The join token never goes on a command line, where anyone on the host
+could read it (`ps`) during the minutes the box takes to boot and
+enroll, or in the shell's history. `linux-vm.sh` and `install-macos.sh`
+ask for it on the terminal, with echo off, or read `--token-file`;
+`install-macos.sh` hands it to `mac-cache-vm.sh` in a 0600 file it
+removes however the launcher ends. The Ignition fetch on Add box asks
+for it too, and gives it to curl on stdin. Both give it to curl as a file
+(`--data-urlencode join_token@…`), not an argument. `--token` is still
+taken, for older instructions.
 
 **Shared behaviour:**
 - **Options:** `--cpus N`, `--memory GiB`, `--disk GiB` (OS disk,

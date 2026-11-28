@@ -8,11 +8,12 @@ defmodule Crew.Boxes do
   types. The agent generates its own keypair and enrolls with the
   token, which is then spent; only the public key is stored.
 
-  **Capability pinning (§19.2 #6):** a later report that changes
-  `guest_arch` or `driver`, or moves `vcpus`, `memory_mib` or
-  `vm_area_mib` by more than 10%, puts the box in `needs_approval` until
-  an admin accepts it, so a stolen key can't claim a huge box and draw
-  in the fleet's jobs. Placement uses the pinned values.
+  **Capability pinning (§19.2 #6):** the first report is pinned and puts
+  the box in `needs_approval` until an admin accepts it, so whoever spends
+  a join token can't claim a huge box and draw in the fleet's jobs. So
+  does a later report that changes `guest_arch` or `driver`, or moves
+  `vcpus`, `memory_mib` or `vm_area_mib` by more than 10%, so a stolen
+  key can't either. Placement uses the pinned values.
   """
   import Ecto.Query
 
@@ -159,6 +160,14 @@ defmodule Crew.Boxes do
       Box.retired?(get_by_name(name)) ->
         [box_name: "belongs to a retired mac-vm worker. Choose a new name for its replacement."]
 
+      match?(%Box{revoked_at: %DateTime{}}, get_by_name(name)) ->
+        [box_name: "belongs to a revoked box. Choose a new name for its replacement."]
+
+      # A token for a box that's there would replace its key, and the box
+      # would keep its repos' trust (allowed_boxes) and its capacity.
+      get_by_name(name) ->
+        [box_name: "belongs to a box that's already enrolled. Choose a new name for a new box."]
+
       true ->
         []
     end
@@ -230,8 +239,8 @@ defmodule Crew.Boxes do
 
   @doc """
   Enrolls an agent: spends the join token and records the agent's public
-  key. Re-enrolling a live box's name replaces its key; a revoked name
-  stays revoked.
+  key. A token only makes a new box: one for a name that's already
+  enrolled (or revoked, or retired) is refused.
 
   The token is claimed with one update that only matches it unused and
   unexpired, in the same transaction as the box's key: of enrollments
@@ -243,10 +252,12 @@ defmodule Crew.Boxes do
     now = DateTime.utc_now()
 
     Repo.transact(fn ->
-      with {:ok, token} <- claim_token(raw_token, now),
+      with :ok <- lock_name(raw_token),
+           {:ok, token} <- claim_token(raw_token, now),
            {:ok, public_key} <- decode_key(attrs["public_key"]),
            {:ok, box} <- upsert_enrolled_box(token, public_key, attrs) do
         token |> Ecto.Changeset.change(box_id: box.id) |> Repo.update!()
+        spend_siblings(token, now)
 
         Audit.log(nil, "box.enroll", box, %{"agent_version" => attrs["agent_version"]})
         disconnect(box)
@@ -260,6 +271,38 @@ defmodule Crew.Boxes do
   end
 
   def enroll(_, _), do: {:error, :invalid_token}
+
+  # Every token for the name the token's for, locked in one order before
+  # any is claimed: enrollments for one name then go one after another,
+  # and the one that wins spends the rest in its own transaction (Postgres;
+  # SQLite has one writer at a time anyway).
+  defp lock_name(raw) do
+    with %JoinToken{box_name: name} <- Repo.get_by(JoinToken, token_hash: hash(raw)) do
+      if Repo.database() == "postgres" do
+        Repo.all(
+          from(t in JoinToken,
+            where: t.box_name == ^name,
+            order_by: t.id,
+            lock: "FOR UPDATE",
+            select: t.id
+          )
+        )
+      end
+
+      :ok
+    end
+  end
+
+  # Other unused tokens for the box's name can't enroll it now, so they
+  # can't fetch its first-boot config, with a Tailscale key, either.
+  defp spend_siblings(token, now) do
+    Repo.update_all(
+      from(t in JoinToken,
+        where: t.box_name == ^token.box_name and t.id != ^token.id and is_nil(t.used_at)
+      ),
+      set: [used_at: now, tailscale_auth_key: nil]
+    )
+  end
 
   # Marks the token used if, and only if, it's unused and unexpired, and
   # forgets its Tailscale key, which was for this box's first boot.
@@ -355,19 +398,19 @@ defmodule Crew.Boxes do
   defp artifact(release),
     do: %{url: Releases.url(release), sha256: release.sha256, signature: release.signature}
 
-  defp valid_join_token(raw) when is_binary(raw) do
-    case Repo.get_by(JoinToken, token_hash: hash(raw)) do
-      %JoinToken{used_at: nil} = token ->
-        if token.box_type in Box.types() and
-             DateTime.compare(token.expires_at, DateTime.utc_now()) == :gt,
-           do: token
-
-      _ ->
-        nil
-    end
-  end
+  defp valid_join_token(raw) when is_binary(raw),
+    do: valid_join_token_row(Repo.get_by(JoinToken, token_hash: hash(raw)))
 
   defp valid_join_token(_), do: nil
+
+  defp valid_join_token_row(%JoinToken{used_at: nil} = token) do
+    if token.box_type in Box.types() and
+         DateTime.compare(token.expires_at, DateTime.utc_now()) == :gt and
+         is_nil(get_by_name(token.box_name)),
+       do: token
+  end
+
+  defp valid_join_token_row(_), do: nil
 
   defp box_tailscale_key(%JoinToken{tailscale_auth_key: key}) when is_binary(key), do: {:ok, key}
 
@@ -382,12 +425,19 @@ defmodule Crew.Boxes do
 
     case Crew.Tailscale.create_box_auth_key(token.box_name, expiry) do
       {:ok, key} ->
+        # Only on a token that's still good: the box may have enrolled (or
+        # a sibling may have) while Tailscale made it.
         Repo.update_all(
-          from(t in JoinToken, where: t.id == ^token.id and is_nil(t.tailscale_auth_key)),
+          from(t in JoinToken,
+            where: t.id == ^token.id and is_nil(t.tailscale_auth_key) and is_nil(t.used_at)
+          ),
           set: [tailscale_auth_key: key]
         )
 
-        {:ok, Repo.reload!(token).tailscale_auth_key}
+        case valid_join_token_row(Repo.reload!(token)) do
+          %JoinToken{tailscale_auth_key: stored} when is_binary(stored) -> {:ok, stored}
+          _ -> {:error, :invalid_token}
+        end
 
       {:error, reason} ->
         {:error, {:tailscale, reason}}
@@ -515,21 +565,23 @@ defmodule Crew.Boxes do
 
   defp present(_), do: nil
 
+  # A token makes a new box, never another key for one that's there: one
+  # minted before the box enrolled with another token can't be used.
   defp upsert_enrolled_box(token, public_key, attrs) do
-    box = get_by_name(token.box_name) || %Box{name: token.box_name}
-
-    if box.revoked_at || Box.retired?(box) do
-      {:error, :revoked}
+    if get_by_name(token.box_name) do
+      {:error, :taken}
     else
-      box
+      %Box{name: token.box_name}
       |> Ecto.Changeset.change(
-        type: box.type || token.box_type,
+        type: token.box_type,
         public_key: public_key,
         key_fingerprint: CrewProtocol.Auth.fingerprint(public_key),
         os: attrs["os"],
         agent_version: attrs["agent_version"]
       )
-      |> Repo.insert_or_update()
+      # Two tokens for one name racing: the name's index takes one.
+      |> Ecto.Changeset.unique_constraint(:name)
+      |> Repo.insert()
     end
   end
 
@@ -597,48 +649,72 @@ defmodule Crew.Boxes do
   # -- capabilities (§8.3) ---------------------------------------------------------
 
   @doc """
-  Stores a `box.capabilities` report. The first is pinned; a later one
-  that drifts too far sets `needs_approval`.
+  Stores a `box.capabilities` report. The first is pinned and waits for
+  an admin (`needs_approval`); so does a later one that drifts too far.
   """
   def report_capabilities(%Box{} = box, caps) when is_map(caps) do
     caps = stringify(caps)
-    pinned = box.pinned_capabilities
-    was_waiting = box.needs_approval
 
-    # The baseline only moves when an admin accepts a report, so a box
-    # can't creep past it a few percent at a time. Placement uses the
-    # smaller of the two (Crew.Scheduler).
-    {pinned, needs_approval} =
-      cond do
-        is_nil(pinned) -> {caps, false}
-        drifted?(pinned, caps) -> {pinned, true}
-        true -> {pinned, box.needs_approval}
-      end
+    {:ok, {box, notice}} =
+      Repo.transact(fn ->
+        # Read again, locked, so a report and an approval (which reads the
+        # same way) can't each work from what the other is replacing.
+        box = locked(box.id)
+        pinned = box.pinned_capabilities
 
-    box =
-      box
-      |> Ecto.Changeset.change(
-        capabilities: caps,
-        pinned_capabilities: pinned,
-        needs_approval: needs_approval,
-        driver: pinned["driver"],
-        guest_arch: pinned["guest_arch"],
-        firewall_ok: caps["firewall_ok"] == true,
-        virtualized: caps["virtualized"] == true,
-        hypervisor_vendor: caps["hypervisor_vendor"],
-        sleep_disabled: caps["sleep_disabled"]
-      )
-      |> Repo.update!()
+        # The baseline only moves when an admin accepts a report, so a box
+        # can't creep past it a few percent at a time. Placement uses the
+        # smaller of the two (Crew.Scheduler).
+        {new_pinned, needs_approval} =
+          cond do
+            # The first report is pinned too, but an admin accepts it
+            # before the box gets jobs: whoever spends a join token says
+            # what it has.
+            is_nil(pinned) -> {caps, true}
+            drifted?(pinned, caps) -> {pinned, true}
+            true -> {pinned, box.needs_approval}
+          end
 
-    if needs_approval and not was_waiting,
-      do:
-        Activity.record(
-          "box_needs_approval",
-          "#{box.name}'s capabilities changed; an admin has to accept them before it gets jobs",
-          box_id: box.id
-        )
+        updated =
+          box
+          |> Ecto.Changeset.change(
+            capabilities: caps,
+            pinned_capabilities: new_pinned,
+            needs_approval: needs_approval,
+            driver: new_pinned["driver"],
+            guest_arch: new_pinned["guest_arch"],
+            firewall_ok: caps["firewall_ok"] == true,
+            virtualized: caps["virtualized"] == true,
+            hypervisor_vendor: caps["hypervisor_vendor"],
+            sleep_disabled: caps["sleep_disabled"]
+          )
+          |> Repo.update!()
 
+        notice =
+          cond do
+            not needs_approval or box.needs_approval ->
+              nil
+
+            is_nil(pinned) ->
+              "#{box.name} reported what it has; an admin has to accept it before it gets jobs"
+
+            true ->
+              "#{box.name}'s capabilities changed; an admin has to accept them before it gets jobs"
+          end
+
+        {:ok, {updated, notice}}
+      end)
+
+    if notice, do: Activity.record("box_needs_approval", notice, box_id: box.id)
     {:ok, changed(box)}
+  end
+
+  # The box's row, locked for the transaction on Postgres. SQLite has one
+  # writer at a time, so a transaction that writes is serialised anyway.
+  defp locked(id) do
+    query = from(b in Box, where: b.id == ^id)
+    query = if Repo.database() == "postgres", do: lock(query, "FOR UPDATE"), else: query
+    Repo.one!(query)
   end
 
   defp drifted?(pinned, caps) do
@@ -649,32 +725,64 @@ defmodule Crew.Boxes do
   defp moved?(a, b) when is_number(a) and is_number(b) and a > 0, do: abs(b - a) / a > @drift
   defp moved?(a, b), do: a != b
 
-  @doc "An admin accepts the box's reported capabilities (audited)."
-  def approve_capabilities(%Scope{} = scope, %Box{} = box) do
+  @doc """
+  A short digest of the box's last capabilities report, so an admin's
+  approval (`approve_capabilities/3`) is for the report they saw.
+  """
+  def report_digest(%Box{capabilities: caps}) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(caps, [:deterministic]))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
+  end
+
+  @doc """
+  An admin accepts the box's reported capabilities (audited): the report
+  whose `report_digest/1` they saw. One that's been replaced meanwhile
+  isn't accepted: `{:error, :stale}`.
+  """
+  def approve_capabilities(%Scope{} = scope, %Box{} = box, digest) do
     if Scope.admin?(scope) do
-      box =
-        box
-        |> Ecto.Changeset.change(
-          pinned_capabilities: box.capabilities,
-          needs_approval: false,
-          driver: box.capabilities["driver"],
-          guest_arch: box.capabilities["guest_arch"]
-        )
-        |> Repo.update!()
+      Repo.transact(fn ->
+        current = locked(box.id)
 
-      Audit.log(scope, "box.capabilities_approved", box, %{
-        "vcpus" => box.capabilities["vcpus"],
-        "memory_mib" => box.capabilities["memory_mib"]
-      })
+        if report_digest(current) == digest,
+          do: {:ok, accept_capabilities(scope, current)},
+          else: {:error, :stale}
+      end)
+      |> case do
+        # Told once it's committed, so a page that reloads sees it.
+        {:ok, box} ->
+          Activity.record("box_approved", "#{box.name}'s capabilities were accepted",
+            box_id: box.id
+          )
 
-      Activity.record("box_approved", "#{box.name}'s new capabilities were accepted",
-        box_id: box.id
-      )
+          {:ok, changed(box)}
 
-      {:ok, changed(box)}
+        error ->
+          error
+      end
     else
       {:error, :unauthorized}
     end
+  end
+
+  defp accept_capabilities(scope, box) do
+    box =
+      box
+      |> Ecto.Changeset.change(
+        pinned_capabilities: box.capabilities,
+        needs_approval: false,
+        driver: box.capabilities["driver"],
+        guest_arch: box.capabilities["guest_arch"]
+      )
+      |> Repo.update!()
+
+    Audit.log(scope, "box.capabilities_approved", box, %{
+      "vcpus" => box.capabilities["vcpus"],
+      "memory_mib" => box.capabilities["memory_mib"]
+    })
+
+    box
   end
 
   defp stringify(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)

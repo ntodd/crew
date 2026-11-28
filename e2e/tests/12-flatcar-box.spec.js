@@ -18,7 +18,7 @@ import {spawn, execFileSync} from "node:child_process"
 import {mkdirSync, readFileSync, rmSync, writeFileSync} from "node:fs"
 import {resolve} from "node:path"
 import {expect, test} from "@playwright/test"
-import {addBox, fakePost, fakeState, shot, signIn} from "./helpers.js"
+import {addBox, approveBox, fakePost, fakeState, shot, signIn} from "./helpers.js"
 
 const layer = "12-flatcar"
 const root = resolve(import.meta.dirname, "../..")
@@ -74,6 +74,7 @@ test("a Flatcar box enrolls and runs a job VM under Firecracker", async ({page, 
   await expect(page.locator("#capabilities")).toContainText("firecracker")
   // The first verdict comes before the box learns its egress address.
   await expect(page.locator("#capabilities")).toContainText("Firewall verified", {timeout: 120_000})
+  await approveBox(page, "fc-e2e")
   await shot(page, layer, "flatcar-box")
   // Its registry cache (crew-cache.service) took the deployment's config.
   await expect(page.locator("#operations")).toContainText(/Configure the cache\s*succeeded/, {timeout: 120_000})

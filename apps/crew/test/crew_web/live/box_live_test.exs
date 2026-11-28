@@ -151,6 +151,31 @@ defmodule CrewWeb.BoxLiveTest do
     refute Boxes.get!(box.id).needs_approval
   end
 
+  test "a box that just enrolled waits for an admin to accept what it reported", %{conn: conn} do
+    box = box_fixture(name: "fresh", capabilities: nil, pinned_capabilities: nil)
+    {:ok, box} = Boxes.report_capabilities(box, capabilities())
+
+    {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+    assert has_element?(view, "#needs-approval", "The agent reports what this box has")
+    # Everything it'd be accepted with, not just a summary.
+    assert has_element?(view, "#needs-approval", "vz")
+    assert has_element?(view, "#needs-approval", "vm area")
+    assert has_element?(view, "#needs-approval", "VMM overhead")
+    view |> element("#approve-capabilities") |> render_click()
+    refute has_element?(view, "#needs-approval")
+  end
+
+  test "accepting a report that changed meanwhile accepts nothing", %{conn: conn} do
+    box = box_fixture(name: "racy", capabilities: nil, pinned_capabilities: nil)
+    {:ok, box} = Boxes.report_capabilities(box, capabilities())
+    {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
+
+    stale = Boxes.report_digest(box)
+    {:ok, _} = Boxes.report_capabilities(Boxes.get!(box.id), capabilities(vcpus: 4096))
+    render_click(view, "approve", %{"digest" => stale})
+    assert Boxes.get!(box.id).needs_approval
+  end
+
   test "revoking a box", %{conn: conn} do
     box = box_fixture(name: "old")
     {:ok, view, _} = live(conn, ~p"/boxes/#{box.id}")
@@ -216,7 +241,10 @@ defmodule CrewWeb.BoxLiveTest do
       assert has_element?(view, "#join-command", "--cache-vm")
       assert has_element?(view, "#join-command", "--name m1ultra")
       assert has_element?(view, "#cache-vm-note")
-      assert [_, token] = Regex.run(~r/--token (cj_[A-Za-z0-9_-]+)/, html)
+      # It asks for the token, so it's on no command line, or in the
+      # shell's history, on the Mac.
+      refute has_element?(view, "#join-command", "cj_")
+      assert [_, token] = Regex.run(~r/id="join-token".*?(cj_[A-Za-z0-9_-]+)/s, html)
       {public, _} = CrewProtocol.Auth.generate_keypair()
       assert {:ok, _} = Boxes.enroll(token, %{"public_key" => Base.encode64(public)})
     end
@@ -255,9 +283,11 @@ defmodule CrewWeb.BoxLiveTest do
         |> form("#add-box", %{"box" => %{"box_name" => "nas1", "box_type" => "linux-vm"}})
         |> render_submit()
 
-      # The launcher stays the way in.
-      assert [_, token] =
-               Regex.run(~r/linux-vm\.sh \| sudo sh -s -- --token (cj_[A-Za-z0-9_-]+)/, html)
+      # The launcher stays the way in. It asks for the token, so the token
+      # never goes on the host's command line.
+      assert has_element?(view, "#join-command", "linux-vm.sh | sudo sh -s")
+      refute has_element?(view, "#join-command", "cj_")
+      assert [_, token] = Regex.run(~r/id="join-token".*?(cj_[A-Za-z0-9_-]+)/s, html)
 
       assert has_element?(
                view,
@@ -266,6 +296,9 @@ defmodule CrewWeb.BoxLiveTest do
 
       assert has_element?(view, "#ignition-download input[name=join_token][value='#{token}']")
       assert has_element?(view, "#ignition-fetch-command", "(umask 077; ")
+      # The command asks for the token and gives it to curl on stdin.
+      assert has_element?(view, "#ignition-fetch-command", "join_token@-")
+      refute has_element?(view, "#ignition-fetch-command", "cj_")
       assert has_element?(view, "#ignition-fetch-command", "arch=amd64")
       # VirtIO disks: the OS disk is /dev/vda, and the Ignition formats
       # /dev/vdb as the data disk.
@@ -390,6 +423,8 @@ defmodule CrewWeb.BoxLiveTest do
         |> render_submit()
 
       assert [_, token] = Regex.run(~r/value="(cj_[A-Za-z0-9_-]+)"/, html)
+      # Shown to paste when the fetch asks, too.
+      assert has_element?(view, "#join-token", token)
 
       assert has_element?(
                view,
@@ -429,7 +464,11 @@ defmodule CrewWeb.BoxLiveTest do
 
       File.write!(curl, """
       #!/bin/sh
-      while [ $# -gt 0 ]; do [ "$1" = -o ] && echo '{"ignition":{}}' > "$2"; shift; done
+      while [ $# -gt 0 ]; do
+        [ "$1" = -o ] && echo '{"ignition":{}}' > "$2"
+        [ "$1" = join_token@- ] && cat > sent-token
+        shift
+      done
       exit 0
       """)
 
@@ -437,12 +476,15 @@ defmodule CrewWeb.BoxLiveTest do
       File.write!(Path.join(dir, "crew-rack1.ign"), "old")
       File.chmod!(Path.join(dir, "crew-rack1.ign"), 0o644)
 
+      # It asks for the token: typed in, as it were.
       {_, 0} =
-        System.cmd("sh", ["-c", command],
+        System.cmd("sh", ["-c", ~s(printf '%s\\n' "$1" | sh -c "$0"), command, token],
           cd: dir,
-          env: [{"PATH", Path.join(dir, "bin") <> ":/usr/bin:/bin"}]
+          env: [{"PATH", Path.join(dir, "bin") <> ":/usr/bin:/bin"}],
+          stderr_to_stdout: true
         )
 
+      assert File.read!(Path.join(dir, "sent-token")) == token
       assert File.read!(Path.join(dir, "crew-rack1.ign")) =~ "ignition"
       assert File.stat!(Path.join(dir, "crew-rack1.ign")).mode |> Bitwise.band(0o777) == 0o600
       assert has_element?(view, "#join-instructions", "Delete it once the box has enrolled")

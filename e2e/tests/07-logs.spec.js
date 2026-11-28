@@ -3,7 +3,7 @@
 // through the guest API; the job page shows it live, virtualised, and
 // switches to GitHub's log when the job is done.
 import {expect, test} from "@playwright/test"
-import {addBox, fakePost, fakeState, shot, signIn, startAgent, stopAgent} from "./helpers.js"
+import {addBox, approveBox, fakePost, fakeState, shot, signIn, startAgent, stopAgent} from "./helpers.js"
 
 const layer = "07-live-logs"
 const repo = "mona/logs"
@@ -21,6 +21,7 @@ async function ensureBox(page) {
   }
   await page.goto("/boxes")
   await expect(page.locator("[id^=box-]", {hasText: "null-logs"})).toContainText("Online", {timeout: 180_000})
+  await approveBox(page, "null-logs")
 }
 
 async function openJob(page, run, job) {
