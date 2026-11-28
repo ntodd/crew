@@ -374,6 +374,33 @@ defmodule Crew.Images do
   def box_images(box_id), do: Repo.all(from bi in BoxImage, where: bi.box_id == ^box_id)
   def box_images_all, do: Repo.all(BoxImage)
 
+  @doc """
+  A box refused a VM placed at `placed_at` with `image_not_ready`: the
+  image's `ready` row from before then is taken back, as a first failed
+  prepare (attempts reset at ready), so placement skips it until the box
+  prepares it again. A newer one is left.
+  """
+  def refused(box_id, image_id, placed_at, now \\ DateTime.utc_now()) do
+    {n, _} =
+      Repo.update_all(
+        from(bi in BoxImage,
+          where:
+            bi.box_id == ^box_id and bi.image_id == ^image_id and bi.state == "ready" and
+              bi.updated_at <= ^placed_at
+        ),
+        set: [
+          state: "failed",
+          error: "the box said it wasn't ready when a VM started",
+          attempts: 1,
+          retry_at: DateTime.add(now, 60 * hd(@retries_min)),
+          updated_at: now
+        ]
+      )
+
+    if n > 0, do: changed()
+    :ok
+  end
+
   @doc "Records an image's state on a box (from `image.state`, or a prepare being sent)."
   def put_box_state(box_id, image_id, state, attrs \\ %{}) do
     now = DateTime.utc_now()

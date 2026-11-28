@@ -723,6 +723,32 @@ defmodule Crew.Boxes do
         inc: [consecutive_failures: 1]
       )
 
+    quarantine_at(box_id, n)
+  end
+
+  @doc """
+  An `image_not_ready` refusal of a VM placed at `placed_at` (§8.6): a
+  failure like `vm_failed/1`, but once per batch of placements. The first
+  refusal of VMs placed since the last strike counts, in the same
+  statement as its mark, and the rest of its batch doesn't.
+  """
+  def image_refused(box_id, placed_at, now \\ DateTime.utc_now()) do
+    case Repo.update_all(
+           from(b in Box,
+             where:
+               b.id == ^box_id and
+                 (is_nil(b.image_refused_at) or b.image_refused_at < ^placed_at),
+             select: b.consecutive_failures
+           ),
+           inc: [consecutive_failures: 1],
+           set: [image_refused_at: now]
+         ) do
+      {1, [n]} -> quarantine_at(box_id, n)
+      _ -> :ok
+    end
+  end
+
+  defp quarantine_at(box_id, n) do
     if n >= @quarantine_after do
       until = DateTime.add(DateTime.utc_now(), @quarantine_s, :second)
 

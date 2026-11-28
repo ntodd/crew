@@ -732,7 +732,12 @@ defmodule Crew.VMs.Server do
 
   defp accounting(state, %{state: from}, %{state: "failed", fail_reason: reason})
        when from != "failed" do
-    if Machine.quarantine_failure?(reason), do: Boxes.vm_failed(state.vm.box_id)
+    cond do
+      Machine.quarantine_failure?(reason) -> Boxes.vm_failed(state.vm.box_id)
+      reason == "image_not_ready" -> image_refused(state.vm)
+      true -> :ok
+    end
+
     if reason not in ~w(lost cp_restart image_not_ready), do: class_failed(state.vm, reason)
     state
   end
@@ -764,11 +769,24 @@ defmodule Crew.VMs.Server do
   # Class accounting is per field and atomic: VMs of a class fail and
   # get reaped at the same moments, and the scheduler writes
   # `excess_since` on the same row.
+  # image_not_ready is the box's word, so it's the box's failure, or a box
+  # that keeps saying it would be placed on, and spend a JIT config, every
+  # pass. Once per batch, though: the image is taken off the box (§13.1)
+  # by the first refusal, and the rest of the batch placed with it
+  # doesn't count again.
+  defp image_refused(%VM{image_id: image_id} = vm) when is_binary(image_id) do
+    Crew.Images.refused(vm.box_id, image_id, vm.requested_at)
+    Boxes.image_refused(vm.box_id, vm.requested_at)
+  end
+
+  defp image_refused(_vm), do: :ok
+
   defp class_failed(vm, reason) do
     n = class_inc(vm, :consecutive_failures, last_error: reason)
 
     if n >= @backoff_after do
-      seconds = min(300, trunc(:math.pow(2, n - @backoff_after)))
+      # 2^9 is past the cap: a bigger power would only overflow.
+      seconds = min(300, Integer.pow(2, min(n - @backoff_after, 9)))
       class_set(vm, backoff_until: DateTime.add(DateTime.utc_now(), seconds, :second))
     end
   end

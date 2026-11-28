@@ -44,6 +44,7 @@ defmodule Crew.Boxes.Box do
     field :cache_ca_generation, :integer, default: 1
     field :cache_top, {:array, :map}, default: []
     field :quarantined_until, :utc_datetime_usec
+    field :image_refused_at, :utc_datetime_usec
     field :consecutive_failures, :integer, default: 0
     field :firewall_ok, :boolean, default: false
     field :virtualized, :boolean, default: false

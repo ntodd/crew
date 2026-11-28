@@ -93,11 +93,115 @@ defmodule Crew.VMs.ServerTest do
       assert Boxes.get!(box.id).consecutive_failures == 1
     end
 
-    test "image_not_ready doesn't count against the box", %{box: box, repo: repo} do
+    test "image_not_ready takes the image off the box until it's prepared again", %{
+      box: box,
+      repo: repo
+    } do
       id = place(box, repo)
+      vm = VMs.get!(id)
       ack_start(box, assert_command("vm.start"), "error", "image_not_ready")
       assert await_state(id, "failed").fail_reason == "image_not_ready"
-      assert Boxes.get!(box.id).consecutive_failures == 0
+      assert Crew.Images.box_states()[{box.id, vm.image_id}] == "failed"
+      # It's the box's word, so it counts as the box's failure; a box that
+      # keeps saying it can't be placed on.
+      assert Boxes.get!(box.id).consecutive_failures == 1
+    end
+
+    test "one stale image refused by a whole batch counts once", %{box: box, repo: repo} do
+      ids = for _ <- 1..3, do: place(box, repo)
+      cmds = for _ <- ids, do: assert_command("vm.start")
+      Enum.each(cmds, &ack_start(box, &1, "error", "image_not_ready"))
+      for id <- ids, do: await_state(id, "failed")
+
+      assert Boxes.get!(box.id).consecutive_failures == 1
+      refute Boxes.get!(box.id).quarantined_until
+    end
+
+    test "a refusal older than the box's newer ready report leaves the image ready", %{
+      box: box,
+      repo: repo
+    } do
+      id = place(box, repo)
+      vm = VMs.get!(id)
+      cmd = assert_command("vm.start")
+      Crew.Images.put_box_state(box.id, vm.image_id, "ready")
+      ack_start(box, cmd, "error", "image_not_ready")
+      await_state(id, "failed")
+
+      assert Crew.Images.box_states()[{box.id, vm.image_id}] == "ready"
+    end
+
+    test "a box can't dodge the strike by reporting ready again after each placement", %{
+      box: box,
+      repo: repo
+    } do
+      for _ <- 1..3 do
+        id = place(box, repo)
+        vm = VMs.get!(id)
+        cmd = assert_command("vm.start")
+        Crew.Images.put_box_state(box.id, vm.image_id, "ready")
+        ack_start(box, cmd, "error", "image_not_ready")
+        await_state(id, "failed")
+        assert Crew.Images.box_states()[{box.id, vm.image_id}] == "ready"
+      end
+
+      assert Boxes.get!(box.id).quarantined_until
+    end
+
+    test "a refusal still counts after the box's inventory dropped the image", %{
+      box: box,
+      repo: repo
+    } do
+      id = place(box, repo)
+      vm = VMs.get!(id)
+      cmd = assert_command("vm.start")
+
+      Repo.delete_all(
+        from(bi in Crew.Images.BoxImage,
+          where: bi.box_id == ^box.id and bi.image_id == ^vm.image_id
+        )
+      )
+
+      ack_start(box, cmd, "error", "image_not_ready")
+      await_state(id, "failed")
+      assert Boxes.get!(box.id).consecutive_failures == 1
+    end
+
+    test "a batch counts once even when the inventory drops the image between refusals", %{
+      box: box,
+      repo: repo
+    } do
+      for _ <- 1..2, do: place(box, repo)
+      [ca, cb] = for _ <- 1..2, do: assert_command("vm.start")
+      {a, b} = {ca.payload.vm_id, cb.payload.vm_id}
+      image_id = VMs.get!(a).image_id
+
+      ack_start(box, ca, "error", "image_not_ready")
+      await_state(a, "failed")
+
+      Repo.delete_all(
+        from(bi in Crew.Images.BoxImage, where: bi.box_id == ^box.id and bi.image_id == ^image_id)
+      )
+
+      ack_start(box, cb, "error", "image_not_ready")
+      await_state(b, "failed")
+      assert Boxes.get!(box.id).consecutive_failures == 1
+    end
+
+    test "a box that keeps answering image_not_ready is quarantined", %{box: box, repo: repo} do
+      for _ <- 1..3 do
+        Crew.Images.put_box_state(
+          box.id,
+          Repo.get_by!(Crew.Images.Image, arch: "arm64").id,
+          "ready"
+        )
+
+        id = place(box, repo)
+        ack_start(box, assert_command("vm.start"), "error", "image_not_ready")
+        await_state(id, "failed")
+      end
+
+      assert Boxes.get!(box.id).quarantined_until
     end
 
     test "three failures in a row quarantine the box for 5 minutes", %{box: box, repo: repo} do
@@ -816,6 +920,25 @@ defmodule Crew.VMs.ServerTest do
 
       assert cs.last_error == "start_error"
       assert DateTime.compare(cs.excess_since, at) == :eq
+    end
+
+    test "a class that has failed a great many times backs off 300 s", %{box: box, repo: repo} do
+      id = place(box, repo)
+      vm = VMs.get!(id)
+
+      Repo.insert!(%Crew.Scheduler.ClassState{
+        repo_id: repo.id,
+        class_hash: vm.class_hash,
+        class_key: vm.class_key,
+        consecutive_failures: 2000,
+        updated_at: DateTime.utc_now()
+      })
+
+      ack_start(box, assert_command("vm.start"), "error", "boom")
+      await_state(id, "failed")
+
+      cs = Repo.get_by!(Crew.Scheduler.ClassState, repo_id: repo.id)
+      assert DateTime.diff(cs.backoff_until, DateTime.utc_now()) in 290..300
     end
 
     test "simultaneous failures are all counted, and the fifth backs the class off", %{
