@@ -287,6 +287,116 @@ defmodule Crew.VMs.ServerTest do
       assert VMs.get!(id).state == "finished"
     end
 
+    test "a VM that exits before GitHub names its job holds its share until its runner is gone",
+         %{box: box, repo: repo} do
+      Application.put_env(:crew, :vm_timers_ms, %{delete_retry: 50})
+      GitHubStub.stub(github_routes(repo, delete_status: 422))
+      id = place(box, repo)
+      to_idle(box, id)
+      runner_id = VMs.get!(id).runner_id
+
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "job_started", "at" => 3})
+      await_state(id, "busy")
+      agent_event(box, "vm.exited", %{"vm_id" => id, "reason" => "poweroff", "cleanup" => "ok"})
+
+      # 422: the runner is on a job somewhere. It stays counted, and the
+      # delete is tried again.
+      assert_receive {:runner_deleted, path}
+      assert String.ends_with?(path, "/#{runner_id}")
+      assert_receive {:runner_deleted, _}
+      assert %{state: "finished", alive: false} = VMs.get!(id)
+      assert VMs.allocation(box.id).count == 1
+
+      GitHubStub.stub(github_routes(repo, delete_status: 404))
+      await_state(id, "destroyed")
+      assert VMs.allocation(box.id).count == 0
+    end
+
+    @tag timers: %{delete_retry: 50}
+    test "with a failed cleanup it waits for both the cleanup and its runner", %{
+      box: box,
+      repo: repo
+    } do
+      GitHubStub.stub(github_routes(repo, delete_status: 422))
+      id = place(box, repo)
+      to_idle(box, id)
+
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "job_started", "at" => 3})
+      await_state(id, "busy")
+
+      agent_event(box, "vm.exited", %{
+        "vm_id" => id,
+        "reason" => "poweroff",
+        "cleanup" => "error"
+      })
+
+      assert_receive {:runner_deleted, _}
+      agent_event(box, "vm.exited", %{"vm_id" => id, "reason" => "poweroff", "cleanup" => "ok"})
+      assert_receive {:runner_deleted, _}
+      assert %{state: "finished", fail_reason: "unlinked"} = VMs.get!(id)
+      assert VMs.allocation(box.id).count == 1
+
+      GitHubStub.stub(github_routes(repo, delete_status: 404))
+      await_state(id, "destroyed")
+    end
+
+    @tag timers: %{finished_grace: 10, finished_force: 10, check: 50}
+    test "with a failed cleanup and its runner gone, it asks the box until it's cleaned up", %{
+      box: box,
+      repo: repo
+    } do
+      GitHubStub.stub(github_routes(repo, delete_status: 404))
+      id = place(box, repo)
+      to_idle(box, id)
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "job_started", "at" => 3})
+      await_state(id, "busy")
+
+      agent_event(box, "vm.exited", %{
+        "vm_id" => id,
+        "reason" => "poweroff",
+        "cleanup" => "error"
+      })
+
+      assert_receive {:runner_deleted, _}
+      eventually(fn -> VMs.get!(id).fail_reason == nil end)
+      assert VMs.allocation(box.id).count == 1
+      assert_command("box.inventory", 1_000)
+
+      entry = %{
+        "vm_id" => id,
+        "alive" => false,
+        "exited" => %{"reason" => "poweroff", "cleanup" => "ok", "at" => 5}
+      }
+
+      agent_event(box, "box.inventory", %{"vms" => [entry], "images" => []})
+      await_state(id, "destroyed")
+    end
+
+    @tag timers: %{delete_retry: 50}
+    test "a later report of a failed cleanup keeps it until both settle", %{box: box, repo: repo} do
+      GitHubStub.stub(github_routes(repo, delete_status: 422))
+      id = place(box, repo)
+      to_idle(box, id)
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "job_started", "at" => 3})
+      await_state(id, "busy")
+      agent_event(box, "box.inventory", %{"vms" => [], "images" => []})
+      assert_receive {:runner_deleted, _}
+
+      entry = %{
+        "vm_id" => id,
+        "alive" => false,
+        "exited" => %{"reason" => "poweroff", "cleanup" => "error", "at" => 5}
+      }
+
+      agent_event(box, "box.inventory", %{"vms" => [entry], "images" => []})
+      eventually(fn -> VMs.get!(id).fail_reason == "unlinked_cleanup" end)
+
+      GitHubStub.stub(github_routes(repo, delete_status: 404))
+      eventually(fn -> VMs.get!(id).fail_reason == nil end)
+      assert %{state: "finished"} = VMs.get!(id)
+      assert VMs.allocation(box.id).count == 1
+    end
+
     test "a short job's exit can come before GitHub's webhooks", %{box: box, repo: repo} do
       job = queued_job(repo, id: 507)
       id = place(box, repo)
@@ -1068,6 +1178,32 @@ defmodule Crew.VMs.ServerTest do
       assert_receive {:runner_deleted, _}, 1_000
       await_state(id, "busy")
       refute_received {:dispatch, %CrewProtocol.Command{type: "vm.stop"}}
+    end
+
+    @tag timers: %{delete_retry: 10}
+    test "a VM waiting on its runner's delete asks again, within the give-up it had", %{
+      box: box,
+      repo: repo
+    } do
+      Application.put_env(:crew, :idle_max_s, 0)
+      on_exit(fn -> Application.delete_env(:crew, :idle_max_s) end)
+      GitHubStub.stub(github_routes(repo, delete_status: 422))
+      id = place(box, repo)
+      to_idle(box, id)
+      agent_event(box, "vm.state", %{"vm_id" => id, "state" => "job_started", "at" => 3})
+      await_state(id, "busy")
+      agent_event(box, "vm.exited", %{"vm_id" => id, "reason" => "poweroff", "cleanup" => "ok"})
+      assert_receive {:runner_deleted, _}
+
+      # Past CREW_IDLE_MAX + 300 s since it finished: the restarted server
+      # gives up rather than holding the share another window.
+      Repo.update_all(from(v in Crew.VMs.VM, where: v.id == ^id),
+        set: [finished_at: DateTime.add(DateTime.utc_now(), -400)]
+      )
+
+      restart(id)
+      assert_receive {:runner_deleted, _}, 1_000
+      await_state(id, "destroyed")
     end
 
     @tag timers: %{delete_retry: 10}

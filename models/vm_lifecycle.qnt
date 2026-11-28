@@ -66,6 +66,14 @@ module vm_lifecycle {
   pure def failTo(vm: CpVm, r: str, effs: Set[Effect]): Result =
     Ok({ vm: vm.with("state", "failed").with("reason", r), effects: effs })
 
+  /// Busy on the guest's word only, and gone: it keeps its share of the
+  /// box until GitHub says its runner is gone.
+  pure val unlinkedReasons = Set("unlinked", "unlinked_cleanup")
+
+  pure def unlinked(vm: CpVm): Result =
+    Ok({ vm: vm.with("state", "finished").with("alive", false).with("reason", "unlinked"),
+         effects: Set(DeleteRunnerThen("unlinked")) })
+
   pure def transition(vm: CpVm, ev: Event): Result =
     val s = vm.state
     if (s == "destroyed") Ignored
@@ -110,8 +118,20 @@ module vm_lifecycle {
         else if (s == "starting")
           failTo(vm, if (e.reason == "boot_failed") "boot_failed" else "crashed", Set(DeleteRunner))
         else if (s == "booted" or s == "idle") failTo(vm, "crashed", Set(DeleteRunner))
+        else if (s == "busy" and vm.jobId == "" and e.cleanupOk) unlinked(vm)
+        else if (s == "busy" and vm.jobId == "")
+          Ok({ vm: vm.with("state", "finished").with("alive", false).with("reason", "unlinked_cleanup"),
+               effects: Set(DeleteRunnerThen("unlinked"), CleanupFailed, ArmFinished) })
         else if (s == "busy")
           Ok({ vm: vm.with("state", "finished").with("alive", false), effects: Set(ArmFinished) })
+        else if (s == "finished" and vm.reason == "unlinked_cleanup" and e.cleanupOk)
+          Ok({ vm: vm.with("alive", false).with("reason", "unlinked"), effects: Set() })
+        else if (s == "finished" and vm.reason == "unlinked_cleanup" and vm.alive and
+                 not(e.cleanupOk))
+          Ok({ vm: vm.with("alive", false), effects: Set(CleanupFailed) })
+        else if (s == "finished" and vm.reason == "unlinked" and not(e.cleanupOk))
+          Ok({ vm: vm.with("reason", "unlinked_cleanup"), effects: Set(ArmFinished) })
+        else if (s == "finished" and unlinkedReasons.contains(vm.reason)) Ignored
         else if (e.cleanupOk)
           Ok({ vm: vm.with("state", "destroyed").with("alive", false), effects: Set() })
         else Ok({ vm: vm.with("alive", false), effects: Set(CleanupFailed) })
@@ -120,11 +140,18 @@ module vm_lifecycle {
         else Ignored
       | InventoryMissing =>
         if (preJob.contains(s)) failTo(vm, "lost", Set(DeleteRunner))
+        else if (s == "busy" and vm.jobId == "") unlinked(vm)
+        else if (s == "finished" and vm.reason == "unlinked_cleanup")
+          Ok({ vm: vm.with("alive", false).with("reason", "unlinked"), effects: Set() })
+        else if (s == "finished" and vm.reason == "unlinked") Ignored
         else if (s == "busy")
           Ok({ vm: vm.with("state", "finished").with("alive", false), effects: Set(ArmFinished) })
         else Ok({ vm: vm.with("state", "destroyed").with("alive", false), effects: Set() })
       | InventoryAlive =>
-        if (s == "finished" or s == "failed")
+        if (s == "finished" and unlinkedReasons.contains(vm.reason))
+          Ok({ vm: vm.with("alive", true).with("reason", "unlinked_cleanup"),
+               effects: Set(Stop(true), ArmFinished) })
+        else if (s == "finished" or s == "failed")
           Ok({ vm: vm.with("alive", true), effects: Set(Stop(true)) })
         else Ignored
       | Timeout(r) =>
@@ -138,6 +165,13 @@ module vm_lifecycle {
         if (s == "idle" and d.outcome == "gone" and d.reason == "reaped")
           Ok({ vm: vm.with("state", "finished").with("reason", "reaped"),
                effects: Set(Stop(false), ArmFinished) })
+        else if (s == "finished" and vm.reason == "unlinked" and d.outcome == "gone" and
+                 d.reason == "unlinked")
+          Ok({ vm: vm.with("state", "destroyed").with("alive", false).with("reason", ""),
+               effects: Set() })
+        else if (s == "finished" and vm.reason == "unlinked_cleanup" and d.outcome == "gone" and
+                 d.reason == "unlinked")
+          Ok({ vm: vm.with("reason", ""), effects: Set() })
         else if (preJob.contains(s) and d.outcome == "gone") failTo(vm, d.reason, Set(Stop(true)))
         else if (preJob.contains(s) and d.outcome == "busy")
           Ok({ vm: vm.with("state", "busy").with("reason", ""), effects: Set(FetchJob) })
@@ -326,7 +360,7 @@ module vm_lifecycle {
     val gone = goneNow(s, ev)
     val s0 = s.applyOnce(ev, forceReason)
     val s1 = if (gone != "") s0.applyOnce(RunnerDeleted({ outcome: "gone", reason: gone }), "") else s0
-    if (s1.serverUp and carriesOn(ev) and
+    if (s1.serverUp and carriesOn(ev) and not(unlinkedReasons.contains(s1.cp.reason)) and
         ((from == "busy" and s1.cp.state == "finished") or
          (preJob.contains(from) and s1.cp.state == "failed")))
       s1.applyOnce(ev, "")
@@ -470,9 +504,13 @@ module vm_lifecycle {
     s.with("toCp", s.toCp.tail()).handleAgentEvent(s.toCp.head())
 
   pure def canDeliverDelete(s: Sys): bool = s.deleteResults != Set()
+  /// A 422 for a VM that's gone is asked again (Server's {:ok, :busy}
+  /// for "unlinked").
   pure def deliverDelete(s: Sys, r: { outcome: str, reason: str }): Sys =
-    s.with("deleteResults", s.deleteResults.exclude(Set(r)))
-     .applyEvent(RunnerDeleted(r), "")
+    val s0 = s.with("deleteResults", s.deleteResults.exclude(Set(r)))
+    if (r.outcome == "busy" and r.reason == "unlinked" and s0.serverUp)
+      s0.with("deletes", s0.deletes.union(Set(r.reason)))
+    else s0.applyEvent(RunnerDeleted(r), "")
 
   pure def canHook(s: Sys): bool = s.hooks != Set()
   pure def hook(s: Sys, h: str): Sys =
@@ -494,6 +532,10 @@ module vm_lifecycle {
     else if (s0.cp.state == "requested")
       val s1 = if (s0.runnerId) s0.with("gcDeletes", s0.gcDeletes + 1) else s0
       s1.applyEvent(RunnerDeleted({ outcome: "gone", reason: "cp_restart" }), "cp_restart")
+    else if (s0.cp.state == "finished" and unlinkedReasons.contains(s0.cp.reason))
+      val s1 = if (s0.cp.reason == "unlinked_cleanup") s0.rearm() else s0
+      if (s1.runnerId) s1.with("deletes", s1.deletes.union(Set("unlinked")))
+      else s1.applyEvent(RunnerDeleted({ outcome: "gone", reason: "unlinked" }), "")
     else s0.rearm()
 
   pure def canDisconnect(s: Sys): bool = s.online
