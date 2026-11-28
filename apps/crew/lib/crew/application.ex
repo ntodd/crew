@@ -5,6 +5,9 @@ defmodule Crew.Application do
 
   @impl true
   def start(_type, _args) do
+    # A typo in CREW_TRUSTED_PROXIES fails the boot, not the first request.
+    Crew.Config.trusted_proxies()
+
     children =
       [
         CrewWeb.Telemetry,

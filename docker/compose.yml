@@ -39,6 +39,15 @@ services:
       # ports, so the app listens on the container's address. The host
       # side stays on loopback (ports, below).
       CREW_LISTEN_IP: 0.0.0.0
+      # Behind Docker's port publishing, every request's peer is this
+      # network's gateway, not loopback: believe the X-Forwarded-For that
+      # tailscale serve and funnel add from there (and only there: another
+      # container on the network is its own address), or every client
+      # shares one rate limit (sign-in, enrollment, webhooks). gateway is
+      # the container's default gateway, read at boot. Set
+      # CREW_TRUSTED_PROXIES for `docker compose` (its environment, or the
+      # .env beside this file) to change it; empty trusts loopback only.
+      CREW_TRUSTED_PROXIES: ${CREW_TRUSTED_PROXIES-gateway}
     ports:
       - "127.0.0.1:4000:4000"
       - "127.0.0.1:4001:4001"
