@@ -2,8 +2,9 @@ defmodule CrewProtocol.Event do
   @moduledoc """
   An event an agent sends to the control plane (§10.4).
 
-  Every string has a stated maximum, and out-of-range values are refused,
-  not clamped. Timestamps are the exception: the control plane clamps them
+  Every string and number has a stated maximum, and out-of-range values
+  are refused, not clamped. A field the control plane stores in a 32-bit
+  column is held to 32 bits. Timestamps are the exception: the control plane clamps them
   to the VM's lifetime when it stores them. Times are Unix milliseconds
   (`at`, `t` on VM events) unless a field says seconds.
   """
@@ -24,8 +25,9 @@ defmodule CrewProtocol.Event do
   # A vm.log message carries at most this much text.
   @max_log_message 262_144
 
+  @int32 Schema.max_int32()
   @line {:object,
-         n: {:integer, required: true},
+         n: {:integer, required: true, max: @int32},
          t: {:integer, required: true},
          step_ref: {:step_ref, []},
          text: {:text, required: true, max: 65_536},
@@ -66,13 +68,13 @@ defmodule CrewProtocol.Event do
     "vm.log" => [
       vm_id: {:uuid, required: true},
       epoch: {:hex16, required: true},
-      seq: {:integer, required: true},
+      seq: {:integer, required: true, max: @int32},
       lines: {{:list, @line}, required: true, max: 10_000, check: &__MODULE__.log_message_size/1}
     ],
     "vm.log.gone" => [
       vm_id: {:uuid, required: true},
       epoch: {:hex16, required: true},
-      up_to_seq: {:integer, required: true}
+      up_to_seq: {:integer, required: true, max: @int32}
     ],
     "vm.steps" => [
       vm_id: {:uuid, required: true},
@@ -82,18 +84,18 @@ defmodule CrewProtocol.Event do
       vm_id: {:uuid, required: true},
       t: {:integer, required: true},
       cpu_pct: {:number, default: 0, max: 100.0},
-      mem_used_mib: {:integer, default: 0},
-      mem_total_mib: {:integer, default: 0},
-      disk_used_mib: {:integer, default: 0},
+      mem_used_mib: {:integer, default: 0, max: @int32},
+      mem_total_mib: {:integer, default: 0, max: @int32},
+      disk_used_mib: {:integer, default: 0, max: @int32},
       net_rx_bps: {:number, default: 0},
       net_tx_bps: {:number, default: 0},
       host_cpu_pct: {:number, default: 0, max: 100_000.0},
-      host_rss_mib: {:integer, default: 0},
+      host_rss_mib: {:integer, default: 0, max: @int32},
       # From newer guests only (§16.5): the highest used memory since the
       # last sample, the kernel's OOM kill count since boot, and the share
       # of the interval some task (or, for full, every task) stalled.
-      mem_peak_mib: {:integer, min: 0},
-      oom_kills: {:integer, min: 0},
+      mem_peak_mib: {:integer, min: 0, max: @int32},
+      oom_kills: {:integer, min: 0, max: @int32},
       cpu_pressure_pct: {:number, min: 0, max: 100.0},
       mem_pressure_pct: {:number, min: 0, max: 100.0},
       mem_full_pressure_pct: {:number, min: 0, max: 100.0}
@@ -101,26 +103,26 @@ defmodule CrewProtocol.Event do
     "box.metrics" => [
       t: {:integer, required: true},
       cpu_pct: {:number, required: true, max: 100.0},
-      mem_used_mib: {:integer, required: true},
-      mem_total_mib: {:integer, required: true},
-      swap_used_mib: {:integer, default: 0},
+      mem_used_mib: {:integer, required: true, max: @int32},
+      mem_total_mib: {:integer, required: true, max: @int32},
+      swap_used_mib: {:integer, default: 0, max: @int32},
       load1: {:number, default: 0},
-      disk_used_mib: {:integer, required: true},
-      disk_total_mib: {:integer, required: true},
-      vm_area_free_mib: {:integer, required: true},
-      cache_used_mib: {:integer, default: 0},
-      vms_running: {:integer, default: 0}
+      disk_used_mib: {:integer, required: true, max: @int32},
+      disk_total_mib: {:integer, required: true, max: @int32},
+      vm_area_free_mib: {:integer, required: true, max: @int32},
+      cache_used_mib: {:integer, default: 0, max: @int32},
+      vms_running: {:integer, default: 0, max: @int32}
     ],
     "box.capabilities" => [
       driver: {{:enum, ~w(firecracker vz null)}, required: true},
       driver_version: {:string, required: true, max: 64},
       guest_arch: {{:enum, ~w(x64 arm64)}, required: true},
       vcpus: {:integer, required: true, min: 1, max: 4096},
-      memory_mib: {:integer, required: true, min: 1},
-      vm_area_mib: {:integer, required: true},
+      memory_mib: {:integer, required: true, min: 1, max: @int32},
+      vm_area_mib: {:integer, required: true, max: @int32},
       max_vcpus_per_vm: {:integer, required: true, min: 1, max: 4096},
-      max_memory_mib_per_vm: {:integer, required: true, min: 1},
-      vmm_overhead_mib: {:integer, required: true},
+      max_memory_mib_per_vm: {:integer, required: true, min: 1, max: @int32},
+      vmm_overhead_mib: {:integer, required: true, max: @int32},
       features: {{:list, :code}, default: [], max: 32},
       virtualized: {:boolean, required: true},
       hypervisor_vendor: {:string, max: 64},

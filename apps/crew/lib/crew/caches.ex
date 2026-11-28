@@ -309,22 +309,28 @@ defmodule Crew.Caches do
   def box_summary(box_id, now \\ System.os_time(:second)) do
     since = now - 86_400
 
+    # Added up here, not with SQL's SUM: a box's counters are 64-bit each,
+    # and SQLite's SUM raises once a day of them passes 64 bits.
     sums =
-      Repo.one(
-        from s in Stat,
-          where: s.box_id == ^box_id and s.t >= ^since,
-          select: %{
-            hits: coalesce(sum(s.hits), 0),
-            misses: coalesce(sum(s.misses), 0),
-            bytes_served: coalesce(sum(s.bytes_served), 0),
-            bytes_stored: coalesce(sum(s.bytes_stored), 0),
-            mismatches: coalesce(sum(s.mismatches), 0),
-            evictions: coalesce(sum(s.evictions), 0)
-          }
+      from(s in Stat,
+        where: s.box_id == ^box_id and s.t >= ^since,
+        select: [s.hits, s.misses, s.bytes_served, s.mismatches, s.evictions]
       )
+      |> Repo.all()
+      |> Enum.reduce([0, 0, 0, 0, 0], fn row, acc ->
+        Enum.zip_with(row, acc, &((&1 || 0) + &2))
+      end)
+      |> then(fn [hits, misses, served, mismatches, evictions] ->
+        %{
+          hits: hits,
+          misses: misses,
+          bytes_served: served,
+          mismatches: mismatches,
+          evictions: evictions
+        }
+      end)
 
-    sums = Map.new(sums, fn {k, v} -> {k, to_int(v)} end)
-    sums = %{sums | bytes_stored: stored(box_id, since)}
+    sums = Map.put(sums, :bytes_stored, stored(box_id, since))
     total = sums.hits + sums.misses
 
     box = Repo.get(Box, box_id)
@@ -349,19 +355,15 @@ defmodule Crew.Caches do
         group_by: s.host,
         select: %{host: s.host, t: max(s.t)}
 
-    Repo.one(
+    Repo.all(
       from s in Stat,
         join: l in subquery(last),
         on: s.host == l.host and s.t == l.t,
         where: s.box_id == ^box_id,
-        select: coalesce(sum(s.bytes_stored), 0)
+        select: s.bytes_stored
     )
-    |> to_int()
+    |> Enum.sum_by(&(&1 || 0))
   end
-
-  defp to_int(%Decimal{} = d), do: Decimal.to_integer(d)
-  defp to_int(n) when is_integer(n), do: n
-  defp to_int(n) when is_float(n), do: round(n)
 
   @doc "Drops stats older than `cutoff` (Unix seconds), with the other metrics (§9.4)."
   def prune(cutoff), do: Repo.delete_all(from s in Stat, where: s.t < ^cutoff)

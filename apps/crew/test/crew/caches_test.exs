@@ -202,6 +202,26 @@ defmodule Crew.CachesTest do
     assert [%{repo: "actions/runner", host: "ghcr.io"}] = summary.top
   end
 
+  test "a day of counters too big for a 64-bit sum still adds up", %{box: box} do
+    now = System.os_time(:millisecond)
+    big = 2 ** 62
+
+    for t <- [now - 120_000, now - 60_000, now - 30_000] do
+      agent_event(box, "cache.stats", %{
+        "t" => t,
+        "hosts" => [
+          %{"host" => "ghcr.io", "hits" => big, "bytes_served" => big, "bytes_stored" => big},
+          %{"host" => "quay.io", "bytes_stored" => big}
+        ]
+      })
+    end
+
+    summary = Caches.box_summary(box.id)
+    assert summary.hits == 3 * big
+    assert summary.bytes_served == 3 * big
+    assert summary.bytes_stored == 2 * big
+  end
+
   test "stats older than 7 days are pruned, as metrics are", %{box: box} do
     old = System.os_time(:millisecond) - 8 * 86_400_000
 

@@ -7,7 +7,9 @@ defmodule CrewProtocol.Schema do
   anything the spec doesn't name. Dumping turns it back into string keys.
 
   Every string has a stated maximum: 4096 bytes unless the field says
-  otherwise with `max:`. Out-of-range values are refused, never clamped.
+  otherwise with `max:`. Every number fits a signed 64-bit column, and a
+  field stored in a 32-bit one says so with `max: Schema.max_int32()`.
+  Out-of-range values are refused, never clamped.
 
   Options:
     * `required: true`
@@ -34,6 +36,12 @@ defmodule CrewProtocol.Schema do
 
   @max_string 4096
   @max_text 1_048_576
+  @max_int64 9_223_372_036_854_775_807
+  @min_int64 -9_223_372_036_854_775_808
+  @max_int32 2_147_483_647
+
+  @doc "The largest value a 32-bit integer column holds (Postgres's `integer`)."
+  def max_int32, do: @max_int32
 
   @spec cast(term(), spec()) :: {:ok, map()} | {:error, [error()]}
   def cast(input, spec) when is_map(input), do: cast_object(input, spec, "")
@@ -231,14 +239,22 @@ defmodule CrewProtocol.Schema do
   defp cast_value(v, :boolean, _opts, _p) when is_boolean(v), do: {:ok, v}
   defp cast_value(_v, :boolean, _opts, p), do: err(p, "must be a boolean")
 
-  defp cast_value(v, :integer, _opts, _p) when is_integer(v) and v >= 0, do: {:ok, v}
-  defp cast_value(_v, :integer, _opts, p), do: err(p, "must be a non-negative integer")
+  defp cast_value(v, :integer, _opts, _p) when is_integer(v) and v >= 0 and v <= @max_int64,
+    do: {:ok, v}
 
-  defp cast_value(v, :int, _opts, _p) when is_integer(v), do: {:ok, v}
-  defp cast_value(_v, :int, _opts, p), do: err(p, "must be an integer")
+  defp cast_value(_v, :integer, _opts, p),
+    do: err(p, "must be a non-negative integer of at most 64 bits")
 
-  defp cast_value(v, :number, _opts, _p) when is_number(v) and v >= 0, do: {:ok, v}
-  defp cast_value(_v, :number, _opts, p), do: err(p, "must be a non-negative number")
+  defp cast_value(v, :int, _opts, _p) when is_integer(v) and v >= @min_int64 and v <= @max_int64,
+    do: {:ok, v}
+
+  defp cast_value(_v, :int, _opts, p), do: err(p, "must be an integer of at most 64 bits")
+
+  defp cast_value(v, :number, _opts, _p) when is_number(v) and v >= 0 and v <= @max_int64,
+    do: {:ok, v}
+
+  defp cast_value(_v, :number, _opts, p),
+    do: err(p, "must be a non-negative number below 2^63")
 
   defp cast_value(v, :json, _opts, _p) when is_map(v), do: {:ok, v}
   defp cast_value(_v, :json, _opts, p), do: err(p, "must be an object")
